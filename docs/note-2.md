@@ -17,3 +17,7 @@
   - Converts UTC/source timestamps to local timezone (`Asia/Ho_Chi_Minh`).
   - Supports `--format compact` (optimized for token budget in AI prompt), `--format json`, and `--format table`.
   - Local caching (5-minute TTL) to prevent rate limits during development.
+
+#### Disadventages
+
+The iCal will be delayed from the real Google Calendar web version from 5 minutes

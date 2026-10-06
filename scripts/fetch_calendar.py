@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
 Google Calendar Event Fetcher via Private iCal (.ics) Feed.
-Extracts events for a specific day and formats them for the timesheet logger.
+Step 2 in Timesheet Pipeline:
+Collects events from Google Calendar and formats data matching the basic
+structure of a Simple Entry (Section 3.2).
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 from datetime import date, datetime, time, timedelta, timezone
@@ -59,22 +62,25 @@ def fetch_ics_data(url_or_path: str, cache_file: Path | None = None, max_age_sec
         return path.read_bytes()
 
 
-def parse_events_for_date(ics_bytes: bytes, target_date: date, local_tz: ZoneInfo) -> list[dict]:
-    """Parse ics data and extract events occurring on the target date."""
+def parse_events_as_simple_entries(ics_bytes: bytes, target_date: date, local_tz: ZoneInfo) -> list[dict]:
+    """
+    Parse ics data and format each event to match the Simple Entry structure
+    specified in Section 3.2.
+    """
     cal = icalendar.Calendar.from_ical(ics_bytes)
-    
-    # Define start and end of day in local timezone
+
+    # Start and end boundaries in local timezone
     start_of_day = datetime.combine(target_date, time.min, tzinfo=local_tz)
     end_of_day = datetime.combine(target_date + timedelta(days=1), time.min, tzinfo=local_tz)
 
     events_between = recurring_ical_events.of(cal).between(start_of_day, end_of_day)
-    parsed_events = []
+    simple_entries = []
 
     for event in events_between:
         summary = str(event.get("SUMMARY", "(No Title)")).strip()
         dtstart_prop = event.get("DTSTART")
         dtend_prop = event.get("DTEND")
-        
+
         if not dtstart_prop:
             continue
 
@@ -82,44 +88,85 @@ def parse_events_for_date(ics_bytes: bytes, target_date: date, local_tz: ZoneInf
         all_day = not isinstance(raw_start, datetime)
 
         if all_day:
-            # Full day event (date object)
-            start_iso = raw_start.isoformat()
-            end_iso = dtend_prop.dt.isoformat() if dtend_prop else start_iso
             start_time_str = "00:00"
             end_time_str = "23:59"
             duration_mins = 24 * 60
         else:
-            # Convert to local timezone
             start_dt = raw_start.astimezone(local_tz)
             if dtend_prop:
                 end_dt = dtend_prop.dt.astimezone(local_tz)
             else:
                 end_dt = start_dt + timedelta(hours=1)
 
-            start_iso = start_dt.isoformat()
-            end_iso = end_dt.isoformat()
             start_time_str = start_dt.strftime("%H:%M")
             end_time_str = end_dt.strftime("%H:%M")
             duration_mins = int((end_dt - start_dt).total_seconds() / 60)
 
+        raw_description = str(event.get("DESCRIPTION", "")).strip()
         location = str(event.get("LOCATION", "")).strip()
-        description = str(event.get("DESCRIPTION", "")).strip()
 
-        parsed_events.append({
-            "title": summary,
-            "start": start_iso,
-            "end": end_iso,
+        # Check for any PR mentions in summary or description (e.g., #1182)
+        pr_matches = sorted(list(set(re.findall(r"#(\d+)", f"{summary} {raw_description}"))), key=int)
+        prs = [f"#{num}" for num in pr_matches]
+
+        # Description follows 3.2 format: grouped topics + inline PRs list
+        desc_body = summary
+        if raw_description:
+            # Clean up escape sequences common in ics descriptions
+            cleaned_desc = raw_description.replace("\\n", " ").replace("\n", " ").strip()
+            desc_body = f"{summary}: {cleaned_desc}"
+
+        if prs:
+            formatted_description = f"{desc_body}. PRs: {', '.join(prs)}"
+        else:
+            formatted_description = desc_body
+
+        # Simple Entry Schema matching Section 3.2
+        entry = {
+            "date": target_date.isoformat(),
             "start_time": start_time_str,
             "end_time": end_time_str,
-            "duration_minutes": duration_mins,
-            "all_day": all_day,
-            "location": location if location else None,
-            "description": description if description else None
-        })
+            "topic": summary,
+            "description": formatted_description,
+            "prs": prs,
+            "sources": {
+                "calendar_event": summary,
+                "repo": None,
+                "commits": []
+            },
+            "metadata": {
+                "duration_minutes": duration_mins,
+                "all_day": all_day,
+                "location": location if location else None
+            }
+        }
+        simple_entries.append(entry)
 
-    # Sort events by start time
-    parsed_events.sort(key=lambda x: x["start"])
-    return parsed_events
+    # Sort chronologically by start time
+    simple_entries.sort(key=lambda x: x["start_time"])
+    return simple_entries
+
+
+def format_as_entry_markdown(entries: list[dict]) -> str:
+    """Format entries according to the Section 3.2 'Edit entry' panel fields."""
+    if not entries:
+        return "(No calendar entries found for this date)"
+
+    blocks = []
+    for idx, e in enumerate(entries, 1):
+        pr_str = ", ".join(e["prs"]) if e["prs"] else "None"
+        block = (
+            f"### Entry {idx}: {e['start_time']} - {e['end_time']}\n"
+            f"- **Date**: {e['date']}\n"
+            f"- **Start time**: {e['start_time']}\n"
+            f"- **End time**: {e['end_time']}\n"
+            f"- **Description**: {e['description']}\n"
+            f"- **PRs**: {pr_str}\n"
+            f"- **Sources**:\n"
+            f"  - Calendar: \"{e['sources']['calendar_event']}\""
+        )
+        blocks.append(block)
+    return "\n\n".join(blocks)
 
 
 def main():
@@ -127,12 +174,18 @@ def main():
     workspace_root = script_dir.parent if script_dir.name == "scripts" else script_dir
     load_env(workspace_root / ".env")
 
-    parser = argparse.ArgumentParser(description="Fetch Google Calendar events via secret iCal URL")
+    parser = argparse.ArgumentParser(description="Fetch Google Calendar events and format as Simple Entries")
     parser.add_argument("--url", default=os.getenv("GCAL_ICS_URL"), help="Secret iCal URL (or set GCAL_ICS_URL env var)")
     parser.add_argument("--file", help="Local .ics file for testing")
     parser.add_argument("--date", default=date.today().isoformat(), help="Target date YYYY-MM-DD (default: today)")
     parser.add_argument("--tz", default="Asia/Ho_Chi_Minh", help="Local timezone name (default: Asia/Ho_Chi_Minh)")
-    parser.add_argument("--format", choices=["json", "table", "compact"], default="compact", help="Output format")
+    parser.add_argument(
+        "--format",
+        choices=["json", "entry"],
+        default="json",
+        help="Output format: 'json' (default Simple Entry array for Step 3 AI) or 'entry' (Section 3.2 markdown format)"
+    )
+    parser.add_argument("--minified", action="store_true", help="Output single-line JSON without indentation to minimize tokens")
     parser.add_argument("--no-cache", action="store_true", help="Bypass cached .ics file")
 
     args = parser.parse_args()
@@ -157,30 +210,18 @@ def main():
 
     try:
         ics_data = fetch_ics_data(source, cache_file=cache_path)
-        events = parse_events_for_date(ics_data, target_date, local_tz)
+        entries = parse_events_as_simple_entries(ics_data, target_date, local_tz)
     except Exception as e:
         print(f"Error fetching/parsing calendar events: {e}", file=sys.stderr)
         sys.exit(1)
 
     if args.format == "json":
-        print(json.dumps(events, indent=2, ensure_ascii=False))
-    elif args.format == "table":
-        print(f"Calendar events for {target_date} ({args.tz}):")
-        if not events:
-            print("  (No events scheduled)")
-            return
-        for ev in events:
-            all_day_tag = " [All Day]" if ev["all_day"] else ""
-            print(f"- {ev['start_time']} - {ev['end_time']}: {ev['title']}{all_day_tag}")
-    else:  # compact (optimized for minimal token usage when fed to AI)
-        if not events:
-            print("[]")
-            return
-        compact_entries = [
-            f"- {ev['start_time']}-{ev['end_time']}: {ev['title']}"
-            for ev in events
-        ]
-        print("\n".join(compact_entries))
+        if args.minified:
+            print(json.dumps(entries, separators=(",", ":"), ensure_ascii=False))
+        else:
+            print(json.dumps(entries, indent=2, ensure_ascii=False))
+    elif args.format == "entry":
+        print(format_as_entry_markdown(entries))
 
 
 if __name__ == "__main__":

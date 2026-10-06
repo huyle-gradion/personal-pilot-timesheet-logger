@@ -12,8 +12,8 @@
 
 > AI steps: anything that needs judgment. Keep this one as minimized as possible
 
-1. (Script) Collect git commits + pull requests (opened, reviewed, merged)
-2. (Script) Collect events from google calendar
+1. (Script) Collect git commits + pull requests (opened, reviewed, merged) and format data that matched basic structure of a simple entry
+2. (Script) Collect events from google calendar and format data that matched basic structure of a simple entry
 3. (AI) Format collected data into meaning and compacted entries
 4. (Script) Create a new daily log which grouped by topic and time block
 5. (Script) Ask for user review. Must display the output of the daily log and the collision of the blocks
