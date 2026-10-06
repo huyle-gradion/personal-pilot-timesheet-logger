@@ -51,6 +51,7 @@
 
 ### Step
 
+0. Collect all information of space and time complexity and usage of the tools/modules for the pilot (include collecting git commits + pull requests and collecting events)
 1. Collect all session transcripts
 2. Pull the token usage for each run
 3. Add these up into a single `token used per day`, add if their are multiple runs
