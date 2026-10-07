@@ -57,6 +57,104 @@ func TestRun_SuccessJSON(t *testing.T) {
 	if !strings.Contains(out, `"#42"`) {
 		t.Errorf("expected PR #42 in JSON output, got: %s", out)
 	}
+	if !strings.Contains(out, `"id": "gcal-event-1@google.com"`) {
+		t.Errorf("expected event ID in JSON output, got: %s", out)
+	}
+}
+
+func TestRun_DeclinedFilterWithFlag(t *testing.T) {
+	icsContent := `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:event-declined@google.com
+DTSTART:20261006T020000Z
+DTEND:20261006T030000Z
+SUMMARY:Declined Standup
+ATTENDEE;PARTSTAT=DECLINED:mailto:huy.leminh@gradion.com
+END:VEVENT
+BEGIN:VEVENT
+UID:event-active@google.com
+DTSTART:20261006T040000Z
+DTEND:20261006T050000Z
+SUMMARY:Active Sync
+ATTENDEE;PARTSTAT=ACCEPTED:mailto:huy.leminh@gradion.com
+END:VEVENT
+END:VCALENDAR`
+
+	tmpDir := t.TempDir()
+	icsPath := writeTempFile(t, tmpDir, "test.ics", []byte(icsContent))
+
+	var stdout, stderr bytes.Buffer
+	ctx := context.Background()
+	args := []string{
+		"-file", icsPath,
+		"-date", "2026-10-06",
+		"-user-email", "huy.leminh@gradion.com",
+		"-no-cache",
+	}
+
+	code := run(ctx, args, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d. Stderr: %s", code, stderr.String())
+	}
+
+	out := stdout.String()
+	if strings.Contains(out, "Declined Standup") {
+		t.Errorf("expected declined meeting to be filtered, found in output: %s", out)
+	}
+	if !strings.Contains(out, "Active Sync") {
+		t.Errorf("expected active meeting in output, got: %s", out)
+	}
+}
+
+func TestRun_SkipTransparentFlag(t *testing.T) {
+	icsContent := `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:event-transp@google.com
+DTSTART:20261006T020000Z
+DTEND:20261006T030000Z
+SUMMARY:Transparent Reminder
+TRANSP:TRANSPARENT
+END:VEVENT
+BEGIN:VEVENT
+UID:event-busy@google.com
+DTSTART:20261006T040000Z
+DTEND:20261006T050000Z
+SUMMARY:Busy Meeting
+TRANSP:OPAQUE
+END:VEVENT
+END:VCALENDAR`
+
+	tmpDir := t.TempDir()
+	icsPath := writeTempFile(t, tmpDir, "transp.ics", []byte(icsContent))
+
+	// Without flag: both are present and transparent is flagged
+	var stdout1, stderr1 bytes.Buffer
+	code1 := run(context.Background(), []string{"-file", icsPath, "-date", "2026-10-06", "-no-cache"}, &stdout1, &stderr1)
+	if code1 != 0 {
+		t.Fatalf("expected code 0, got %d", code1)
+	}
+	out1 := stdout1.String()
+	if !strings.Contains(out1, "Transparent Reminder") || !strings.Contains(out1, `"transparent": true`) {
+		t.Errorf("expected transparent event to be flagged with transparent: true, got: %s", out1)
+	}
+
+	// With -skip-transparent flag: transparent is omitted
+	var stdout2, stderr2 bytes.Buffer
+	code2 := run(context.Background(), []string{"-file", icsPath, "-date", "2026-10-06", "-skip-transparent", "-no-cache"}, &stdout2, &stderr2)
+	if code2 != 0 {
+		t.Fatalf("expected code 0, got %d", code2)
+	}
+	out2 := stdout2.String()
+	if strings.Contains(out2, "Transparent Reminder") {
+		t.Errorf("expected transparent event to be skipped with -skip-transparent, got: %s", out2)
+	}
+	if !strings.Contains(out2, "Busy Meeting") {
+		t.Errorf("expected busy meeting in output, got: %s", out2)
+	}
 }
 
 func TestRun_SuccessEntryMarkdown(t *testing.T) {

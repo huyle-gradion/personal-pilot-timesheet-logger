@@ -25,6 +25,7 @@ const (
 	MaxDateLengthBytes     int           = 32               // 32 bytes maximum date argument length
 	MaxTimezoneLengthBytes int           = 64               // 64 bytes maximum timezone name length
 	MaxFormatLengthBytes   int           = 16               // 16 bytes maximum format argument length
+	MaxEmailLengthBytes    int           = 256              // 256 bytes maximum email argument length
 	CommandTimeoutDuration time.Duration = 30 * time.Second // 30s overall command execution deadline
 )
 
@@ -55,12 +56,14 @@ const (
 
 // Config represents validated CLI options.
 type Config struct {
-	Source   string
-	Date     string
-	Timezone string
-	Format   string
-	Minified bool
-	NoCache  bool
+	Source          string
+	Date            string
+	Timezone        string
+	Format          string
+	Minified        bool
+	NoCache         bool
+	UserEmail       string
+	SkipTransparent bool
 }
 
 // loadEnv loads environment variables from path with bounded size and symlink checks.
@@ -120,6 +123,8 @@ func parseConfig(args []string, stderr io.Writer) (*Config, int, error) {
 	formatFlag := fs.String("format", "json", "Output format: 'json' (default Simple Entry array) or 'entry' (Section 3.2 markdown)")
 	minifiedFlag := fs.Bool("minified", false, "Output single-line JSON without indentation")
 	noCacheFlag := fs.Bool("no-cache", false, "Bypass cached .ics file")
+	userEmailFlag := fs.String("user-email", "", "Calendar user email to filter declined invitations (defaults to GCAL_USER_EMAIL or URL path)")
+	skipTransparentFlag := fs.Bool("skip-transparent", false, "Filter out transparent (available/free) calendar events")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, 2, err
@@ -146,6 +151,20 @@ func parseConfig(args []string, stderr io.Writer) (*Config, int, error) {
 		return nil, 1, fmt.Errorf("[%s] format length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxFormatLengthBytes)
 	}
 
+	userEmail := strings.TrimSpace(*userEmailFlag)
+	if userEmail == "" {
+		userEmail = strings.TrimSpace(os.Getenv("GCAL_USER_EMAIL"))
+	}
+	if userEmail == "" {
+		userEmail = strings.TrimSpace(os.Getenv("USER_EMAIL"))
+	}
+	if userEmail == "" {
+		userEmail = calendar.ExtractEmailFromICSURL(source)
+	}
+	if len(userEmail) > MaxEmailLengthBytes {
+		return nil, 1, fmt.Errorf("[%s] user email length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxEmailLengthBytes)
+	}
+
 	if *formatFlag != "json" && *formatFlag != "entry" {
 		return nil, 1, fmt.Errorf("[%s] invalid format %q, allowed options: 'json', 'entry'", ErrCodeInvalidFormat, *formatFlag)
 	}
@@ -154,13 +173,22 @@ func parseConfig(args []string, stderr io.Writer) (*Config, int, error) {
 		return nil, 1, fmt.Errorf("[%s] no iCal source provided. Set GCAL_ICS_URL or pass -url or -file", ErrCodeMissingSource)
 	}
 
+	skipTransparent := *skipTransparentFlag
+	if !skipTransparent {
+		if envVal := os.Getenv("GCAL_SKIP_TRANSPARENT"); envVal == "1" || strings.EqualFold(envVal, "true") {
+			skipTransparent = true
+		}
+	}
+
 	return &Config{
-		Source:   source,
-		Date:     *dateFlag,
-		Timezone: *tzFlag,
-		Format:   *formatFlag,
-		Minified: *minifiedFlag,
-		NoCache:  *noCacheFlag,
+		Source:          source,
+		Date:            *dateFlag,
+		Timezone:        *tzFlag,
+		Format:          *formatFlag,
+		Minified:        *minifiedFlag,
+		NoCache:         *noCacheFlag,
+		UserEmail:       userEmail,
+		SkipTransparent: skipTransparent,
 	}, 0, nil
 }
 
@@ -209,7 +237,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	entries, err := calendar.ParseCalendarEvents(icsData, targetDate, loc)
+	entries, err := calendar.ParseCalendarEventsWithOptions(icsData, calendar.ParseOptions{
+		TargetDate:      targetDate,
+		Location:        loc,
+		UserEmail:       cfg.UserEmail,
+		SkipTransparent: cfg.SkipTransparent,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1

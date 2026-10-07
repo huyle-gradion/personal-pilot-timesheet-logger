@@ -32,6 +32,7 @@ const (
 	MaxSummaryLengthBytes     int           = 512               // Maximum event summary length
 	MaxDescriptionLengthBytes int           = 4096              // Maximum event description length
 	MaxPRMatchesCount         int           = 50                // Maximum PRs matched per event
+	MaxEmailLengthBytes       int           = 256               // Maximum user email length
 )
 
 // Fixed assertion invariant identifiers (TigerStyle).
@@ -91,6 +92,7 @@ func RedactURL(rawURL string) string {
 
 // SimpleEntry represents a standardized timesheet entry conforming to Section 3.2.
 type SimpleEntry struct {
+	ID          string         `json:"id,omitempty"`
 	Date        string         `json:"date"`
 	StartTime   string         `json:"start_time"`
 	EndTime     string         `json:"end_time"`
@@ -111,6 +113,15 @@ type EntryMetadata struct {
 	DurationMinutes int     `json:"duration_minutes"`
 	AllDay          bool    `json:"all_day"`
 	Location        *string `json:"location,omitempty"`
+	Transparent     bool    `json:"transparent,omitempty"`
+}
+
+// ParseOptions controls filtering and parsing parameters for calendar feeds.
+type ParseOptions struct {
+	TargetDate      time.Time
+	Location        *time.Location
+	UserEmail       string
+	SkipTransparent bool
 }
 
 // ExtractPRs finds up to MaxPRMatchesCount distinct '#<num>' occurrences in text.
@@ -354,11 +365,263 @@ func writeCacheFile(path string, data []byte) error {
 	return os.Rename(tmpPath, path)
 }
 
+// NormalizeEmail cleans an email address by stripping mailto:, brackets, whitespace, and lowercasing.
+func NormalizeEmail(email string) string {
+	s := strings.TrimSpace(strings.ToLower(email))
+	s = strings.TrimPrefix(s, "mailto:")
+	s = strings.Trim(s, "<>")
+	return strings.TrimSpace(s)
+}
+
+// ExtractEmailFromICSURL retrieves the calendar owner email from Google Calendar private URL path.
+func ExtractEmailFromICSURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(u.Path, "/")
+	for i, part := range parts {
+		if strings.EqualFold(part, "ical") && i+1 < len(parts) {
+			candidate, err := url.PathUnescape(parts[i+1])
+			if err == nil && strings.Contains(candidate, "@") {
+				return NormalizeEmail(candidate)
+			}
+		}
+	}
+	return ""
+}
+
+// extractCalendarOwnerEmail checks X-WR-CALNAME property for an email.
+func extractCalendarOwnerEmail(cal *ics.Calendar) string {
+	if cal == nil {
+		return ""
+	}
+	for _, prop := range cal.CalendarProperties {
+		if strings.EqualFold(prop.IANAToken, "X-WR-CALNAME") {
+			val := strings.TrimSpace(prop.Value)
+			if strings.Contains(val, "@") {
+				return NormalizeEmail(val)
+			}
+		}
+	}
+	return ""
+}
+
+// IsEventDeclinedByUser returns true if the attendee corresponding to userEmail has PARTSTAT=DECLINED.
+func IsEventDeclinedByUser(event *ics.VEvent, userEmail string) bool {
+	attendees := event.Attendees()
+	if len(attendees) == 0 {
+		return false
+	}
+
+	normUser := NormalizeEmail(userEmail)
+
+	for _, att := range attendees {
+		isDeclined := strings.EqualFold(string(att.ParticipationStatus()), string(ics.ParticipationStatusDeclined))
+		if !isDeclined {
+			if partstat, ok := att.ICalParameters["PARTSTAT"]; ok && len(partstat) > 0 {
+				if strings.EqualFold(partstat[0], "DECLINED") {
+					isDeclined = true
+				}
+			}
+		}
+
+		if !isDeclined {
+			continue
+		}
+
+		attEmail := NormalizeEmail(att.Email())
+		if attEmail == "" {
+			attEmail = NormalizeEmail(att.Value)
+		}
+
+		if normUser != "" {
+			if attEmail == normUser {
+				return true
+			}
+		} else if len(attendees) == 1 {
+			return true
+		}
+	}
+
+	return false
+}
+
+type exDateItem struct {
+	time       time.Time
+	isDateOnly bool
+}
+
+// getEventExDates extracts all EXDATE timestamps and flags date-only exclusions with timezone awareness.
+func getEventExDates(event *ics.VEvent) []exDateItem {
+	var items []exDateItem
+	for _, prop := range event.GetProperties(ics.ComponentPropertyExdate) {
+		isDateOnly := false
+		if vals, ok := prop.ICalParameters["VALUE"]; ok {
+			for _, val := range vals {
+				if strings.EqualFold(val, "DATE") {
+					isDateOnly = true
+					break
+				}
+			}
+		}
+		var propLoc *time.Location
+		if tzidVals, ok := prop.ICalParameters["TZID"]; ok && len(tzidVals) > 0 {
+			if l, err := time.LoadLocation(tzidVals[0]); err == nil {
+				propLoc = l
+			}
+		}
+		for _, v := range strings.Split(prop.Value, ",") {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			itemDateOnly := isDateOnly
+			if len(v) == 8 && !strings.Contains(v, "T") {
+				itemDateOnly = true
+			}
+			for _, layout := range []string{
+				"20060102T150405Z",
+				"20060102T150405",
+				"20060102",
+				time.RFC3339,
+			} {
+				var t time.Time
+				var parseErr error
+				if propLoc != nil && !strings.HasSuffix(v, "Z") {
+					t, parseErr = time.ParseInLocation(layout, v, propLoc)
+				} else {
+					t, parseErr = time.Parse(layout, v)
+				}
+				if parseErr == nil {
+					items = append(items, exDateItem{
+						time:       t.UTC(),
+						isDateOnly: itemDateOnly,
+					})
+					break
+				}
+			}
+		}
+	}
+	return items
+}
+
+// getEventUID returns the unique ID of an event.
+func getEventUID(event *ics.VEvent) string {
+	if prop := event.GetProperty(ics.ComponentPropertyUniqueId); prop != nil {
+		if val := strings.TrimSpace(prop.Value); val != "" {
+			return val
+		}
+	}
+	return strings.TrimSpace(event.Id())
+}
+
+// collectRecurrenceExceptions finds any VEVENT with a RECURRENCE-ID to exclude that instance from the master RRULE.
+func collectRecurrenceExceptions(cal *ics.Calendar) map[string][]exDateItem {
+	exceptions := make(map[string][]exDateItem)
+	for _, event := range cal.Events() {
+		prop := event.GetProperty(ics.ComponentPropertyRecurrenceId)
+		if prop != nil {
+			uid := getEventUID(event)
+			if uid == "" {
+				continue
+			}
+			isDateOnly := false
+			if vals, ok := prop.ICalParameters["VALUE"]; ok {
+				for _, val := range vals {
+					if strings.EqualFold(val, "DATE") {
+						isDateOnly = true
+						break
+					}
+				}
+			}
+			var propLoc *time.Location
+			if tzidVals, ok := prop.ICalParameters["TZID"]; ok && len(tzidVals) > 0 {
+				if l, err := time.LoadLocation(tzidVals[0]); err == nil {
+					propLoc = l
+				}
+			}
+			recID, err := event.GetRecurrenceID()
+			if err == nil {
+				exceptions[uid] = append(exceptions[uid], exDateItem{
+					time:       recID.UTC(),
+					isDateOnly: isDateOnly,
+				})
+			} else {
+				v := strings.TrimSpace(prop.Value)
+				itemDateOnly := isDateOnly
+				if len(v) == 8 && !strings.Contains(v, "T") {
+					itemDateOnly = true
+				}
+				for _, layout := range []string{
+					"20060102T150405Z",
+					"20060102T150405",
+					"20060102",
+					time.RFC3339,
+				} {
+					var t time.Time
+					var parseErr error
+					if propLoc != nil && !strings.HasSuffix(v, "Z") {
+						t, parseErr = time.ParseInLocation(layout, v, propLoc)
+					} else {
+						t, parseErr = time.Parse(layout, v)
+					}
+					if parseErr == nil {
+						exceptions[uid] = append(exceptions[uid], exDateItem{
+							time:       t.UTC(),
+							isDateOnly: itemDateOnly,
+						})
+						break
+					}
+				}
+			}
+		}
+	}
+	return exceptions
+}
+
+// isOccurrenceExcluded checks if an occurrence matches any EXDATE or RECURRENCE-ID exception.
+func isOccurrenceExcluded(occUTC time.Time, isAllDay bool, exDates []exDateItem, loc *time.Location) bool {
+	for _, ex := range exDates {
+		if ex.isDateOnly || isAllDay {
+			if loc != nil {
+				occLoc := occUTC.In(loc)
+				exLoc := ex.time.In(loc)
+				if exLoc.Year() == occLoc.Year() &&
+					exLoc.Month() == occLoc.Month() &&
+					exLoc.Day() == occLoc.Day() {
+					return true
+				}
+			}
+			if ex.time.UTC().Year() == occUTC.UTC().Year() &&
+				ex.time.UTC().Month() == occUTC.UTC().Month() &&
+				ex.time.UTC().Day() == occUTC.UTC().Day() {
+				return true
+			}
+		} else if ex.time.UTC().Truncate(time.Minute).Equal(occUTC.UTC().Truncate(time.Minute)) {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseCalendarEvents parses iCal data and maps events into SimpleEntry records for targetDate.
+// Preserved for backward compatibility, delegating to ParseCalendarEventsWithOptions.
 func ParseCalendarEvents(icsData []byte, targetDate time.Time, loc *time.Location) ([]SimpleEntry, error) {
+	return ParseCalendarEventsWithOptions(icsData, ParseOptions{
+		TargetDate: targetDate,
+		Location:   loc,
+	})
+}
+
+// ParseCalendarEventsWithOptions parses iCal data with configurable filtering options.
+func ParseCalendarEventsWithOptions(icsData []byte, opts ParseOptions) ([]SimpleEntry, error) {
 	// Assert invariants (programmer contract)
-	Assert(loc != nil, AssertLocationNil)
-	Assert(!targetDate.IsZero(), AssertDateZero)
+	Assert(opts.Location != nil, AssertLocationNil)
+	Assert(!opts.TargetDate.IsZero(), AssertDateZero)
 
 	cal, err := ics.ParseCalendar(strings.NewReader(string(icsData)))
 	if err != nil {
@@ -369,14 +632,52 @@ func ParseCalendarEvents(icsData []byte, targetDate time.Time, loc *time.Locatio
 		}
 	}
 
+	targetDate := opts.TargetDate
+	loc := opts.Location
+
+	userEmail := strings.TrimSpace(opts.UserEmail)
+	if userEmail == "" {
+		userEmail = extractCalendarOwnerEmail(cal)
+	}
+
 	startOfDay := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, loc)
 	endOfDay := startOfDay.AddDate(0, 0, 1)
+
+	// Collect exception events with RECURRENCE-ID to exclude modified/cancelled occurrences from master RRULE
+	recurrenceExceptions := collectRecurrenceExceptions(cal)
 
 	var entries []SimpleEntry
 
 	for _, event := range cal.Events() {
 		if len(entries) >= MaxParsedEventsCount {
 			break
+		}
+
+		// Skip cancelled events (RFC 5545 STATUS:CANCELLED)
+		statusProp := event.GetProperty(ics.ComponentPropertyStatus)
+		if statusProp != nil && strings.EqualFold(strings.TrimSpace(statusProp.Value), "CANCELLED") {
+			continue
+		}
+
+		// Skip declined events for the user (RFC 5545 PARTSTAT=DECLINED)
+		if IsEventDeclinedByUser(event, userEmail) {
+			continue
+		}
+
+		// Check transparency (RFC 5545 TRANSP:TRANSPARENT)
+		transpProp := event.GetProperty(ics.ComponentPropertyTransp)
+		isTransparent := false
+		if transpProp != nil && strings.EqualFold(strings.TrimSpace(transpProp.Value), "TRANSPARENT") {
+			isTransparent = true
+		}
+		if opts.SkipTransparent && isTransparent {
+			continue
+		}
+
+		// Stable event ID (RFC 5545 UID -> gcal-<UID>)
+		var entryID string
+		if rawUID := getEventUID(event); rawUID != "" {
+			entryID = fmt.Sprintf("gcal-%s", rawUID)
 		}
 
 		summaryProp := event.GetProperty(ics.ComponentPropertySummary)
@@ -442,7 +743,19 @@ func ParseCalendarEvents(icsData []byte, targetDate time.Time, loc *time.Locatio
 			if err == nil {
 				rule.DTStart(startAt.UTC())
 				utcOccurrences := rule.Between(startOfDay.UTC().Add(-24*time.Hour), endOfDay.UTC().Add(24*time.Hour), true)
+
+				// Collect EXDATE exceptions and RECURRENCE-ID exceptions
+				exDates := getEventExDates(event)
+				if rawUID := getEventUID(event); rawUID != "" {
+					if recItems, ok := recurrenceExceptions[rawUID]; ok {
+						exDates = append(exDates, recItems...)
+					}
+				}
+
 				for _, occ := range utcOccurrences {
+					if isOccurrenceExcluded(occ, isAllDay, exDates, loc) {
+						continue
+					}
 					occStart := occ.In(loc)
 					occEnd := occStart.Add(duration)
 					if occStart.Before(endOfDay) && occEnd.After(startOfDay) {
@@ -494,6 +807,7 @@ func ParseCalendarEvents(icsData []byte, targetDate time.Time, loc *time.Locatio
 
 			calTitle := summary
 			entries = append(entries, SimpleEntry{
+				ID:          entryID,
 				Date:        targetDate.Format("2006-01-02"),
 				StartTime:   startTimeStr,
 				EndTime:     endTimeStr,
@@ -509,6 +823,7 @@ func ParseCalendarEvents(icsData []byte, targetDate time.Time, loc *time.Locatio
 					DurationMinutes: durMins,
 					AllDay:          isAllDay,
 					Location:        locationPtr,
+					Transparent:     isTransparent,
 				},
 			})
 		}
