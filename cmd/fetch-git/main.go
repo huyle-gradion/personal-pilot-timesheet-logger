@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -23,8 +24,12 @@ const (
 	MaxEnvFileSizeBytes    int64         = 64 * 1024
 	MaxEnvLineLengthBytes  int           = 2048
 	MaxDateLengthBytes     int           = 32
+	MaxTimezoneLengthBytes int           = 64
 	MaxReposLengthBytes    int           = 4096
 	MaxAuthorLengthBytes   int           = 256
+	MaxTokenLengthBytes    int           = 256
+	MaxURLLengthBytes      int           = 2048
+	MaxPathLengthBytes     int           = 4096
 	CommandTimeoutDuration time.Duration = 60 * time.Second
 )
 
@@ -61,6 +66,7 @@ type SimpleEntry struct {
 // Config holds parsed CLI configuration.
 type Config struct {
 	Date          string
+	Timezone      string
 	Repos         string
 	Author        string
 	Token         string
@@ -113,6 +119,7 @@ func parseFlags(args []string, stderr io.Writer) (*Config, int, error) {
 
 	today := time.Now().Format("2006-01-02")
 	dateFlag := fs.String("date", today, "Target date YYYY-MM-DD (default: today)")
+	tzFlag := fs.String("tz", "", "Timezone for target date (e.g. Asia/Ho_Chi_Minh; default: local)")
 	reposFlag := fs.String("repos", "", "Comma-separated repositories: 'owner/repo' or local directory paths (default: TRACKED_REPOS or '.')")
 	authorFlag := fs.String("author", "", "Author username or email to filter commits (default: GIT_AUTHOR or GITHUB_USER)")
 	tokenFlag := fs.String("token", "", "GitHub Personal Access Token (default: GITHUB_TOKEN or GH_TOKEN)")
@@ -126,11 +133,23 @@ func parseFlags(args []string, stderr io.Writer) (*Config, int, error) {
 	if len(*dateFlag) > MaxDateLengthBytes {
 		return nil, ExitUsage, fmt.Errorf("date length exceeds limit of %d bytes", MaxDateLengthBytes)
 	}
+	if len(*tzFlag) > MaxTimezoneLengthBytes {
+		return nil, ExitUsage, fmt.Errorf("timezone length exceeds limit of %d bytes", MaxTimezoneLengthBytes)
+	}
 	if len(*reposFlag) > MaxReposLengthBytes {
 		return nil, ExitUsage, fmt.Errorf("repos length exceeds limit of %d bytes", MaxReposLengthBytes)
 	}
 	if len(*authorFlag) > MaxAuthorLengthBytes {
 		return nil, ExitUsage, fmt.Errorf("author length exceeds limit of %d bytes", MaxAuthorLengthBytes)
+	}
+	if len(*tokenFlag) > MaxTokenLengthBytes {
+		return nil, ExitUsage, fmt.Errorf("token length exceeds limit of %d bytes", MaxTokenLengthBytes)
+	}
+	if len(*baseURLFlag) > MaxURLLengthBytes {
+		return nil, ExitUsage, fmt.Errorf("github-base-url length exceeds limit of %d bytes", MaxURLLengthBytes)
+	}
+	if len(*envFlag) > MaxPathLengthBytes {
+		return nil, ExitUsage, fmt.Errorf("env path length exceeds limit of %d bytes", MaxPathLengthBytes)
 	}
 
 	repos := *reposFlag
@@ -164,6 +183,7 @@ func parseFlags(args []string, stderr io.Writer) (*Config, int, error) {
 
 	return &Config{
 		Date:          *dateFlag,
+		Timezone:      *tzFlag,
 		Repos:         repos,
 		Author:        author,
 		Token:         token,
@@ -177,6 +197,23 @@ func isDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
+func maskPath(p string) string {
+	if strings.HasPrefix(p, "/") {
+		return ".../" + filepath.Base(p)
+	}
+	return p
+}
+
+func sanitizeSlugForID(repo string) string {
+	r := strings.ReplaceAll(repo, "/", "-")
+	r = strings.ReplaceAll(r, ".", "")
+	r = strings.Trim(r, "-")
+	if r == "" {
+		return "local"
+	}
+	return r
+}
+
 func resolveRepoForTier1(ctx context.Context, repo string) string {
 	if repo == "." || strings.HasPrefix(repo, "/") || strings.HasPrefix(repo, "./") || isDir(repo) {
 		collector := git.NewLocalGitCollector(repo)
@@ -188,9 +225,18 @@ func resolveRepoForTier1(ctx context.Context, repo string) string {
 	return repo
 }
 
+func isLocalRepoMatchingRemote(ctx context.Context, localPath, targetRepoSlug string) bool {
+	collector := git.NewLocalGitCollector(localPath)
+	localSlug := collector.RepoName(ctx)
+	if localSlug == "" {
+		return false
+	}
+	return localSlug == targetRepoSlug || strings.HasSuffix(localSlug, "/"+targetRepoSlug) || strings.HasSuffix(targetRepoSlug, "/"+localSlug)
+}
+
 // deduplicateActivity groups commits belonging to PR branches under their parent PR entry.
 // Unparented commits become separate SimpleEntry records. Guarantees zero double-counting.
-func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitHubPR, fallback bool) []SimpleEntry {
+func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitHubPR, fallback bool, targetDate time.Time) []SimpleEntry {
 	claimedCommits := make(map[string]bool)
 	prCommits := make(map[int][]git.GitHubCommit)
 
@@ -208,7 +254,7 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 
 	// Match commits to PRs:
 	// 1. By commit SHA listed in PR
-	// 2. By PR reference in commit message (#<num>, GH-<num>, pull/<num>, PR-<num>)
+	// 2. By PR reference in commit message
 	for _, c := range commits {
 		matchedPR := 0
 
@@ -225,11 +271,11 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 			}
 		}
 
-		// Check message reference match
+		// Check message reference match with sorted keys to avoid map iteration randomness
 		if matchedPR == 0 {
-			collector := git.NewLocalGitCollector(".")
-			groups := collector.DiscoverPRReferences([]git.GitHubCommit{c})
-			for prNum := range groups {
+			prNums := git.ExtractPRReferences(c.Message)
+			sort.Ints(prNums)
+			for _, prNum := range prNums {
 				for _, pr := range prs {
 					if pr.Number == prNum {
 						matchedPR = prNum
@@ -249,6 +295,7 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 	}
 
 	var entries []SimpleEntry
+	repoSlug := sanitizeSlugForID(repo)
 
 	// Sort PRs deterministically by number
 	sortedPRs := make([]git.GitHubPR, len(prs))
@@ -256,6 +303,13 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 	sort.Slice(sortedPRs, func(i, j int) bool {
 		return sortedPRs[i].Number < sortedPRs[j].Number
 	})
+
+	loc := targetDate.Location()
+	if loc == nil {
+		loc = time.Local
+	}
+	startOfDay := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, loc).Format(time.RFC3339)
+	endOfDay := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 23, 59, 59, 999999999, loc).Format(time.RFC3339)
 
 	for _, pr := range sortedPRs {
 		cList := prCommits[pr.Number]
@@ -269,9 +323,8 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 			startTime = cList[0].Timestamp.Format(time.RFC3339)
 			endTime = cList[len(cList)-1].Timestamp.Format(time.RFC3339)
 		} else {
-			nowStr := time.Now().Format(time.RFC3339)
-			startTime = nowStr
-			endTime = nowStr
+			startTime = startOfDay
+			endTime = endOfDay
 		}
 
 		// Title formatting
@@ -328,7 +381,7 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 		}
 
 		entries = append(entries, SimpleEntry{
-			ID:          fmt.Sprintf("git-pr-%d", pr.Number),
+			ID:          fmt.Sprintf("git-pr-%s-%d", repoSlug, pr.Number),
 			Source:      "git",
 			Timestamp:   startTime,
 			EndTime:     endTime,
@@ -338,8 +391,7 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 		})
 	}
 
-	// Process unparented commits: commits not attached to any PR
-	// Sort chronologically
+	// Process unparented commits
 	var unparented []git.GitHubCommit
 	for _, c := range commits {
 		if !claimedCommits[c.SHA] {
@@ -365,7 +417,7 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 		}
 
 		entries = append(entries, SimpleEntry{
-			ID:          fmt.Sprintf("git-commit-%s", short),
+			ID:          fmt.Sprintf("git-commit-%s-%s", repoSlug, short),
 			Source:      "git",
 			Timestamp:   c.Timestamp.Format(time.RFC3339),
 			EndTime:     c.Timestamp.Format(time.RFC3339),
@@ -379,8 +431,9 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 }
 
 func redact(s, token string) string {
-	if token != "" && len(token) > 4 {
-		s = strings.ReplaceAll(s, token, "[REDACTED]")
+	tok := strings.TrimSpace(token)
+	if tok != "" {
+		s = strings.ReplaceAll(s, tok, "[REDACTED]")
 	}
 	return s
 }
@@ -390,13 +443,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	Assert(stdout != nil, AssertWritersNonNil)
 	Assert(stderr != nil, AssertWritersNonNil)
 
+	runCtx, runCancel := context.WithTimeout(ctx, CommandTimeoutDuration)
+	defer runCancel()
+
 	cfg, exitCode, err := parseFlags(args, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error parsing flags: %v\n", err)
 		return exitCode
 	}
 
-	_ = loadEnv(cfg.EnvFile)
+	if err := loadEnv(cfg.EnvFile); err != nil {
+		fmt.Fprintf(stderr, "Warning: failed loading env file: %v\n", err)
+	}
 
 	// Re-check env vars in case .env populated them
 	if cfg.Token == "" {
@@ -421,7 +479,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	// 1. Preflight check (ADR-005)
-	preflight := git.CheckPreflight(ctx, cfg.Token, rawRepos)
+	preflight := git.CheckPreflight(runCtx, cfg.Token, rawRepos)
 	if !preflight.Ready {
 		fmt.Fprintf(stderr, "Pre-flight check failed:\n%s\n", preflight.Guide)
 		return ExitUsage
@@ -429,59 +487,84 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	token := preflight.Token
 
-	// Parse date
-	targetDate, err := time.Parse("2006-01-02", cfg.Date)
+	// Parse date with timezone support
+	var loc *time.Location
+	if cfg.Timezone != "" {
+		var tzErr error
+		loc, tzErr = time.LoadLocation(cfg.Timezone)
+		if tzErr != nil {
+			fmt.Fprintf(stderr, "Error: invalid timezone %q: %v\n", cfg.Timezone, tzErr)
+			return ExitUsage
+		}
+	} else {
+		loc = time.Local
+	}
+
+	targetDate, err := time.ParseInLocation("2006-01-02", cfg.Date, loc)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: invalid target date %q: expected YYYY-MM-DD\n", cfg.Date)
 		return ExitUsage
 	}
 
+	// Client reuse: instantiate GitHubClient once before the repository loop
+	client := git.NewGitHubClient(token, git.HTTPRequestTimeoutSeconds)
+	if cfg.Author != "" {
+		client.SetAuthor(cfg.Author)
+	}
+	if cfg.GitHubBaseURL != "" {
+		client.SetBaseURL(cfg.GitHubBaseURL)
+	}
+
 	var allEntries []SimpleEntry
+	successCount := 0
 
 	for _, repo := range rawRepos {
-		tier1Repo := resolveRepoForTier1(ctx, repo)
+		tier1Repo := resolveRepoForTier1(runCtx, repo)
 
 		// 2. Resilient Two-Tier Collection (ADR-002)
-		// Try Tier 1: GitHub REST API
-		client := git.NewGitHubClient(token, git.HTTPRequestTimeoutSeconds)
-		if cfg.Author != "" {
-			client.SetAuthor(cfg.Author)
-		}
-		if cfg.GitHubBaseURL != "" {
-			client.SetBaseURL(cfg.GitHubBaseURL)
-		}
-
 		var commits []git.GitHubCommit
 		var prs []git.GitHubPR
 		var usedFallback bool
 
-		commits, prs, err = client.FetchDayActivity(ctx, tier1Repo, targetDate)
+		commits, prs, err = client.FetchDayActivity(runCtx, tier1Repo, targetDate)
 		if err != nil {
-			// Tier 1 failure: rate limit, 5xx, network drop, or missing repo on GitHub
-			warnMsg := redact(fmt.Sprintf("Warning: Tier 1 GitHub API failed for repo %q: %v; activating Tier 2 local git fallback", repo, err), token)
+			warnMsg := redact(fmt.Sprintf("Warning: Tier 1 GitHub API failed for repo %q: %v; activating Tier 2 local git fallback", maskPath(repo), err), token)
 			fmt.Fprintln(stderr, warnMsg)
 			usedFallback = true
 
 			// Tier 2: Local Git Collector
 			localPath := repo
 			if !isDir(localPath) {
-				if isDir(".") {
+				if isDir(".") && isLocalRepoMatchingRemote(runCtx, ".", tier1Repo) {
 					localPath = "."
+				} else {
+					errMsg := redact(fmt.Sprintf("Error: skipping Tier 2 local fallback for repo %q: local directory does not match remote repository", maskPath(repo)), token)
+					fmt.Fprintln(stderr, errMsg)
+					continue
 				}
 			}
 
 			localCollector := git.NewLocalGitCollector(localPath)
-			commits, prs, err = localCollector.FetchDayActivity(ctx, cfg.Author, targetDate)
+			repoAuthor := cfg.Author
+			if repoAuthor == "" {
+				repoAuthor = localCollector.Author(runCtx)
+			}
+			commits, prs, err = localCollector.FetchDayActivity(runCtx, repoAuthor, targetDate)
 			if err != nil {
-				errMsg := redact(fmt.Sprintf("Error: Tier 2 local git collector failed for repo %q: %v", repo, err), token)
+				errMsg := redact(fmt.Sprintf("Error: Tier 2 local git collector failed for repo %q: %v", maskPath(repo), err), token)
 				fmt.Fprintln(stderr, errMsg)
 				continue
 			}
 		}
 
 		// 3. Deduplication: attach commits to parent PRs, unparented commits become standalone
-		entries := deduplicateActivity(repo, commits, prs, usedFallback)
+		entries := deduplicateActivity(tier1Repo, commits, prs, usedFallback, targetDate)
 		allEntries = append(allEntries, entries...)
+		successCount++
+	}
+
+	if len(rawRepos) > 0 && successCount == 0 {
+		return ExitErr
 	}
 
 	if allEntries == nil {

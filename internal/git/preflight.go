@@ -3,9 +3,11 @@ package git
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -23,13 +25,30 @@ func probeGHAuthToken(ctx context.Context) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(probeCtx, "gh", "auth", "token")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil // Suppress stderr output from gh
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil && cmd.Process.Pid > 0 {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			time.Sleep(50 * time.Millisecond)
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	cmd.WaitDelay = time.Second
 
-	if err := cmd.Run(); err != nil {
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
 		return "", err
 	}
+	cmd.Stderr = nil // Suppress stderr output from gh
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	var stdout bytes.Buffer
+	_, _ = io.Copy(&stdout, io.LimitReader(stdoutPipe, 4096))
+	_ = cmd.Wait()
 
 	tok := strings.TrimSpace(stdout.String())
 	return tok, nil

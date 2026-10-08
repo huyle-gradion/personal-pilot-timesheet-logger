@@ -103,6 +103,7 @@ func TestFlagDefaultsAndEnvPrecedence(t *testing.T) {
 		"-repos=custom/repo",
 		"-token=flag-token",
 		"-author=flag-author",
+		"-tz=Asia/Ho_Chi_Minh",
 	}
 	cfg, code, err = parseFlags(args, &stderr)
 	if err != nil || code != ExitOK {
@@ -110,6 +111,9 @@ func TestFlagDefaultsAndEnvPrecedence(t *testing.T) {
 	}
 	if cfg.Date != "2026-10-01" {
 		t.Errorf("expected flag date, got %q", cfg.Date)
+	}
+	if cfg.Timezone != "Asia/Ho_Chi_Minh" {
+		t.Errorf("expected flag timezone, got %q", cfg.Timezone)
 	}
 	if cfg.Repos != "custom/repo" {
 		t.Errorf("expected flag repos, got %q", cfg.Repos)
@@ -119,6 +123,31 @@ func TestFlagDefaultsAndEnvPrecedence(t *testing.T) {
 	}
 	if cfg.Author != "flag-author" {
 		t.Errorf("expected flag author, got %q", cfg.Author)
+	}
+}
+
+func TestFlagBounds(t *testing.T) {
+	var stderr bytes.Buffer
+
+	// Oversized token
+	longToken := strings.Repeat("a", MaxTokenLengthBytes+1)
+	_, code, err := parseFlags([]string{"-token=" + longToken}, &stderr)
+	if code != ExitUsage || err == nil {
+		t.Errorf("expected ExitUsage on oversized token, got code %d, err %v", code, err)
+	}
+
+	// Oversized baseURL
+	longURL := strings.Repeat("u", MaxURLLengthBytes+1)
+	_, code, err = parseFlags([]string{"-github-base-url=" + longURL}, &stderr)
+	if code != ExitUsage || err == nil {
+		t.Errorf("expected ExitUsage on oversized url, got code %d, err %v", code, err)
+	}
+
+	// Oversized env path
+	longPath := strings.Repeat("p", MaxPathLengthBytes+1)
+	_, code, err = parseFlags([]string{"-env=" + longPath}, &stderr)
+	if code != ExitUsage || err == nil {
+		t.Errorf("expected ExitUsage on oversized env, got code %d, err %v", code, err)
 	}
 }
 
@@ -194,34 +223,34 @@ func TestDeduplicationZeroDoubleCounting(t *testing.T) {
 		},
 	}
 
-	entries := deduplicateActivity("test-repo", commits, prs, false)
+	entries := deduplicateActivity("test-repo", commits, prs, false, now)
 
 	// Exactly 3 entries expected: PR 42, PR 99, and standalone commit 3
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
 
-	// Verify PR 42
-	if entries[0].ID != "git-pr-42" {
-		t.Errorf("expected first entry git-pr-42, got %q", entries[0].ID)
+	// Verify PR 42 (ID namespaced with repo slug)
+	if entries[0].ID != "git-pr-test-repo-42" {
+		t.Errorf("expected first entry git-pr-test-repo-42, got %q", entries[0].ID)
 	}
 	pr42Commits, ok := entries[0].Metadata["commits"].([]string)
 	if !ok || len(pr42Commits) != 2 {
 		t.Fatalf("expected 2 commits in PR 42 metadata, got %v", entries[0].Metadata["commits"])
 	}
 
-	// Verify PR 99
-	if entries[1].ID != "git-pr-99" {
-		t.Errorf("expected second entry git-pr-99, got %q", entries[1].ID)
+	// Verify PR 99 (ID namespaced with repo slug)
+	if entries[1].ID != "git-pr-test-repo-99" {
+		t.Errorf("expected second entry git-pr-test-repo-99, got %q", entries[1].ID)
 	}
 	pr99Commits, ok := entries[1].Metadata["commits"].([]string)
 	if !ok || len(pr99Commits) != 1 {
 		t.Fatalf("expected 1 commit in PR 99 metadata, got %v", entries[1].Metadata["commits"])
 	}
 
-	// Verify Standalone Commit 3
-	if entries[2].ID != "git-commit-3333333" {
-		t.Errorf("expected standalone commit git-commit-3333333, got %q", entries[2].ID)
+	// Verify Standalone Commit 3 (ID namespaced with repo slug)
+	if entries[2].ID != "git-commit-test-repo-3333333" {
+		t.Errorf("expected standalone commit git-commit-test-repo-3333333, got %q", entries[2].ID)
 	}
 	if entries[2].Title != "docs: update architecture docs" {
 		t.Errorf("expected standalone commit title, got %q", entries[2].Title)
@@ -229,7 +258,7 @@ func TestDeduplicationZeroDoubleCounting(t *testing.T) {
 
 	// Invariant: Zero double-counting. Commits 1, 2, and 4 must not appear as standalone entries.
 	for _, e := range entries {
-		if e.ID == "git-commit-1111111" || e.ID == "git-commit-2222222" || e.ID == "git-commit-4444444" {
+		if e.ID == "git-commit-test-repo-1111111" || e.ID == "git-commit-test-repo-2222222" || e.ID == "git-commit-test-repo-4444444" {
 			t.Fatalf("double-counting violation: found %s as standalone entry", e.ID)
 		}
 	}
@@ -285,5 +314,66 @@ func TestTier2FallbackOnHTTP429(t *testing.T) {
 		if !ok || warning != "github_api_unavailable_local_fallback" {
 			t.Errorf("expected source_warning 'github_api_unavailable_local_fallback', got: %v", entry.Metadata["source_warning"])
 		}
+	}
+}
+
+func TestAllRepositoriesFailReturnsExitErr(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	var stdout, stderr bytes.Buffer
+
+	// Provide a repo that cannot be resolved locally either
+	args := []string{
+		"-token=test-token",
+		"-repos=nonexistent-org/nonexistent-repo",
+		"-date=2026-10-08",
+		"-github-base-url=" + server.URL,
+	}
+
+	code := run(ctx, args, &stdout, &stderr)
+	if code != ExitErr {
+		t.Fatalf("expected ExitErr (1) when all repositories fail, got: %d", code)
+	}
+}
+
+func TestRedactUniversal(t *testing.T) {
+	cases := []struct {
+		input string
+		token string
+		want  string
+	}{
+		{"bearer ghp_12345", "ghp_12345", "bearer [REDACTED]"},
+		{"key abc", "abc", "key [REDACTED]"},
+		{"empty token", "", "empty token"},
+	}
+
+	for _, tc := range cases {
+		got := redact(tc.input, tc.token)
+		if got != tc.want {
+			t.Errorf("redact(%q, %q) = %q; want %q", tc.input, tc.token, got, tc.want)
+		}
+	}
+}
+
+func TestAssertion_Subprocess(t *testing.T) {
+	if os.Getenv("TEST_ASSERT_GIT_CLI") == "1" {
+		// Trigger invariant assertion
+		run(context.Background(), []string{}, nil, &bytes.Buffer{})
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestAssertion_Subprocess")
+	cmd.Env = append(os.Environ(), "TEST_ASSERT_GIT_CLI=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected subprocess to panic/fail on invariant violation, got success. Output:\n%s", string(out))
+	}
+
+	if !strings.Contains(string(out), AssertWritersNonNil) {
+		t.Errorf("expected invariant ID %q in output, got:\n%s", AssertWritersNonNil, string(out))
 	}
 }

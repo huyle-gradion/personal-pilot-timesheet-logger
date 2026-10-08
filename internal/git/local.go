@@ -19,8 +19,38 @@ import (
 var ErrNotAGitRepository = errors.New("not a git repository")
 
 // Regex to extract PR and issue references from commit messages or branches.
-// Matches #123, GH-123, pull/123, PR-123.
-var prReferenceRegex = regexp.MustCompile(`(?i)(?:#|GH-|pull/|PR-)(\d+)`)
+// Matches #123, GH-123, pull/123, PR-123, issue-123, issue/123.
+var prReferenceRegex = regexp.MustCompile(`(?i)(?:#|GH-|pull/|PR-|issue[-/])(\d+)`)
+
+// ExtractPRReferences extracts unique PR or issue numbers from text.
+func ExtractPRReferences(text string) []int {
+	matches := prReferenceRegex.FindAllStringSubmatch(text, -1)
+	var nums []int
+	seen := make(map[int]bool)
+	for _, m := range matches {
+		if len(m) > 1 {
+			num, err := strconv.Atoi(m[1])
+			if err == nil && num > 0 && !seen[num] {
+				seen[num] = true
+				nums = append(nums, num)
+			}
+		}
+	}
+	return nums
+}
+
+// sanitizeArgs strips absolute path prefixes from command arguments for safe error reporting.
+func sanitizeArgs(args []string) string {
+	sanitized := make([]string, len(args))
+	for i, a := range args {
+		if strings.HasPrefix(a, "/") {
+			sanitized[i] = ".../" + filepath.Base(a)
+		} else {
+			sanitized[i] = a
+		}
+	}
+	return strings.Join(sanitized, " ")
+}
 
 // LocalGitCollector extracts activity directly from a local git repository via git subprocesses.
 type LocalGitCollector struct {
@@ -46,10 +76,12 @@ func (l *LocalGitCollector) execGit(ctx context.Context, args ...string) ([]byte
 	cmd.Dir = l.repoPath
 
 	// Subprocess safety: Setpgid puts the command into a separate process group.
-	// On context cancellation or timeout, kill the entire process group.
+	// On context cancellation or timeout, send SIGTERM, wait 100ms, then escalate to SIGKILL.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil && cmd.Process.Pid > 0 {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			time.Sleep(100 * time.Millisecond)
 			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
 		return nil
@@ -66,9 +98,19 @@ func (l *LocalGitCollector) execGit(ctx context.Context, args ...string) ([]byte
 	if err != nil {
 		stderrStr := stderrBuf.String()
 		if strings.Contains(stderrStr, "not a git repository") {
-			return nil, ErrNotAGitRepository
+			return nil, &OperatingError{
+				Outcome: OutcomeTerminal,
+				Code:    "GIT_ERR_NOT_A_REPO",
+				Message: fmt.Sprintf("directory %s is not a git repository", sanitizeArgs([]string{l.repoPath})),
+				Err:     ErrNotAGitRepository,
+			}
 		}
-		return nil, fmt.Errorf("git %s failed: %w (stderr: %s)", strings.Join(args, " "), err, strings.TrimSpace(stderrStr))
+		return nil, &OperatingError{
+			Outcome: OutcomeTerminal,
+			Code:    "GIT_ERR_LOCAL_EXEC",
+			Message: fmt.Sprintf("git %s failed: %v", sanitizeArgs(args), err),
+			Err:     err,
+		}
 	}
 
 	return stdoutBuf.Bytes(), nil
@@ -81,20 +123,16 @@ type limitedWriter struct {
 }
 
 func (l *limitedWriter) Write(p []byte) (n int, err error) {
-	if l.n >= l.limit {
-		return len(p), nil
+	if l.n+int64(len(p)) > l.limit {
+		return 0, &OperatingError{
+			Outcome: OutcomeTerminal,
+			Code:    "GIT_ERR_CAPACITY_EXCEEDED",
+			Message: fmt.Sprintf("git subprocess output exceeded maximum capacity of %d bytes", l.limit),
+		}
 	}
-	toWrite := p
-	remaining := l.limit - l.n
-	if int64(len(toWrite)) > remaining {
-		toWrite = toWrite[:remaining]
-	}
-	written, err := l.w.Write(toWrite)
+	written, err := l.w.Write(p)
 	l.n += int64(written)
-	if err != nil {
-		return written, err
-	}
-	return len(p), nil
+	return written, err
 }
 
 // RepoName determines the repository slug or name for the local repository.
@@ -125,6 +163,28 @@ func (l *LocalGitCollector) CurrentBranch(ctx context.Context) string {
 	out, err := l.execGit(ctx, "branch", "--show-current")
 	if err == nil {
 		return strings.TrimSpace(string(out))
+	}
+	return ""
+}
+
+// Author resolves the git user email or user name configured for this local repository.
+func (l *LocalGitCollector) Author(ctx context.Context) string {
+	Assert(l != nil, AssertClientNil)
+	Assert(ctx != nil, AssertContextNil)
+
+	out, err := l.execGit(ctx, "config", "--get", "user.email")
+	if err == nil {
+		email := strings.TrimSpace(string(out))
+		if email != "" {
+			return email
+		}
+	}
+	out, err = l.execGit(ctx, "config", "--get", "user.name")
+	if err == nil {
+		name := strings.TrimSpace(string(out))
+		if name != "" {
+			return name
+		}
 	}
 	return ""
 }
@@ -222,14 +282,8 @@ func (l *LocalGitCollector) FetchDayCommits(ctx context.Context, author string, 
 func (l *LocalGitCollector) DiscoverPRReferences(commits []GitHubCommit) map[int][]GitHubCommit {
 	grouped := make(map[int][]GitHubCommit)
 	for _, c := range commits {
-		matches := prReferenceRegex.FindAllStringSubmatch(c.Message, -1)
-		for _, m := range matches {
-			if len(m) > 1 {
-				num, err := strconv.Atoi(m[1])
-				if err == nil && num > 0 {
-					grouped[num] = append(grouped[num], c)
-				}
-			}
+		for _, num := range ExtractPRReferences(c.Message) {
+			grouped[num] = append(grouped[num], c)
 		}
 	}
 	return grouped
@@ -245,6 +299,24 @@ func (l *LocalGitCollector) FetchDayActivity(ctx context.Context, author string,
 	repoName := l.RepoName(ctx)
 	currentBranch := l.CurrentBranch(ctx)
 	prGroups := l.DiscoverPRReferences(commits)
+
+	// If commits lack PR tags in their messages, check if currentBranch contains a PR/issue reference.
+	if len(currentBranch) > 0 {
+		branchPRNums := ExtractPRReferences(currentBranch)
+		for _, bNum := range branchPRNums {
+			if _, exists := prGroups[bNum]; !exists {
+				var unattached []GitHubCommit
+				for _, c := range commits {
+					if len(ExtractPRReferences(c.Message)) == 0 {
+						unattached = append(unattached, c)
+					}
+				}
+				if len(unattached) > 0 {
+					prGroups[bNum] = unattached
+				}
+			}
+		}
+	}
 
 	var prs []GitHubPR
 	for prNum, prCommits := range prGroups {

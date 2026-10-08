@@ -1,11 +1,13 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,5 +146,147 @@ func TestLocalGitCollector_DiscoverPRReferences(t *testing.T) {
 	}
 	if _, exists := groups[0]; exists {
 		t.Errorf("expected no PR 0, got %v", groups[0])
+	}
+}
+
+func TestExecGit_ProcessGroupTerminationOnTimeout(t *testing.T) {
+	repoDir := setupTestGitRepo(t)
+	collector := NewLocalGitCollector(repoDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	time.Sleep(30 * time.Millisecond)
+
+	_, err := collector.execGit(ctx, "log", "--all")
+	if err == nil {
+		t.Fatal("expected error on cancelled context, got nil")
+	}
+
+	var opErr *OperatingError
+	if !errors.As(err, &opErr) {
+		t.Errorf("expected OperatingError, got: %T (%v)", err, err)
+	} else if opErr.Code != "GIT_ERR_LOCAL_EXEC" {
+		t.Errorf("expected code GIT_ERR_LOCAL_EXEC, got: %s", opErr.Code)
+	}
+}
+
+func TestLimitedWriter_CapacityExceeded(t *testing.T) {
+	var buf bytes.Buffer
+	lw := &limitedWriter{w: &buf, limit: 10}
+
+	n, err := lw.Write([]byte("12345"))
+	if err != nil || n != 5 {
+		t.Fatalf("expected 5 bytes written, got n=%d, err=%v", n, err)
+	}
+
+	_, err = lw.Write([]byte("67890123"))
+	if err == nil {
+		t.Fatal("expected error on capacity exceeded, got nil")
+	}
+	var opErr *OperatingError
+	if !errors.As(err, &opErr) || opErr.Code != "GIT_ERR_CAPACITY_EXCEEDED" {
+		t.Fatalf("expected GIT_ERR_CAPACITY_EXCEEDED, got %v", err)
+	}
+}
+
+func TestSanitizeArgs(t *testing.T) {
+	args := []string{"log", "/Users/secret/path/to/repo", "--since=2026-10-08"}
+	sanitized := sanitizeArgs(args)
+	if strings.Contains(sanitized, "/Users/secret") {
+		t.Errorf("expected absolute path to be sanitized, got: %s", sanitized)
+	}
+	if !strings.Contains(sanitized, ".../repo") {
+		t.Errorf("expected base path marker '.../repo', got: %s", sanitized)
+	}
+}
+
+func TestLocalGitCollector_BranchPRSynthesis(t *testing.T) {
+	dir := t.TempDir()
+
+	runGit := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Branch Dev",
+			"GIT_AUTHOR_EMAIL=branch@example.com",
+			"GIT_COMMITTER_NAME=Branch Dev",
+			"GIT_COMMITTER_EMAIL=branch@example.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v (%s)", args, err, string(out))
+		}
+	}
+
+	runGit("init", "-b", "feat/issue-88")
+	runGit("config", "user.name", "Branch Dev")
+	runGit("config", "user.email", "branch@example.com")
+
+	f := filepath.Join(dir, "change.txt")
+	_ = os.WriteFile(f, []byte("change"), 0644)
+	runGit("add", "change.txt")
+	runGit("commit", "-m", "implement branch feature without pr tag")
+
+	collector := NewLocalGitCollector(dir)
+	commits, prs, err := collector.FetchDayActivity(context.Background(), "", time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(commits) != 1 {
+		t.Fatalf("expected 1 commit, got %d", len(commits))
+	}
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 synthesized PR from branch name, got %d", len(prs))
+	}
+	if prs[0].Number != 88 {
+		t.Errorf("expected PR number 88 from branch name, got %d", prs[0].Number)
+	}
+}
+
+func TestExtractPRReferences(t *testing.T) {
+	cases := []struct {
+		input string
+		want  []int
+	}{
+		{"feat: implement (#123)", []int{123}},
+		{"fix: GH-456 and PR-789", []int{456, 789}},
+		{"feat/issue-321", []int{321}},
+		{"feat/issue/654", []int{654}},
+		{"pull/999", []int{999}},
+		{"no references", nil},
+	}
+
+	for _, tc := range cases {
+		got := ExtractPRReferences(tc.input)
+		if len(got) != len(tc.want) {
+			t.Errorf("ExtractPRReferences(%q) = %v; want %v", tc.input, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("ExtractPRReferences(%q)[%d] = %d; want %d", tc.input, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
+func TestLocalGitCollector_Author(t *testing.T) {
+	repoDir := setupTestGitRepo(t)
+	collector := NewLocalGitCollector(repoDir)
+
+	ctx := context.Background()
+	author := collector.Author(ctx)
+	if author != "test@example.com" {
+		t.Errorf("expected Author 'test@example.com', got %q", author)
+	}
+
+	// Empty repo with no git config
+	emptyDir := t.TempDir()
+	emptyCollector := NewLocalGitCollector(emptyDir)
+	emptyAuthor := emptyCollector.Author(ctx)
+	if emptyAuthor != "" {
+		t.Errorf("expected empty author for non-repo, got %q", emptyAuthor)
 	}
 }
