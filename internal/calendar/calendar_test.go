@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -122,14 +123,19 @@ END:VCALENDAR`
 
 	// First event: UTC 02:00 -> +07:00 is 09:00 - 10:30
 	e1 := entries[0]
-	if e1.StartTime != "09:00" || e1.EndTime != "10:30" {
-		t.Errorf("expected 09:00-10:30, got %s-%s", e1.StartTime, e1.EndTime)
+	expectedE1Start := "2026-10-06T09:00:00+07:00"
+	expectedE1End := "2026-10-06T10:30:00+07:00"
+	if e1.Timestamp != expectedE1Start || e1.EndTime != expectedE1End {
+		t.Errorf("expected %s-%s, got %s-%s", expectedE1Start, expectedE1End, e1.Timestamp, e1.EndTime)
 	}
-	if e1.Topic != "Sprint Sync & Planning" {
-		t.Errorf("unexpected topic: %s", e1.Topic)
+	if e1.Title != "Sprint Sync & Planning" {
+		t.Errorf("unexpected title: %s", e1.Title)
 	}
-	if len(e1.PRs) != 2 || e1.PRs[0] != "#42" || e1.PRs[1] != "#101" {
-		t.Errorf("unexpected PRs: %v", e1.PRs)
+	if e1.Source != "calendar" {
+		t.Errorf("expected source 'calendar', got %s", e1.Source)
+	}
+	if e1.Metadata == nil || e1.Metadata.Status != "CONFIRMED" {
+		t.Errorf("expected status CONFIRMED in metadata, got %+v", e1.Metadata)
 	}
 	if !strings.Contains(e1.Description, "PRs: #42, #101") {
 		t.Errorf("expected inline PRs in description, got: %s", e1.Description)
@@ -137,11 +143,17 @@ END:VCALENDAR`
 
 	// Second event: Recurring daily standup at UTC 07:00 -> +07:00 is 14:00 - 15:00
 	e2 := entries[1]
-	if e2.StartTime != "14:00" || e2.EndTime != "15:00" {
-		t.Errorf("expected 14:00-15:00, got %s-%s", e2.StartTime, e2.EndTime)
+	expectedE2Start := "2026-10-06T14:00:00+07:00"
+	expectedE2End := "2026-10-06T15:00:00+07:00"
+	if e2.Timestamp != expectedE2Start || e2.EndTime != expectedE2End {
+		t.Errorf("expected %s-%s, got %s-%s", expectedE2Start, expectedE2End, e2.Timestamp, e2.EndTime)
 	}
-	if e2.Topic != "Daily Standup" {
-		t.Errorf("unexpected recurring topic: %s", e2.Topic)
+	if e2.Title != "Daily Standup" {
+		t.Errorf("unexpected recurring title: %s", e2.Title)
+	}
+	expectedE2ID := "gcal-event-recurring@google.com-20261006T140000"
+	if e2.ID != expectedE2ID {
+		t.Errorf("expected recurring disambiguated ID %q, got %q", expectedE2ID, e2.ID)
 	}
 }
 
@@ -176,8 +188,8 @@ END:VCALENDAR`
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 active entry (skipping cancelled), got %d", len(entries))
 	}
-	if entries[0].Topic != "Active Meeting" {
-		t.Errorf("expected 'Active Meeting', got %q", entries[0].Topic)
+	if entries[0].Title != "Active Meeting" {
+		t.Errorf("expected 'Active Meeting', got %q", entries[0].Title)
 	}
 }
 
@@ -257,8 +269,8 @@ END:VCALENDAR`
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry (declined meeting filtered, accepted meeting kept), got %d", len(entries))
 	}
-	if entries[0].Topic != "Accepted Meeting" {
-		t.Errorf("expected 'Accepted Meeting', got %q", entries[0].Topic)
+	if entries[0].Title != "Accepted Meeting" {
+		t.Errorf("expected 'Accepted Meeting', got %q", entries[0].Title)
 	}
 
 	// Test inference from X-WR-CALNAME when UserEmail option is empty
@@ -266,7 +278,7 @@ END:VCALENDAR`
 	if err != nil {
 		t.Fatalf("unexpected error with inferred owner: %v", err)
 	}
-	if len(inferredEntries) != 1 || inferredEntries[0].Topic != "Accepted Meeting" {
+	if len(inferredEntries) != 1 || inferredEntries[0].Title != "Accepted Meeting" {
 		t.Fatalf("expected 1 entry with X-WR-CALNAME inference, got %d", len(inferredEntries))
 	}
 }
@@ -307,8 +319,8 @@ END:VCALENDAR`
 	if len(entriesActive) != 1 {
 		t.Fatalf("expected 1 entry on active date, got %d", len(entriesActive))
 	}
-	if entriesActive[0].Topic != "Daily Standup" {
-		t.Errorf("expected 'Daily Standup', got %q", entriesActive[0].Topic)
+	if entriesActive[0].Title != "Daily Standup" {
+		t.Errorf("expected 'Daily Standup', got %q", entriesActive[0].Title)
 	}
 }
 
@@ -395,11 +407,11 @@ END:VCALENDAR`
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry (master occurrence replaced by RECURRENCE-ID exception), got %d", len(entries))
 	}
-	if entries[0].Topic != "Rescheduled Sync & Architecture Review" {
-		t.Errorf("expected modified summary, got %q", entries[0].Topic)
+	if entries[0].Title != "Rescheduled Sync & Architecture Review" {
+		t.Errorf("expected modified summary, got %q", entries[0].Title)
 	}
-	if entries[0].StartTime != "04:00" || entries[0].EndTime != "05:00" {
-		t.Errorf("expected 04:00-05:00, got %s-%s", entries[0].StartTime, entries[0].EndTime)
+	if entries[0].Timestamp != "2026-10-06T04:00:00Z" || entries[0].EndTime != "2026-10-06T05:00:00Z" {
+		t.Errorf("expected 2026-10-06T04:00:00Z - 2026-10-06T05:00:00Z, got %s - %s", entries[0].Timestamp, entries[0].EndTime)
 	}
 	if entries[0].ID != "gcal-recur-sync@google.com" {
 		t.Errorf("expected stable event ID, got %q", entries[0].ID)
@@ -501,8 +513,8 @@ END:VCALENDAR`
 	if len(entriesFiltered) != 1 {
 		t.Fatalf("expected 1 entry when skipping transparent, got %d", len(entriesFiltered))
 	}
-	if entriesFiltered[0].Topic != "Focus Sprint Work" {
-		t.Errorf("expected 'Focus Sprint Work', got %q", entriesFiltered[0].Topic)
+	if entriesFiltered[0].Title != "Focus Sprint Work" {
+		t.Errorf("expected 'Focus Sprint Work', got %q", entriesFiltered[0].Title)
 	}
 }
 
@@ -567,21 +579,55 @@ func TestFetchICS_RedirectDisabled(t *testing.T) {
 }
 
 func TestFetchICS_CapacityBoundExceeded(t *testing.T) {
-	// Server returns payload exceeding MaxResponseSizeBytes
+	// TigerStyle 3-point boundary assertions:
+	// Point 1: bound - 1 byte -> OK
+	// Point 2: bound -> OK
+	// Point 3: bound + 1 byte -> CAL_ERR_RESPONSE_TOO_LARGE
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/calendar")
-		// Write MaxResponseSizeBytes + 10 bytes
-		data := make([]byte, calendar.MaxResponseSizeBytes+10)
-		_, _ = w.Write(data)
+		sizeStr := r.URL.Query().Get("size")
+		size, _ := strconv.ParseInt(sizeStr, 10, 64)
+		chunk := make([]byte, 32*1024)
+		remaining := size
+		for remaining > 0 {
+			toWrite := int64(len(chunk))
+			if remaining < toWrite {
+				toWrite = remaining
+			}
+			n, err := w.Write(chunk[:toWrite])
+			if err != nil {
+				return
+			}
+			remaining -= int64(n)
+		}
 	}))
 	defer ts.Close()
 
 	ctx := context.Background()
-	_, err := calendar.FetchICS(ctx, ts.URL, "", true)
-	if err == nil {
-		t.Fatal("expected capacity error, got nil")
+
+	// Point 1: bound - 1 byte
+	gotMinus1, err := calendar.FetchICS(ctx, fmt.Sprintf("%s?size=%d", ts.URL, calendar.MaxResponseSizeBytes-1), "", true)
+	if err != nil {
+		t.Fatalf("expected success at bound-1, got error: %v", err)
+	}
+	if int64(len(gotMinus1)) != calendar.MaxResponseSizeBytes-1 {
+		t.Errorf("expected %d bytes at bound-1, got %d", calendar.MaxResponseSizeBytes-1, len(gotMinus1))
 	}
 
+	// Point 2: bound
+	gotBound, err := calendar.FetchICS(ctx, fmt.Sprintf("%s?size=%d", ts.URL, calendar.MaxResponseSizeBytes), "", true)
+	if err != nil {
+		t.Fatalf("expected success at bound, got error: %v", err)
+	}
+	if int64(len(gotBound)) != calendar.MaxResponseSizeBytes {
+		t.Errorf("expected %d bytes at bound, got %d", calendar.MaxResponseSizeBytes, len(gotBound))
+	}
+
+	// Point 3: bound + 1 byte
+	_, err = calendar.FetchICS(ctx, fmt.Sprintf("%s?size=%d", ts.URL, calendar.MaxResponseSizeBytes+1), "", true)
+	if err == nil {
+		t.Fatal("expected capacity error at bound+1, got nil")
+	}
 	if !strings.Contains(err.Error(), "CAL_ERR_RESPONSE_TOO_LARGE") {
 		t.Errorf("expected CAL_ERR_RESPONSE_TOO_LARGE, got %v", err)
 	}
@@ -630,16 +676,15 @@ func TestFormatJSON_UnescapedHTML(t *testing.T) {
 	calName := "Sprint Review & Retro"
 	entries := []calendar.SimpleEntry{
 		{
-			Date:        "2026-10-06",
-			StartTime:   "10:00",
-			EndTime:     "11:00",
-			Topic:       calName,
+			ID:          "gcal-test-1",
+			Source:      "calendar",
+			Timestamp:   "2026-10-06T10:00:00Z",
+			EndTime:     "2026-10-06T11:00:00Z",
+			Title:       calName,
 			Description: "Review & Retro with <Team>",
-			PRs:         []string{"#1"},
-			Sources: calendar.EntrySources{
-				CalendarEvent: &calName,
-				Repo:          nil,
-				Commits:       []string{},
+			Metadata: &calendar.EntryMetadata{
+				Status:          "CONFIRMED",
+				DurationMinutes: 60,
 			},
 		},
 	}
@@ -665,16 +710,40 @@ func TestAssertion_Subprocess(t *testing.T) {
 		_, _ = calendar.ParseCalendarEvents([]byte("BEGIN:VCALENDAR\nEND:VCALENDAR"), time.Now(), nil)
 		return
 	}
-
-	cmd := exec.Command(os.Args[0], "-test.run=TestAssertion_Subprocess")
-	cmd.Env = append(os.Environ(), "BE_FATAL_ASSERTION_TEST=1")
-	out, err := cmd.CombinedOutput()
-
-	if err == nil {
-		t.Fatalf("expected fatal assertion to exit with error, but exited successfully. Output: %s", string(out))
+	if os.Getenv("BE_FATAL_ASSERTION_TEST_DATE") == "1" {
+		// Deliberately trigger invariant violation: zero target date
+		_, _ = calendar.ParseCalendarEvents([]byte("BEGIN:VCALENDAR\nEND:VCALENDAR"), time.Time{}, time.UTC)
+		return
+	}
+	if os.Getenv("BE_FATAL_ASSERTION_TEST_DURATION") == "1" {
+		// Deliberately trigger invariant violation: negative duration
+		calendar.Assert(false, calendar.AssertDurationNegative)
+		return
 	}
 
-	if !strings.Contains(string(out), calendar.AssertLocationNil) {
-		t.Errorf("expected output to contain invariant identifier %s, got: %s", calendar.AssertLocationNil, string(out))
+	tests := []struct {
+		name    string
+		envKey  string
+		wantTag string
+	}{
+		{"LocationNil", "BE_FATAL_ASSERTION_TEST=1", calendar.AssertLocationNil},
+		{"DateZero", "BE_FATAL_ASSERTION_TEST_DATE=1", calendar.AssertDateZero},
+		{"DurationNegative", "BE_FATAL_ASSERTION_TEST_DURATION=1", calendar.AssertDurationNegative},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=TestAssertion_Subprocess")
+			cmd.Env = append(os.Environ(), tt.envKey)
+			out, err := cmd.CombinedOutput()
+
+			if err == nil {
+				t.Fatalf("expected fatal assertion to exit with error, but exited successfully. Output: %s", string(out))
+			}
+
+			if !strings.Contains(string(out), tt.wantTag) {
+				t.Errorf("expected output to contain invariant identifier %s, got: %s", tt.wantTag, string(out))
+			}
+		})
 	}
 }

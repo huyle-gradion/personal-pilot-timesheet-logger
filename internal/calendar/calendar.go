@@ -24,15 +24,16 @@ import (
 
 // Named finite bounds with explicit units (TigerStyle).
 const (
-	MaxResponseSizeBytes      int64         = 5 * 1024 * 1024   // 5 MiB maximum .ics download
-	MaxResponseHeaderBytes    int64         = 64 * 1024         // 64 KiB maximum HTTP response headers
-	HTTPRequestTimeoutSeconds time.Duration = 15 * time.Second  // 15s deadline per HTTP attempt
-	CacheTTLSeconds           time.Duration = 300 * time.Second // 5 minutes cache lifetime
-	MaxParsedEventsCount      int           = 1000              // Maximum calendar events admitted per day
-	MaxSummaryLengthBytes     int           = 512               // Maximum event summary length
-	MaxDescriptionLengthBytes int           = 4096              // Maximum event description length
-	MaxPRMatchesCount         int           = 50                // Maximum PRs matched per event
-	MaxEmailLengthBytes       int           = 256               // Maximum user email length
+	MaxResponseSizeBytes          int64         = 10 * 1024 * 1024  // 10 MiB maximum .ics download (per M0-01)
+	MaxResponseHeaderBytes        int64         = 64 * 1024         // 64 KiB maximum HTTP response headers
+	HTTPRequestTimeoutSeconds     time.Duration = 5 * time.Second   // 5s deadline per HTTP attempt (per M0-01)
+	CacheTTLSeconds               time.Duration = 300 * time.Second // 5 minutes cache lifetime
+	MaxParsedEventsCount          int           = 1000              // Maximum calendar events admitted per day
+	MaxRecurrenceOccurrencesCount int           = 200               // Maximum expanded recurring occurrences
+	MaxSummaryLengthBytes         int           = 512               // Maximum event summary length
+	MaxDescriptionLengthBytes     int           = 4096              // Maximum event description length
+	MaxPRMatchesCount             int           = 50                // Maximum PRs matched per event
+	MaxEmailLengthBytes           int           = 256               // Maximum user email length
 )
 
 // Fixed assertion invariant identifiers (TigerStyle).
@@ -90,29 +91,22 @@ func RedactURL(rawURL string) string {
 	return fmt.Sprintf("%s://%s/.../redacted.ics", parsed.Scheme, parsed.Host)
 }
 
-// SimpleEntry represents a standardized timesheet entry conforming to Section 3.2.
+// SimpleEntry represents a standardized timesheet entry conforming to ADR 0001 (Section 3) and M0-01.
 type SimpleEntry struct {
-	ID          string         `json:"id,omitempty"`
-	Date        string         `json:"date"`
-	StartTime   string         `json:"start_time"`
-	EndTime     string         `json:"end_time"`
-	Topic       string         `json:"topic"`
+	ID          string         `json:"id"`
+	Source      string         `json:"source"`
+	Timestamp   string         `json:"timestamp"`
+	EndTime     string         `json:"endTime"`
+	Title       string         `json:"title"`
 	Description string         `json:"description"`
-	PRs         []string       `json:"prs"`
-	Sources     EntrySources   `json:"sources"`
 	Metadata    *EntryMetadata `json:"metadata,omitempty"`
 }
 
-type EntrySources struct {
-	CalendarEvent *string  `json:"calendar_event"`
-	Repo          *string  `json:"repo"`
-	Commits       []string `json:"commits"`
-}
-
 type EntryMetadata struct {
-	DurationMinutes int     `json:"duration_minutes"`
-	AllDay          bool    `json:"all_day"`
+	Status          string  `json:"status,omitempty"`
 	Location        *string `json:"location,omitempty"`
+	DurationMinutes int     `json:"duration_minutes,omitempty"`
+	AllDay          bool    `json:"all_day,omitempty"`
 	Transparent     bool    `json:"transparent,omitempty"`
 }
 
@@ -170,6 +164,33 @@ func TruncateString(s string, maxBytes int) string {
 	return string(b)
 }
 
+// readCachedFeed safely reads the cached .ics file without traversing symlinks.
+func readCachedFeed(cachePath string) ([]byte, bool) {
+	if cachePath == "" {
+		return nil, false
+	}
+	f, err := os.OpenFile(cachePath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || time.Since(info.ModTime()) >= CacheTTLSeconds {
+		return nil, false
+	}
+	if info.Size() > MaxResponseSizeBytes {
+		return nil, false
+	}
+
+	limited := io.LimitReader(f, MaxResponseSizeBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil || int64(len(data)) > MaxResponseSizeBytes {
+		return nil, false
+	}
+	return data, true
+}
+
 // FetchICS retrieves calendar bytes from an HTTP URL or local file, enforcing bounded sizes and timeouts.
 func FetchICS(ctx context.Context, source string, cachePath string, noCache bool) ([]byte, error) {
 	if source == "" {
@@ -182,13 +203,9 @@ func FetchICS(ctx context.Context, source string, cachePath string, noCache bool
 
 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
 		// Check local cache first
-		if !noCache && cachePath != "" {
-			info, err := os.Stat(cachePath)
-			if err == nil && time.Since(info.ModTime()) < CacheTTLSeconds {
-				data, err := os.ReadFile(cachePath)
-				if err == nil && int64(len(data)) <= MaxResponseSizeBytes {
-					return data, nil
-				}
+		if !noCache {
+			if data, ok := readCachedFeed(cachePath); ok {
+				return data, nil
 			}
 		}
 
@@ -214,6 +231,8 @@ func FetchICS(ctx context.Context, source string, cachePath string, noCache bool
 			Transport: &http.Transport{
 				MaxResponseHeaderBytes: MaxResponseHeaderBytes,
 				DisableKeepAlives:      true,
+				ResponseHeaderTimeout:  HTTPRequestTimeoutSeconds,
+				TLSHandshakeTimeout:   HTTPRequestTimeoutSeconds,
 			},
 		}
 
@@ -256,7 +275,13 @@ func FetchICS(ctx context.Context, source string, cachePath string, noCache bool
 
 		// Persist cache with atomic write, fsync, and restricted permissions (0600 file, 0700 dir)
 		if cachePath != "" {
-			_ = writeCacheFile(cachePath, body)
+			if err := writeCacheFile(cachePath, body); err != nil {
+				return nil, &OperatingError{
+					Kind:    ErrKindCache,
+					Code:    "CAL_ERR_CACHE_WRITE",
+					Message: fmt.Sprintf("failed to write cache file: %v", err),
+				}
+			}
 		}
 
 		return body, nil
@@ -617,13 +642,229 @@ func ParseCalendarEvents(icsData []byte, targetDate time.Time, loc *time.Locatio
 	})
 }
 
+// filterEvent determines whether an event should be processed or skipped.
+// Returns keep=false if cancelled, declined by user, or transparent (when skipTransparent=true).
+func filterEvent(event *ics.VEvent, userEmail string, skipTransparent bool) (bool, bool, string) {
+	status := "CONFIRMED"
+	if statusProp := event.GetProperty(ics.ComponentPropertyStatus); statusProp != nil {
+		s := strings.ToUpper(strings.TrimSpace(statusProp.Value))
+		if s == "CANCELLED" {
+			return false, false, ""
+		}
+		if s != "" {
+			status = s
+		}
+	}
+
+	if IsEventDeclinedByUser(event, userEmail) {
+		return false, false, ""
+	}
+
+	isTransparent := false
+	if transpProp := event.GetProperty(ics.ComponentPropertyTransp); transpProp != nil {
+		if strings.EqualFold(strings.TrimSpace(transpProp.Value), "TRANSPARENT") {
+			isTransparent = true
+		}
+	}
+
+	if skipTransparent && isTransparent {
+		return false, isTransparent, status
+	}
+
+	return true, isTransparent, status
+}
+
+// eventTimeWindow represents an occurrence interval in local time.
+type eventTimeWindow struct {
+	Start       time.Time
+	End         time.Time
+	IsAllDay    bool
+	IsRecurring bool
+}
+
+// expandOccurrences computes the start and end time windows for an event within the target day.
+func expandOccurrences(
+	event *ics.VEvent,
+	targetDate time.Time,
+	startOfDay, endOfDay time.Time,
+	loc *time.Location,
+	recurrenceExceptions map[string][]exDateItem,
+) ([]eventTimeWindow, error) {
+	dtstartProp := event.GetProperty(ics.ComponentPropertyDtStart)
+	if dtstartProp == nil {
+		return nil, nil
+	}
+
+	startAt, err := event.GetStartAt()
+	if err != nil {
+		return nil, nil
+	}
+
+	// Detect all-day event (case-insensitive VALUE=DATE or 8-digit date)
+	isAllDay := false
+	if valProp, ok := dtstartProp.ICalParameters["VALUE"]; ok && len(valProp) > 0 {
+		if strings.EqualFold(valProp[0], "DATE") {
+			isAllDay = true
+		}
+	} else if len(dtstartProp.Value) == 8 && !strings.Contains(dtstartProp.Value, "T") {
+		isAllDay = true
+	}
+
+	endAt, err := event.GetEndAt()
+	if err != nil || endAt.Before(startAt) {
+		if isAllDay {
+			endAt = startAt.AddDate(0, 0, 1)
+		} else {
+			endAt = startAt.Add(time.Hour)
+		}
+	}
+
+	duration := endAt.Sub(startAt)
+	Assert(duration >= 0, AssertDurationNegative)
+
+	rruleProp := event.GetProperty(ics.ComponentPropertyRrule)
+	var windows []eventTimeWindow
+
+	if rruleProp != nil && rruleProp.Value != "" {
+		ruleStr := strings.TrimPrefix(rruleProp.Value, "RRULE:")
+		rule, err := rrule.StrToRRule(ruleStr)
+		if err == nil {
+			rule.DTStart(startAt.UTC())
+			// Bounded recurrence query around target day
+			utcOccurrences := rule.Between(startOfDay.UTC().Add(-24*time.Hour), endOfDay.UTC().Add(24*time.Hour), true)
+			if len(utcOccurrences) > MaxRecurrenceOccurrencesCount {
+				utcOccurrences = utcOccurrences[:MaxRecurrenceOccurrencesCount]
+			}
+
+			exDates := getEventExDates(event)
+			if rawUID := getEventUID(event); rawUID != "" {
+				if recItems, ok := recurrenceExceptions[rawUID]; ok {
+					exDates = append(exDates, recItems...)
+				}
+			}
+
+			for _, occ := range utcOccurrences {
+				if isOccurrenceExcluded(occ, isAllDay, exDates, loc) {
+					continue
+				}
+				occStart := occ.In(loc)
+				occEnd := occStart.Add(duration)
+				if occStart.Before(endOfDay) && occEnd.After(startOfDay) {
+					windows = append(windows, eventTimeWindow{
+						Start:       occStart,
+						End:         occEnd,
+						IsAllDay:    isAllDay,
+						IsRecurring: true,
+					})
+				}
+			}
+			return windows, nil
+		}
+	}
+
+	eventStartLocal := startAt.In(loc)
+	eventEndLocal := endAt.In(loc)
+	if eventStartLocal.Before(endOfDay) && eventEndLocal.After(startOfDay) {
+		windows = append(windows, eventTimeWindow{
+			Start:       eventStartLocal,
+			End:         eventEndLocal,
+			IsAllDay:    isAllDay,
+			IsRecurring: false,
+		})
+	}
+
+	return windows, nil
+}
+
+// buildSimpleEntry constructs a canonical SimpleEntry record from an event occurrence.
+func buildSimpleEntry(
+	event *ics.VEvent,
+	win eventTimeWindow,
+	isTransparent bool,
+	status string,
+	targetDate time.Time,
+	loc *time.Location,
+) SimpleEntry {
+	rawUID := getEventUID(event)
+	var entryID string
+	if rawUID != "" {
+		if win.IsRecurring {
+			entryID = fmt.Sprintf("gcal-%s-%s", rawUID, win.Start.Format("20060102T150405"))
+		} else {
+			entryID = fmt.Sprintf("gcal-%s", rawUID)
+		}
+	}
+
+	summary := "(No Title)"
+	if summaryProp := event.GetProperty(ics.ComponentPropertySummary); summaryProp != nil {
+		if s := strings.TrimSpace(summaryProp.Value); s != "" {
+			summary = s
+		}
+	}
+	summary = TruncateString(summary, MaxSummaryLengthBytes)
+
+	desc := ""
+	if descProp := event.GetProperty(ics.ComponentPropertyDescription); descProp != nil {
+		desc = strings.TrimSpace(descProp.Value)
+		desc = strings.ReplaceAll(desc, `\n`, " ")
+		desc = strings.ReplaceAll(desc, "\n", " ")
+	}
+	desc = TruncateString(desc, MaxDescriptionLengthBytes)
+
+	var locPtr *string
+	if locProp := event.GetProperty(ics.ComponentPropertyLocation); locProp != nil {
+		if v := strings.TrimSpace(locProp.Value); v != "" {
+			s := TruncateString(v, 256)
+			locPtr = &s
+		}
+	}
+
+	prs := ExtractPRs(fmt.Sprintf("%s %s", summary, desc))
+	descBody := desc
+	if descBody == "" {
+		descBody = summary
+	}
+	if len(prs) > 0 && !strings.Contains(descBody, "PRs:") {
+		descBody = fmt.Sprintf("%s. PRs: %s", descBody, strings.Join(prs, ", "))
+	}
+
+	var timestampStr, endTimeStr string
+	durMins := int(win.End.Sub(win.Start).Minutes())
+	if win.IsAllDay {
+		allDayStart := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, loc)
+		allDayEnd := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 23, 59, 59, 0, loc)
+		timestampStr = allDayStart.Format(time.RFC3339)
+		endTimeStr = allDayEnd.Format(time.RFC3339)
+		durMins = 24 * 60
+	} else {
+		timestampStr = win.Start.Format(time.RFC3339)
+		endTimeStr = win.End.Format(time.RFC3339)
+	}
+
+	return SimpleEntry{
+		ID:          entryID,
+		Source:      "calendar",
+		Timestamp:   timestampStr,
+		EndTime:     endTimeStr,
+		Title:       summary,
+		Description: descBody,
+		Metadata: &EntryMetadata{
+			Status:          status,
+			Location:        locPtr,
+			DurationMinutes: durMins,
+			AllDay:          win.IsAllDay,
+			Transparent:     isTransparent,
+		},
+	}
+}
+
 // ParseCalendarEventsWithOptions parses iCal data with configurable filtering options.
 func ParseCalendarEventsWithOptions(icsData []byte, opts ParseOptions) ([]SimpleEntry, error) {
 	// Assert invariants (programmer contract)
 	Assert(opts.Location != nil, AssertLocationNil)
 	Assert(!opts.TargetDate.IsZero(), AssertDateZero)
 
-	cal, err := ics.ParseCalendar(strings.NewReader(string(icsData)))
+	cal, err := ics.ParseCalendar(bytes.NewReader(icsData))
 	if err != nil {
 		return nil, &OperatingError{
 			Kind:    ErrKindParse,
@@ -653,184 +894,26 @@ func ParseCalendarEventsWithOptions(icsData []byte, opts ParseOptions) ([]Simple
 			break
 		}
 
-		// Skip cancelled events (RFC 5545 STATUS:CANCELLED)
-		statusProp := event.GetProperty(ics.ComponentPropertyStatus)
-		if statusProp != nil && strings.EqualFold(strings.TrimSpace(statusProp.Value), "CANCELLED") {
+		keep, isTransparent, status := filterEvent(event, userEmail, opts.SkipTransparent)
+		if !keep {
 			continue
 		}
 
-		// Skip declined events for the user (RFC 5545 PARTSTAT=DECLINED)
-		if IsEventDeclinedByUser(event, userEmail) {
+		windows, err := expandOccurrences(event, targetDate, startOfDay, endOfDay, loc, recurrenceExceptions)
+		if err != nil || len(windows) == 0 {
 			continue
 		}
 
-		// Check transparency (RFC 5545 TRANSP:TRANSPARENT)
-		transpProp := event.GetProperty(ics.ComponentPropertyTransp)
-		isTransparent := false
-		if transpProp != nil && strings.EqualFold(strings.TrimSpace(transpProp.Value), "TRANSPARENT") {
-			isTransparent = true
-		}
-		if opts.SkipTransparent && isTransparent {
-			continue
-		}
-
-		// Stable event ID (RFC 5545 UID -> gcal-<UID>)
-		var entryID string
-		if rawUID := getEventUID(event); rawUID != "" {
-			entryID = fmt.Sprintf("gcal-%s", rawUID)
-		}
-
-		summaryProp := event.GetProperty(ics.ComponentPropertySummary)
-		summary := "(No Title)"
-		if summaryProp != nil {
-			summary = strings.TrimSpace(summaryProp.Value)
-		}
-		summary = TruncateString(summary, MaxSummaryLengthBytes)
-
-		descProp := event.GetProperty(ics.ComponentPropertyDescription)
-		desc := ""
-		if descProp != nil {
-			desc = strings.TrimSpace(descProp.Value)
-			desc = strings.ReplaceAll(desc, `\n`, " ")
-			desc = strings.ReplaceAll(desc, "\n", " ")
-		}
-		desc = TruncateString(desc, MaxDescriptionLengthBytes)
-
-		locProp := event.GetProperty(ics.ComponentPropertyLocation)
-		var locationPtr *string
-		if locProp != nil && strings.TrimSpace(locProp.Value) != "" {
-			locStr := TruncateString(strings.TrimSpace(locProp.Value), 256)
-			locationPtr = &locStr
-		}
-
-		dtstartProp := event.GetProperty(ics.ComponentPropertyDtStart)
-		if dtstartProp == nil {
-			continue
-		}
-
-		startAt, err := event.GetStartAt()
-		if err != nil {
-			continue
-		}
-
-		// Detect all-day event
-		isAllDay := false
-		if valProp := dtstartProp.ICalParameters["VALUE"]; len(valProp) > 0 && valProp[0] == "DATE" {
-			isAllDay = true
-		} else if len(dtstartProp.Value) == 8 {
-			isAllDay = true
-		}
-
-		endAt, err := event.GetEndAt()
-		if err != nil || endAt.Before(startAt) {
-			if isAllDay {
-				endAt = startAt.AddDate(0, 0, 1)
-			} else {
-				endAt = startAt.Add(time.Hour)
-			}
-		}
-
-		duration := endAt.Sub(startAt)
-		Assert(duration >= 0, AssertDurationNegative)
-
-		// Expand recurring events (RRULE)
-		rruleProp := event.GetProperty(ics.ComponentPropertyRrule)
-		var eventOccurrences [][2]time.Time
-
-		if rruleProp != nil && rruleProp.Value != "" {
-			ruleStr := strings.TrimPrefix(rruleProp.Value, "RRULE:")
-			rule, err := rrule.StrToRRule(ruleStr)
-			if err == nil {
-				rule.DTStart(startAt.UTC())
-				utcOccurrences := rule.Between(startOfDay.UTC().Add(-24*time.Hour), endOfDay.UTC().Add(24*time.Hour), true)
-
-				// Collect EXDATE exceptions and RECURRENCE-ID exceptions
-				exDates := getEventExDates(event)
-				if rawUID := getEventUID(event); rawUID != "" {
-					if recItems, ok := recurrenceExceptions[rawUID]; ok {
-						exDates = append(exDates, recItems...)
-					}
-				}
-
-				for _, occ := range utcOccurrences {
-					if isOccurrenceExcluded(occ, isAllDay, exDates, loc) {
-						continue
-					}
-					occStart := occ.In(loc)
-					occEnd := occStart.Add(duration)
-					if occStart.Before(endOfDay) && occEnd.After(startOfDay) {
-						eventOccurrences = append(eventOccurrences, [2]time.Time{occStart, occEnd})
-					}
-				}
-			}
-		}
-
-		if len(eventOccurrences) == 0 {
-			eventStartLocal := startAt.In(loc)
-			eventEndLocal := endAt.In(loc)
-			if eventStartLocal.Before(endOfDay) && eventEndLocal.After(startOfDay) {
-				eventOccurrences = append(eventOccurrences, [2]time.Time{eventStartLocal, eventEndLocal})
-			}
-		}
-
-		for _, occ := range eventOccurrences {
+		for _, win := range windows {
 			if len(entries) >= MaxParsedEventsCount {
 				break
 			}
-
-			s := occ[0]
-			e := occ[1]
-
-			var startTimeStr, endTimeStr string
-			durMins := int(duration.Minutes())
-
-			if isAllDay {
-				startTimeStr = "00:00"
-				endTimeStr = "23:59"
-				durMins = 24 * 60
-			} else {
-				startTimeStr = s.Format("15:04")
-				endTimeStr = e.Format("15:04")
-			}
-
-			prs := ExtractPRs(fmt.Sprintf("%s %s", summary, desc))
-
-			descBody := summary
-			if desc != "" {
-				descBody = fmt.Sprintf("%s: %s", summary, desc)
-			}
-
-			formattedDesc := descBody
-			if len(prs) > 0 {
-				formattedDesc = fmt.Sprintf("%s. PRs: %s", descBody, strings.Join(prs, ", "))
-			}
-
-			calTitle := summary
-			entries = append(entries, SimpleEntry{
-				ID:          entryID,
-				Date:        targetDate.Format("2006-01-02"),
-				StartTime:   startTimeStr,
-				EndTime:     endTimeStr,
-				Topic:       summary,
-				Description: formattedDesc,
-				PRs:         prs,
-				Sources: EntrySources{
-					CalendarEvent: &calTitle,
-					Repo:          nil,
-					Commits:       []string{},
-				},
-				Metadata: &EntryMetadata{
-					DurationMinutes: durMins,
-					AllDay:          isAllDay,
-					Location:        locationPtr,
-					Transparent:     isTransparent,
-				},
-			})
+			entries = append(entries, buildSimpleEntry(event, win, isTransparent, status, targetDate, loc))
 		}
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].StartTime < entries[j].StartTime
+		return entries[i].Timestamp < entries[j].Timestamp
 	})
 
 	return entries, nil
@@ -844,14 +927,21 @@ func FormatMarkdown(entries []SimpleEntry) string {
 
 	var blocks []string
 	for idx, e := range entries {
+		prs := ExtractPRs(e.Description)
 		prStr := "None"
-		if len(e.PRs) > 0 {
-			prStr = strings.Join(e.PRs, ", ")
+		if len(prs) > 0 {
+			prStr = strings.Join(prs, ", ")
 		}
 
-		calSrc := ""
-		if e.Sources.CalendarEvent != nil {
-			calSrc = *e.Sources.CalendarEvent
+		startTimeStr := e.Timestamp
+		endTimeStr := e.EndTime
+		dateStr := ""
+		if t, err := time.Parse(time.RFC3339, e.Timestamp); err == nil {
+			dateStr = t.Format("2006-01-02")
+			startTimeStr = t.Format("15:04")
+		}
+		if t, err := time.Parse(time.RFC3339, e.EndTime); err == nil {
+			endTimeStr = t.Format("15:04")
 		}
 
 		block := fmt.Sprintf(
@@ -863,13 +953,13 @@ func FormatMarkdown(entries []SimpleEntry) string {
 				"- **PRs**: %s\n"+
 				"- **Sources**:\n"+
 				"  - Calendar: \"%s\"",
-			idx+1, e.StartTime, e.EndTime,
-			e.Date,
-			e.StartTime,
-			e.EndTime,
+			idx+1, startTimeStr, endTimeStr,
+			dateStr,
+			startTimeStr,
+			endTimeStr,
 			e.Description,
 			prStr,
-			calSrc,
+			e.Title,
 		)
 		blocks = append(blocks, block)
 	}

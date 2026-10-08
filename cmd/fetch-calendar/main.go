@@ -68,12 +68,21 @@ type Config struct {
 
 // loadEnv loads environment variables from path with bounded size and symlink checks.
 func loadEnv(path string) error {
-	fi, err := os.Lstat(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("[%s] failed to access env file", ErrCodeEnvFailed)
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("[%s] symlinks are not permitted for env files", ErrCodeEnvFailed)
+		}
+		return fmt.Errorf("[%s] failed to open env file", ErrCodeEnvFailed)
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("[%s] failed to access env file metadata", ErrCodeEnvFailed)
 	}
 
 	if fi.Mode()&os.ModeSymlink != 0 {
@@ -85,12 +94,6 @@ func loadEnv(path string) error {
 	if fi.Size() > MaxEnvFileSizeBytes {
 		return fmt.Errorf("[%s] env file size %d exceeds limit of %d bytes", ErrCodeBoundExceeded, fi.Size(), MaxEnvFileSizeBytes)
 	}
-
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return fmt.Errorf("[%s] failed to open env file", ErrCodeEnvFailed)
-	}
-	defer f.Close()
 
 	limitedReader := io.LimitReader(f, MaxEnvFileSizeBytes+1)
 	scanner := bufio.NewScanner(limitedReader)

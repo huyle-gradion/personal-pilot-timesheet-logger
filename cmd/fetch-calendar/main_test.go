@@ -51,10 +51,22 @@ func TestRun_SuccessJSON(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, `"topic": "Architecture Review"`) {
-		t.Errorf("expected topic in JSON output, got: %s", out)
+	if !strings.Contains(out, `"title": "Architecture Review"`) {
+		t.Errorf("expected title in JSON output, got: %s", out)
 	}
-	if !strings.Contains(out, `"#42"`) {
+	if !strings.Contains(out, `"source": "calendar"`) {
+		t.Errorf("expected source in JSON output, got: %s", out)
+	}
+	if !strings.Contains(out, `"status": "CONFIRMED"`) {
+		t.Errorf("expected status in JSON output, got: %s", out)
+	}
+	if !strings.Contains(out, `"timestamp": "2026-10-06T09:00:00+07:00"`) {
+		t.Errorf("expected RFC 3339 timestamp in JSON output, got: %s", out)
+	}
+	if !strings.Contains(out, `"endTime": "2026-10-06T10:30:00+07:00"`) {
+		t.Errorf("expected RFC 3339 endTime in JSON output, got: %s", out)
+	}
+	if !strings.Contains(out, "#42") {
 		t.Errorf("expected PR #42 in JSON output, got: %s", out)
 	}
 	if !strings.Contains(out, `"id": "gcal-event-1@google.com"`) {
@@ -351,16 +363,34 @@ func TestAssertion_Subprocess(t *testing.T) {
 		run(context.Background(), nil, nil, nil)
 		return
 	}
-
-	cmd := exec.Command(os.Args[0], "-test.run=TestAssertion_Subprocess")
-	cmd.Env = append(os.Environ(), "BE_FATAL_ASSERTION_CLI=1")
-	out, err := cmd.CombinedOutput()
-
-	if err == nil {
-		t.Fatalf("expected fatal assertion to exit with error, but exited successfully. Output: %s", string(out))
+	if os.Getenv("BE_FATAL_ASSERTION_CLI_CONFIG") == "1" {
+		// Deliberately trigger invariant violation: nil config
+		Assert(false, AssertConfigNonNil)
+		return
 	}
 
-	if !strings.Contains(string(out), AssertWritersNonNil) {
-		t.Errorf("expected output to contain invariant %s, got: %s", AssertWritersNonNil, string(out))
+	tests := []struct {
+		name    string
+		envKey  string
+		wantTag string
+	}{
+		{"WritersNonNil", "BE_FATAL_ASSERTION_CLI=1", AssertWritersNonNil},
+		{"ConfigNonNil", "BE_FATAL_ASSERTION_CLI_CONFIG=1", AssertConfigNonNil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=TestAssertion_Subprocess")
+			cmd.Env = append(os.Environ(), tt.envKey)
+			out, err := cmd.CombinedOutput()
+
+			if err == nil {
+				t.Fatalf("expected fatal assertion to exit with error, but exited successfully. Output: %s", string(out))
+			}
+
+			if !strings.Contains(string(out), tt.wantTag) {
+				t.Errorf("expected output to contain invariant %s, got: %s", tt.wantTag, string(out))
+			}
+		})
 	}
 }
