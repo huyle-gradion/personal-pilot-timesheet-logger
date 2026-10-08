@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -24,15 +23,15 @@ const (
 	MaxCommitsCount           int           = 100             // Maximum commits admitted per day
 	MaxPRsCount               int           = 50              // Maximum pull requests admitted per day
 	MaxPRCommitsCount         int           = 100             // Maximum commit SHAs admitted per PR
+	MaxPRCommitLookupsCount   int           = 5               // Maximum PR commit lookups per day to eliminate N+1 loops
 	DefaultGitHubBaseURL      string        = "https://api.github.com"
 	RetryBackoffDuration      time.Duration = 50 * time.Millisecond // Bounded retry backoff
 )
 
 // Invariant identifiers for programmer assertions (TigerStyle).
 const (
-	AssertClientNil   = "ASSERT_GIT_001_NIL_CLIENT"
-	AssertContextNil  = "ASSERT_GIT_002_NIL_CONTEXT"
-	AssertTimeoutZero = "ASSERT_GIT_003_ZERO_TIMEOUT"
+	AssertClientNil  = "ASSERT_GIT_001_NIL_CLIENT"
+	AssertContextNil = "ASSERT_GIT_002_NIL_CONTEXT"
 )
 
 // Assert checks an internal programmer-contract invariant and panics with invariantID if violated.
@@ -75,9 +74,32 @@ type OperatingError struct {
 	Err     error
 }
 
+func sanitizeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		u, parseErr := url.Parse(urlErr.URL)
+		if parseErr == nil {
+			u.RawQuery = ""
+			u.User = nil
+			if urlErr.Err != nil {
+				return fmt.Sprintf("%s %q: %v", urlErr.Op, u.String(), sanitizeError(urlErr.Err))
+			}
+			return fmt.Sprintf("%s %q", urlErr.Op, u.String())
+		}
+		if urlErr.Err != nil {
+			return fmt.Sprintf("%s <redacted>: %v", urlErr.Op, sanitizeError(urlErr.Err))
+		}
+		return fmt.Sprintf("%s <redacted>", urlErr.Op)
+	}
+	return err.Error()
+}
+
 func (e *OperatingError) Error() string {
 	if e.Err != nil {
-		return fmt.Sprintf("[%s] %s: %v", e.Code, e.Message, e.Err)
+		return fmt.Sprintf("[%s] %s: %s", e.Code, e.Message, sanitizeError(e.Err))
 	}
 	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
 }
@@ -139,7 +161,7 @@ type GitHubClient struct {
 }
 
 // ResolveToken obtains a GitHub token from the provided argument, GITHUB_TOKEN environment variable,
-// or the local gh CLI (macOS Keychain) as fallback.
+// or GH_TOKEN environment variable as fallback.
 func ResolveToken(token string) string {
 	if token != "" {
 		return token
@@ -147,17 +169,8 @@ func ResolveToken(token string) string {
 	if env := os.Getenv("GITHUB_TOKEN"); env != "" {
 		return env
 	}
-	if os.Getenv("SKIP_GH_AUTH") != "1" {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "gh", "auth", "token")
-		out, err := cmd.Output()
-		if err == nil {
-			t := strings.TrimSpace(string(out))
-			if t != "" {
-				return t
-			}
-		}
+	if env := os.Getenv("GH_TOKEN"); env != "" {
+		return env
 	}
 	return ""
 }
@@ -259,14 +272,19 @@ func ParseRepoSlug(raw string) (string, string, error) {
 		}
 	}
 
-	parts := strings.Split(s, "/")
-	if len(parts) >= 2 {
-		owner := parts[len(parts)-2]
-		repo := parts[len(parts)-1]
-		if owner != "" && repo != "" {
-			return owner, repo, nil
+	var parts []string
+	for _, p := range strings.Split(s, "/") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			parts = append(parts, p)
 		}
-	} else if len(parts) == 1 && parts[0] != "" {
+	}
+
+	if len(parts) >= 2 {
+		owner := parts[0]
+		repo := parts[1]
+		return owner, repo, nil
+	} else if len(parts) == 1 {
 		return "", parts[0], nil
 	}
 
@@ -299,7 +317,10 @@ func (c *GitHubClient) resolveRepo(ctx context.Context, repo string) (string, st
 
 	if c.Token() != "" {
 		userLogin, err := c.fetchAuthenticatedUser(ctx)
-		if err == nil && userLogin != "" {
+		if err != nil {
+			return "", "", err
+		}
+		if userLogin != "" {
 			return userLogin, repoName, nil
 		}
 	}
@@ -328,6 +349,98 @@ func (c *GitHubClient) fetchAuthenticatedUser(ctx context.Context) (string, erro
 		}
 	}
 	return u.Login, nil
+}
+
+// classifyHTTPResponse maps an HTTP status code, headers, and body to a typed Outcome and error.
+func classifyHTTPResponse(resp *http.Response, body []byte) (Outcome, error) {
+	// 2xx Success
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return OutcomeAcknowledged, nil
+	}
+
+	// 429 Too Many Requests: Rate Limited
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return OutcomeRateLimited, &OperatingError{
+			Outcome: OutcomeRateLimited,
+			Code:    "GIT_ERR_RATE_LIMITED",
+			Message: fmt.Sprintf("GitHub API rate limit exceeded (HTTP %d)", resp.StatusCode),
+		}
+	}
+
+	// 403 Forbidden: check for primary or secondary rate limits or abuse detection
+	if resp.StatusCode == http.StatusForbidden {
+		hasRetryAfter := resp.Header.Get("Retry-After") != ""
+		isZeroRemaining := resp.Header.Get("X-RateLimit-Remaining") == "0"
+		bodyLower := strings.ToLower(string(body))
+		isAbuseOrRateLimit := strings.Contains(bodyLower, "rate limit") || strings.Contains(bodyLower, "abuse")
+
+		if hasRetryAfter || isZeroRemaining || isAbuseOrRateLimit {
+			return OutcomeRateLimited, &OperatingError{
+				Outcome: OutcomeRateLimited,
+				Code:    "GIT_ERR_RATE_LIMITED",
+				Message: fmt.Sprintf("GitHub API rate limit or abuse detection triggered (HTTP %d)", resp.StatusCode),
+			}
+		}
+
+		return OutcomeTerminal, &OperatingError{
+			Outcome: OutcomeTerminal,
+			Code:    "GIT_ERR_FORBIDDEN",
+			Message: fmt.Sprintf("GitHub API returned HTTP %d", resp.StatusCode),
+		}
+	}
+
+	// 5xx Server Errors: Retryable
+	if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
+		return OutcomeRetryable, fmt.Errorf("HTTP server error %d", resp.StatusCode)
+	}
+
+	// 3xx Redirects: Terminal (redirects disabled per TigerStyle)
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return OutcomeTerminal, &OperatingError{
+			Outcome: OutcomeTerminal,
+			Code:    "GIT_ERR_REDIRECT_NOT_ALLOWED",
+			Message: fmt.Sprintf("HTTP redirect %d not followed", resp.StatusCode),
+		}
+	}
+
+	// Other 4xx Client Errors: Terminal
+	code := "GIT_ERR_HTTP_STATUS"
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		code = "GIT_ERR_UNAUTHORIZED"
+	case http.StatusNotFound:
+		code = "GIT_ERR_NOT_FOUND"
+	}
+
+	return OutcomeTerminal, &OperatingError{
+		Outcome: OutcomeTerminal,
+		Code:    code,
+		Message: fmt.Sprintf("GitHub API returned HTTP %d", resp.StatusCode),
+	}
+}
+
+// readBoundedBody reads an HTTP response body up to MaxResponseSizeBytes + 1.
+func readBoundedBody(body io.ReadCloser) ([]byte, error) {
+	defer func() { _ = body.Close() }()
+
+	limited := io.LimitReader(body, MaxResponseSizeBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, &OperatingError{
+			Outcome: OutcomeRetryable,
+			Code:    "GIT_ERR_READ_BODY",
+			Message: "failed to read response body",
+			Err:     err,
+		}
+	}
+	if int64(len(data)) > MaxResponseSizeBytes {
+		return nil, &OperatingError{
+			Outcome: OutcomeTerminal,
+			Code:    "GIT_ERR_RESPONSE_TOO_LARGE",
+			Message: fmt.Sprintf("response body exceeded limit of %d bytes", MaxResponseSizeBytes),
+		}
+	}
+	return data, nil
 }
 
 func (c *GitHubClient) doRequest(ctx context.Context, method, endpoint string) ([]byte, error) {
@@ -397,74 +510,31 @@ func (c *GitHubClient) doRequest(ctx context.Context, method, endpoint string) (
 					Err:     ctx.Err(),
 				}
 			}
-			// Transient network failure or timeout: retry once
 			continue
 		}
 
-		// Check for rate limiting: HTTP 429 or HTTP 403 with X-RateLimit-Remaining: 0
-		if resp.StatusCode == http.StatusTooManyRequests ||
-			(resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0") {
-			_ = resp.Body.Close()
-			cancel()
-			return nil, &OperatingError{
-				Outcome: OutcomeRateLimited,
-				Code:    "GIT_ERR_RATE_LIMITED",
-				Message: fmt.Sprintf("GitHub API rate limit exceeded (HTTP %d)", resp.StatusCode),
-			}
-		}
-
-		// Check for 5xx server errors: retry once
-		if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
-			_ = resp.Body.Close()
-			cancel()
-			lastErr = fmt.Errorf("HTTP server error %d", resp.StatusCode)
-			continue
-		}
-
-		// Check for other non-2xx status codes (terminal)
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			_ = resp.Body.Close()
-			cancel()
-			code := "GIT_ERR_HTTP_STATUS"
-			switch resp.StatusCode {
-			case http.StatusUnauthorized:
-				code = "GIT_ERR_UNAUTHORIZED"
-			case http.StatusNotFound:
-				code = "GIT_ERR_NOT_FOUND"
-			case http.StatusForbidden:
-				code = "GIT_ERR_FORBIDDEN"
-			}
-			return nil, &OperatingError{
-				Outcome: OutcomeTerminal,
-				Code:    code,
-				Message: fmt.Sprintf("GitHub API returned HTTP %d", resp.StatusCode),
-			}
-		}
-
-		// 2xx Success: read bounded response body
-		bodyReader := io.LimitReader(resp.Body, MaxResponseSizeBytes+1)
-		body, err := io.ReadAll(bodyReader)
-		_ = resp.Body.Close()
+		body, readErr := readBoundedBody(resp.Body)
 		cancel()
 
-		if err != nil {
-			return nil, &OperatingError{
-				Outcome: OutcomeRetryable,
-				Code:    "GIT_ERR_READ_BODY",
-				Message: "failed to read response body",
-				Err:     err,
+		if readErr != nil {
+			var opErr *OperatingError
+			if errors.As(readErr, &opErr) && opErr.Outcome == OutcomeTerminal {
+				return nil, readErr
 			}
+			lastErr = readErr
+			continue
 		}
 
-		if int64(len(body)) > MaxResponseSizeBytes {
-			return nil, &OperatingError{
-				Outcome: OutcomeTerminal,
-				Code:    "GIT_ERR_RESPONSE_TOO_LARGE",
-				Message: fmt.Sprintf("response body exceeded limit of %d bytes", MaxResponseSizeBytes),
-			}
+		outcome, classErr := classifyHTTPResponse(resp, body)
+		switch outcome {
+		case OutcomeAcknowledged:
+			return body, nil
+		case OutcomeRateLimited, OutcomeTerminal:
+			return nil, classErr
+		case OutcomeRetryable:
+			lastErr = classErr
+			continue
 		}
-
-		return body, nil
 	}
 
 	return nil, &OperatingError{
@@ -493,19 +563,25 @@ type ghCommitItem struct {
 func (c *GitHubClient) fetchCommits(
 	ctx context.Context,
 	owner, repoName, repoOrig string,
+	author string,
 	sinceStr, untilStr string,
 	loc *time.Location,
 ) ([]GitHubCommit, error) {
-	endpoint := fmt.Sprintf("/repos/%s/%s/commits?since=%s&until=%s&per_page=100",
+	if author == "" {
+		return nil, &OperatingError{
+			Outcome: OutcomeTerminal,
+			Code:    "GIT_ERR_MISSING_AUTHOR",
+			Message: "author must be specified to prevent fetching entire repository commits",
+		}
+	}
+
+	endpoint := fmt.Sprintf("/repos/%s/%s/commits?since=%s&until=%s&author=%s&per_page=100",
 		url.PathEscape(owner),
 		url.PathEscape(repoName),
 		url.QueryEscape(sinceStr),
 		url.QueryEscape(untilStr),
+		url.QueryEscape(author),
 	)
-
-	if author := c.Author(); author != "" {
-		endpoint += "&author=" + url.QueryEscape(author)
-	}
 
 	body, err := c.doRequest(ctx, http.MethodGet, endpoint)
 	if err != nil {
@@ -613,9 +689,18 @@ func (c *GitHubClient) fetchPRCommits(
 func (c *GitHubClient) fetchPRs(
 	ctx context.Context,
 	owner, repoName, repoOrig string,
+	author string,
 	startOfDay, endOfDay time.Time,
 	commits []GitHubCommit,
 ) ([]GitHubPR, error) {
+	if author == "" {
+		return nil, &OperatingError{
+			Outcome: OutcomeTerminal,
+			Code:    "GIT_ERR_MISSING_AUTHOR",
+			Message: "author must be specified to prevent fetching entire repository PRs",
+		}
+	}
+
 	endpoint := fmt.Sprintf("/repos/%s/%s/pulls?state=all&sort=updated&direction=desc&per_page=100",
 		url.PathEscape(owner),
 		url.PathEscape(repoName),
@@ -637,18 +722,35 @@ func (c *GitHubClient) fetchPRs(
 	}
 
 	commitSHAs := make(map[string]bool, len(commits))
+	commitMessages := make([]string, 0, len(commits))
 	for _, commit := range commits {
 		if commit.SHA != "" {
 			commitSHAs[commit.SHA] = true
 		}
+		if commit.Message != "" {
+			commitMessages = append(commitMessages, commit.Message)
+		}
 	}
 
 	prs := make([]GitHubPR, 0)
-	author := c.Author()
+	commitLookupsCount := 0
 
 	for _, item := range rawPRs {
 		if len(prs) >= MaxPRsCount {
 			break
+		}
+
+		isUserPR := strings.EqualFold(item.User.Login, author)
+		hasHeadCommitMatch := commitSHAs[item.Head.SHA]
+
+		// Check if any day commit message references this PR number (#42) or branch
+		hasCommitRefMatch := false
+		prRef := fmt.Sprintf("#%d", item.Number)
+		for _, msg := range commitMessages {
+			if strings.Contains(msg, prRef) || (item.Head.Ref != "" && strings.Contains(msg, item.Head.Ref)) {
+				hasCommitRefMatch = true
+				break
+			}
 		}
 
 		isActiveToday := isTimeWithin(item.CreatedAt, startOfDay, endOfDay) ||
@@ -656,32 +758,25 @@ func (c *GitHubClient) fetchPRs(
 			(item.MergedAt != nil && isTimeWithin(*item.MergedAt, startOfDay, endOfDay)) ||
 			(item.ClosedAt != nil && isTimeWithin(*item.ClosedAt, startOfDay, endOfDay))
 
-		hasHeadCommitMatch := commitSHAs[item.Head.SHA]
-		isUserPR := (author == "" || strings.EqualFold(item.User.Login, author))
-
-		if !isActiveToday && !hasHeadCommitMatch {
+		// Only consider PRs that either:
+		// 1) Match a day commit (head SHA or commit ref/branch), OR
+		// 2) Are authored by the user and were active today
+		if !hasHeadCommitMatch && !hasCommitRefMatch && !(isUserPR && isActiveToday) {
 			continue
 		}
 
-		prCommits, err := c.fetchPRCommits(ctx, owner, repoName, item.Number)
-		if err != nil {
-			return nil, err
-		}
-
-		hasAnyCommitMatch := hasHeadCommitMatch
-		if !hasAnyCommitMatch {
-			for _, sha := range prCommits {
-				if commitSHAs[sha] {
-					hasAnyCommitMatch = true
-					break
-				}
+		var prCommits []string
+		// Bounded commit lookup: at most MaxPRCommitLookupsCount per day
+		if commitLookupsCount < MaxPRCommitLookupsCount {
+			commitLookupsCount++
+			var err error
+			prCommits, err = c.fetchPRCommits(ctx, owner, repoName, item.Number)
+			if err != nil {
+				return nil, err
 			}
 		}
 
-		if !isUserPR && !hasAnyCommitMatch {
-			continue
-		}
-
+		// If commit lookup was skipped or returned empty, populate with head SHA if present
 		if len(prCommits) == 0 && item.Head.SHA != "" {
 			prCommits = []string{item.Head.SHA}
 		}
@@ -723,6 +818,24 @@ func (c *GitHubClient) FetchDayActivity(ctx context.Context, repo string, date t
 		return nil, nil, err
 	}
 
+	// Resolve author: must be configured or resolved from authenticated user
+	author := c.Author()
+	if author == "" {
+		if c.Token() != "" {
+			userLogin, err := c.fetchAuthenticatedUser(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			author = userLogin
+		} else {
+			return nil, nil, &OperatingError{
+				Outcome: OutcomeTerminal,
+				Code:    "GIT_ERR_MISSING_AUTHOR",
+				Message: "author must be specified when unauthenticated to prevent fetching entire repository activity",
+			}
+		}
+	}
+
 	loc := date.Location()
 	if loc == nil {
 		loc = time.UTC
@@ -731,14 +844,14 @@ func (c *GitHubClient) FetchDayActivity(ctx context.Context, repo string, date t
 	endOfDay := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 999999999, loc)
 
 	sinceStr := startOfDay.UTC().Format(time.RFC3339)
-	untilStr := endOfDay.UTC().Truncate(time.Second).Format(time.RFC3339)
+	untilStr := endOfDay.UTC().Format(time.RFC3339)
 
-	commits, err := c.fetchCommits(ctx, owner, repoName, repo, sinceStr, untilStr, loc)
+	commits, err := c.fetchCommits(ctx, owner, repoName, repo, author, sinceStr, untilStr, loc)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	prs, err := c.fetchPRs(ctx, owner, repoName, repo, startOfDay, endOfDay, commits)
+	prs, err := c.fetchPRs(ctx, owner, repoName, repo, author, startOfDay, endOfDay, commits)
 	if err != nil {
 		return nil, nil, err
 	}

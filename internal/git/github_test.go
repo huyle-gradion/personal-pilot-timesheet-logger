@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -17,7 +18,7 @@ import (
 
 func TestNewGitHubClient(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("SKIP_GH_AUTH", "1")
+	t.Setenv("GH_TOKEN", "")
 
 	// Default timeout
 	c1 := NewGitHubClient("", 0)
@@ -62,18 +63,24 @@ func TestSettersAndGetters(t *testing.T) {
 func TestResolveToken(t *testing.T) {
 	// Explicit argument has highest precedence
 	t.Setenv("GITHUB_TOKEN", "env-token")
+	t.Setenv("GH_TOKEN", "gh-env-token")
 	if tok := ResolveToken("explicit-token"); tok != "explicit-token" {
 		t.Fatalf("expected explicit-token, got %s", tok)
 	}
 
-	// Environment variable fallback
+	// GITHUB_TOKEN environment variable fallback
 	if tok := ResolveToken(""); tok != "env-token" {
 		t.Fatalf("expected env-token, got %s", tok)
 	}
 
-	// Empty when env unset and SKIP_GH_AUTH=1
+	// GH_TOKEN fallback when GITHUB_TOKEN is unset
 	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("SKIP_GH_AUTH", "1")
+	if tok := ResolveToken(""); tok != "gh-env-token" {
+		t.Fatalf("expected gh-env-token, got %s", tok)
+	}
+
+	// Empty when both envs are unset
+	t.Setenv("GH_TOKEN", "")
 	if tok := ResolveToken(""); tok != "" {
 		t.Fatalf("expected empty token, got %s", tok)
 	}
@@ -91,6 +98,8 @@ func TestParseRepoSlug(t *testing.T) {
 		{"owner/repo/", "owner", "repo", false},
 		{"https://github.com/owner/repo", "owner", "repo", false},
 		{"https://github.com/owner/repo.git", "owner", "repo", false},
+		{"https://github.com/owner/repo/pull/12", "owner", "repo", false},
+		{"https://github.com/owner/repo/tree/feat/branch", "owner", "repo", false},
 		{"git@github.com:owner/repo.git", "owner", "repo", false},
 		{"just-repo", "", "just-repo", false},
 		{"", "", "", true},
@@ -122,10 +131,9 @@ func TestResolveRepo(t *testing.T) {
 		t.Fatalf("failed resolving explicit repo: %v, owner=%s, repo=%s", err, owner, repo)
 	}
 
-	// 2. Unauthenticated slug without owner -> error
+	// 2. Unauthenticated slug without owner -> terminal error
 	t.Setenv("GITHUB_USER", "")
 	t.Setenv("GITHUB_ACTOR", "")
-	t.Setenv("SKIP_GH_AUTH", "1")
 	cUnauth := NewGitHubClient("", 5*time.Second)
 	_, _, err = cUnauth.resolveRepo(ctx, "my-repo")
 	if err == nil || !IsTerminal(err) {
@@ -165,6 +173,24 @@ func TestResolveRepo(t *testing.T) {
 	if err != nil || owner != "api-user" || repo != "api-repo" {
 		t.Fatalf("failed resolving repo via /user: %v, owner=%s, repo=%s", err, owner, repo)
 	}
+
+	// 6. Authenticated via /user returning 401 Unauthorized propagates error directly
+	tsErr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	defer tsErr.Close()
+
+	cAuthErr := NewGitHubClient("bad-token", 5*time.Second)
+	cAuthErr.SetBaseURL(tsErr.URL)
+	_, _, err = cAuthErr.resolveRepo(ctx, "api-repo")
+	if err == nil {
+		t.Fatal("expected error propagating from /user 401, got nil")
+	}
+	var opErr *OperatingError
+	if !errors.As(err, &opErr) || opErr.Code != "GIT_ERR_UNAUTHORIZED" {
+		t.Fatalf("expected propagated GIT_ERR_UNAUTHORIZED, got: %#v", err)
+	}
 }
 
 func TestFetchDayActivity_Success(t *testing.T) {
@@ -191,57 +217,57 @@ func TestFetchDayActivity_Success(t *testing.T) {
 
 			w.Header().Set("Content-Type", "application/json")
 			commitsJSON := `[
-				{
-					"sha": "a1b2c3d4e5f67890",
-					"commit": {
-						"author": {
-							"name": "Huy Le",
-							"email": "huy@gradion.com",
-							"date": "2026-10-07T03:00:00Z"
-						},
-						"message": "feat: implement github rest api client"
-					}
-				},
-				{
-					"sha": "e4f5g6h7i8j90123",
-					"commit": {
-						"author": {
-							"name": "Huy Le",
-							"email": "huy@gradion.com",
-							"date": "2026-10-07T04:30:00Z"
-						},
-						"message": "test: add httptest mocks for github api"
-					}
-				}
-			]`
+                {
+                    "sha": "a1b2c3d4e5f67890",
+                    "commit": {
+                        "author": {
+                            "name": "Huy Le",
+                            "email": "huy@gradion.com",
+                            "date": "2026-10-07T03:00:00Z"
+                        },
+                        "message": "feat: implement github rest api client"
+                    }
+                },
+                {
+                    "sha": "e4f5g6h7i8j90123",
+                    "commit": {
+                        "author": {
+                            "name": "Huy Le",
+                            "email": "huy@gradion.com",
+                            "date": "2026-10-07T04:30:00Z"
+                        },
+                        "message": "test: add httptest mocks for github api"
+                    }
+                }
+            ]`
 			_, _ = w.Write([]byte(commitsJSON))
 
 		case r.URL.Path == "/repos/huyle/assignment-1/pulls":
 			w.Header().Set("Content-Type", "application/json")
 			pullsJSON := `[
-				{
-					"number": 42,
-					"title": "feat: two-tier git collector",
-					"state": "open",
-					"created_at": "2026-10-07T02:00:00Z",
-					"updated_at": "2026-10-07T05:00:00Z",
-					"head": {
-						"ref": "feat/github-api-client",
-						"sha": "a1b2c3d4e5f67890"
-					},
-					"user": {
-						"login": "huyle"
-					}
-				}
-			]`
+                {
+                    "number": 42,
+                    "title": "feat: two-tier git collector",
+                    "state": "open",
+                    "created_at": "2026-10-07T02:00:00Z",
+                    "updated_at": "2026-10-07T05:00:00Z",
+                    "head": {
+                        "ref": "feat/github-api-client",
+                        "sha": "a1b2c3d4e5f67890"
+                    },
+                    "user": {
+                        "login": "huyle"
+                    }
+                }
+            ]`
 			_, _ = w.Write([]byte(pullsJSON))
 
 		case r.URL.Path == "/repos/huyle/assignment-1/pulls/42/commits":
 			w.Header().Set("Content-Type", "application/json")
 			prCommitsJSON := `[
-				{"sha": "a1b2c3d4e5f67890"},
-				{"sha": "e4f5g6h7i8j90123"}
-			]`
+                {"sha": "a1b2c3d4e5f67890"},
+                {"sha": "e4f5g6h7i8j90123"}
+            ]`
 			_, _ = w.Write([]byte(prCommitsJSON))
 
 		default:
@@ -305,9 +331,9 @@ func TestFetchDayActivity_Success(t *testing.T) {
 	}
 }
 
-func TestFetchDayActivity_Unauthenticated(t *testing.T) {
+func TestFetchDayActivity_Unauthenticated_WithAuthor(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("SKIP_GH_AUTH", "1")
+	t.Setenv("GH_TOKEN", "")
 
 	var receivedAuthHeader string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -319,16 +345,75 @@ func TestFetchDayActivity_Unauthenticated(t *testing.T) {
 
 	client := NewGitHubClient("", 5*time.Second)
 	client.SetBaseURL(srv.URL)
+	client.SetAuthor("unauth-user")
 
 	commits, prs, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
 	if err != nil {
-		t.Fatalf("FetchDayActivity unauthenticated failed: %v", err)
+		t.Fatalf("FetchDayActivity unauthenticated with author failed: %v", err)
 	}
 	if receivedAuthHeader != "" {
 		t.Errorf("expected no Authorization header, got: %s", receivedAuthHeader)
 	}
 	if len(commits) != 0 || len(prs) != 0 {
 		t.Errorf("expected empty commits and prs, got %d and %d", len(commits), len(prs))
+	}
+}
+
+func TestFetchDayActivity_MissingAuthor_Unauthenticated(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	client := NewGitHubClient("", 5*time.Second)
+	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
+	if err == nil {
+		t.Fatal("expected error for unauthenticated call without author, got nil")
+	}
+	if !IsTerminal(err) {
+		t.Fatalf("expected IsTerminal true, got: %v", err)
+	}
+	var opErr *OperatingError
+	if !errors.As(err, &opErr) || opErr.Code != "GIT_ERR_MISSING_AUTHOR" {
+		t.Fatalf("expected GIT_ERR_MISSING_AUTHOR, got: %#v", err)
+	}
+}
+
+func TestFetchDayActivity_AutoResolveAuthor_Authenticated(t *testing.T) {
+	var requestedUserEndpoint bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/user" {
+			requestedUserEndpoint = true
+			_, _ = w.Write([]byte(`{"login":"auto-user"}`))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/repos/owner/repo/commits") {
+			if author := r.URL.Query().Get("author"); author != "auto-user" {
+				t.Errorf("expected author=auto-user query param, got %s", author)
+			}
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls") {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	client := NewGitHubClient("auth-token", 5*time.Second)
+	client.SetBaseURL(srv.URL)
+	// Author deliberately unset: should resolve via /user
+
+	commits, prs, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !requestedUserEndpoint {
+		t.Fatal("expected /user endpoint to be requested to resolve author")
+	}
+	if len(commits) != 0 || len(prs) != 0 {
+		t.Errorf("expected empty slices, got %d commits, %d prs", len(commits), len(prs))
 	}
 }
 
@@ -343,6 +428,7 @@ func TestFetchDayActivity_RateLimited_429(t *testing.T) {
 
 	client := NewGitHubClient("test-token", 5*time.Second)
 	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
 
 	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
 	if err == nil {
@@ -376,6 +462,7 @@ func TestFetchDayActivity_RateLimited_403_Header(t *testing.T) {
 
 	client := NewGitHubClient("test-token", 5*time.Second)
 	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
 
 	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
 	if err == nil {
@@ -387,6 +474,90 @@ func TestFetchDayActivity_RateLimited_403_Header(t *testing.T) {
 	}
 	if atomic.LoadInt32(&requestCount) != 1 {
 		t.Errorf("expected exactly 1 request without retries, got %d", requestCount)
+	}
+}
+
+func TestFetchDayActivity_RateLimited_403_RetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "rate limit exceeded"}`))
+	}))
+	defer srv.Close()
+
+	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
+
+	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
+	if err == nil {
+		t.Fatal("expected rate limit error for 403 with Retry-After, got nil")
+	}
+	if !IsRateLimited(err) {
+		t.Errorf("expected IsRateLimited true for 403 with Retry-After, got: %v", err)
+	}
+}
+
+func TestFetchDayActivity_RateLimited_403_BodyText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "You have triggered a secondary rate limit. Please wait."}`))
+	}))
+	defer srv.Close()
+
+	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
+
+	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
+	if err == nil {
+		t.Fatal("expected rate limit error for 403 secondary rate limit body, got nil")
+	}
+	if !IsRateLimited(err) {
+		t.Errorf("expected IsRateLimited true for secondary rate limit body, got: %v", err)
+	}
+}
+
+func TestFetchDayActivity_RateLimited_403_AbuseDetection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "abuse detection mechanism triggered"}`))
+	}))
+	defer srv.Close()
+
+	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
+
+	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
+	if err == nil {
+		t.Fatal("expected rate limit error for 403 abuse detection body, got nil")
+	}
+	if !IsRateLimited(err) {
+		t.Errorf("expected IsRateLimited true for abuse detection, got: %v", err)
+	}
+}
+
+func TestFetchDayActivity_403_Forbidden_Regular(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "Resource not accessible by integration"}`))
+	}))
+	defer srv.Close()
+
+	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
+
+	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
+	if err == nil {
+		t.Fatal("expected error for standard 403 forbidden, got nil")
+	}
+	if IsRateLimited(err) {
+		t.Errorf("expected IsRateLimited false for standard 403 forbidden, got true")
+	}
+	if !IsTerminal(err) {
+		t.Errorf("expected IsTerminal true for standard 403 forbidden, got false")
 	}
 }
 
@@ -406,6 +577,7 @@ func TestFetchDayActivity_5xx_RetrySuccess(t *testing.T) {
 
 	client := NewGitHubClient("test-token", 5*time.Second)
 	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
 
 	commits, prs, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
 	if err != nil {
@@ -431,6 +603,7 @@ func TestFetchDayActivity_5xx_RetryExhausted(t *testing.T) {
 
 	client := NewGitHubClient("test-token", 5*time.Second)
 	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
 
 	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
 	if err == nil {
@@ -475,6 +648,7 @@ func TestFetchDayActivity_TerminalErrors(t *testing.T) {
 
 			client := NewGitHubClient("test-token", 5*time.Second)
 			client.SetBaseURL(srv.URL)
+			client.SetAuthor("test-author")
 
 			_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
 			if err == nil {
@@ -494,6 +668,29 @@ func TestFetchDayActivity_TerminalErrors(t *testing.T) {
 	}
 }
 
+func TestFetchDayActivity_RedirectTerminal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/moved-target", http.StatusMovedPermanently)
+	}))
+	defer srv.Close()
+
+	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
+
+	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
+	if err == nil {
+		t.Fatal("expected error on redirect, got nil")
+	}
+	if !IsTerminal(err) {
+		t.Fatalf("expected IsTerminal true for redirect, got: %v", err)
+	}
+	var opErr *OperatingError
+	if !errors.As(err, &opErr) || opErr.Code != "GIT_ERR_REDIRECT_NOT_ALLOWED" {
+		t.Fatalf("expected GIT_ERR_REDIRECT_NOT_ALLOWED, got: %#v", err)
+	}
+}
+
 func TestFetchDayActivity_ResponseTooLarge(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -507,6 +704,7 @@ func TestFetchDayActivity_ResponseTooLarge(t *testing.T) {
 
 	client := NewGitHubClient("test-token", 5*time.Second)
 	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
 
 	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
 	if err == nil {
@@ -525,6 +723,7 @@ func TestFetchDayActivity_ResponseTooLarge(t *testing.T) {
 
 func TestFetchDayActivity_InvalidInputs(t *testing.T) {
 	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetAuthor("test-author")
 
 	// Zero date
 	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Time{})
@@ -541,6 +740,7 @@ func TestFetchDayActivity_InvalidInputs(t *testing.T) {
 
 func TestFetchDayActivity_ContextCancelled(t *testing.T) {
 	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetAuthor("test-author")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel before call
@@ -569,6 +769,9 @@ func TestFetchDayActivity_PRCommits404Fallback(t *testing.T) {
 						Ref: "feat/fallback",
 						SHA: "headsha123",
 					},
+					User: struct {
+						Login string `json:"login"`
+					}{Login: "test-author"},
 				},
 			}
 			data, _ := json.Marshal(pulls)
@@ -584,6 +787,7 @@ func TestFetchDayActivity_PRCommits404Fallback(t *testing.T) {
 
 	client := NewGitHubClient("test-token", 5*time.Second)
 	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
 
 	_, prs, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
 	if err != nil {
@@ -594,6 +798,60 @@ func TestFetchDayActivity_PRCommits404Fallback(t *testing.T) {
 	}
 	if len(prs[0].Commits) != 1 || prs[0].Commits[0] != "headsha123" {
 		t.Errorf("expected fallback to head SHA, got: %v", prs[0].Commits)
+	}
+}
+
+func TestFetchDayActivity_PRCommitLookupBounded(t *testing.T) {
+	var prCommitsCalls int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/commits"):
+			_, _ = w.Write([]byte(`[]`))
+		case r.URL.Path == "/repos/owner/repo/pulls":
+			// Generate 10 active PRs authored by user
+			pulls := make([]ghPRItem, 10)
+			for i := 0; i < 10; i++ {
+				pulls[i] = ghPRItem{
+					Number:    i + 1,
+					Title:     fmt.Sprintf("PR %d", i+1),
+					CreatedAt: time.Now(),
+					Head: ghPRHeadBase{
+						Ref: fmt.Sprintf("branch-%d", i+1),
+						SHA: fmt.Sprintf("sha-%d", i+1),
+					},
+				}
+				pulls[i].User.Login = "test-author"
+			}
+			data, _ := json.Marshal(pulls)
+			_, _ = w.Write(data)
+		case strings.Contains(r.URL.Path, "/commits"):
+			atomic.AddInt32(&prCommitsCalls, 1)
+			_, _ = w.Write([]byte(`[{"sha":"commit-sha"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
+
+	_, prs, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(prs) != 10 {
+		t.Fatalf("expected 10 PRs, got %d", len(prs))
+	}
+
+	// Verify PR commits calls are capped at MaxPRCommitLookupsCount (5)
+	actualCalls := atomic.LoadInt32(&prCommitsCalls)
+	if actualCalls > int32(MaxPRCommitLookupsCount) {
+		t.Fatalf("PR commit lookups exceeded bound: expected <= %d, got %d", MaxPRCommitLookupsCount, actualCalls)
 	}
 }
 
@@ -649,6 +907,32 @@ func TestOperatingError_Unwrap(t *testing.T) {
 	}
 }
 
+func TestOperatingError_URLSanitization(t *testing.T) {
+	urlErr := &url.Error{
+		Op:  "Get",
+		URL: "https://api.github.com/repos/owner/repo/commits?author=huyle&token=super_secret_token_12345",
+		Err: errors.New("connection reset by peer"),
+	}
+
+	opErr := &OperatingError{
+		Outcome: OutcomeRetryable,
+		Code:    "GIT_ERR_NETWORK",
+		Message: "network failure",
+		Err:     urlErr,
+	}
+
+	errStr := opErr.Error()
+	if strings.Contains(errStr, "super_secret_token_12345") {
+		t.Fatalf("OperatingError.Error() leaked secret token from URL: %s", errStr)
+	}
+	if strings.Contains(errStr, "author=huyle") {
+		t.Fatalf("OperatingError.Error() leaked query parameters from URL: %s", errStr)
+	}
+	if !strings.Contains(errStr, "https://api.github.com/repos/owner/repo/commits") {
+		t.Fatalf("OperatingError.Error() should retain sanitized base path: %s", errStr)
+	}
+}
+
 func TestMalformedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -658,6 +942,7 @@ func TestMalformedJSON(t *testing.T) {
 
 	client := NewGitHubClient("test-token", 5*time.Second)
 	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
 
 	_, _, err := client.FetchDayActivity(context.Background(), "owner/repo", time.Now())
 	if err == nil || !IsTerminal(err) {
@@ -695,11 +980,6 @@ func TestErrorPredicates(t *testing.T) {
 }
 
 func TestFetchDayActivity_ThreePointBoundary(t *testing.T) {
-	// TigerStyle 3-point boundary testing for MaxResponseSizeBytes
-	// Point 1: Below bound (valid small JSON array)
-	// Point 2: At bound (valid JSON padded to MaxResponseSizeBytes)
-	// Point 3: Above bound (MaxResponseSizeBytes + 1 bytes)
-
 	var currentMode string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -718,6 +998,7 @@ func TestFetchDayActivity_ThreePointBoundary(t *testing.T) {
 
 	client := NewGitHubClient("test-token", 5*time.Second)
 	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
 
 	// Point 1: Below bound
 	currentMode = "below"
