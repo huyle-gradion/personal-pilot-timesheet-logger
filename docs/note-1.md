@@ -12,8 +12,8 @@
 
 > AI steps: anything that needs judgment. Keep this one as minimized as possible
 
-1. (Script) Collect git commits + pull requests (opened, reviewed, merged)
-2. (Script) Collect events from google calendar
+1. (Script) Collect git commits + pull requests (opened, reviewed, merged) and format data that matched basic structure of a simple entry
+2. (Script) Collect events from google calendar and format data that matched basic structure of a simple entry
 3. (AI) Format collected data into meaning and compacted entries
 4. (Script) Create a new daily log which grouped by topic and time block
 5. (Script) Ask for user review. Must display the output of the daily log and the collision of the blocks
@@ -51,6 +51,7 @@
 
 ### Step
 
+0. Collect all information of space and time complexity and usage of the tools/modules for the pilot (include collecting git commits + pull requests and collecting events)
 1. Collect all session transcripts
 2. Pull the token usage for each run
 3. Add these up into a single `token used per day`, add if their are multiple runs
