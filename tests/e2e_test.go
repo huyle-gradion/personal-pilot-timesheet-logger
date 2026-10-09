@@ -436,6 +436,7 @@ END:VCALENDAR`)
 		"-base-url", gradionServer.URL,
 		"-token", "test-gradion-token",
 		"-markdown-dir", markdownDir,
+		"-approve",
 	)
 	if err != nil || code != 0 {
 		t.Fatalf("sync-timesheet failed with code %d: %v\nstderr: %s", code, err, syncErrOut)
@@ -737,6 +738,7 @@ func TestE2E_MarkdownSummary(t *testing.T) {
 		"-base-url", gradionServer.URL,
 		"-token", "test-token",
 		"-markdown-dir", markdownDir,
+		"-approve",
 	)
 	if err != nil || code != 0 {
 		t.Fatalf("sync-timesheet failed with code %d: %v\nstderr: %s", code, err, stderr)

@@ -23,6 +23,32 @@ func Assert(condition bool, invariantID string) {
 	}
 }
 
+// MaxErrorBodySnippetBytes bounds the response-body preview embedded in
+// OperatingError messages, in bytes (TigerStyle). The response body itself is
+// already bounded by MaxResponseBodyBytes in readBoundedBody; this is the
+// smaller display bound for error strings.
+const MaxErrorBodySnippetBytes int = 512
+
+// errorBodySnippet returns a bounded preview of a response body with the literal
+// token removed by sanitizeError.
+//
+// Redaction runs over the FULL body before truncation. Truncating first can cut
+// a secret at the 512-byte display boundary, leaving a bare prefix that
+// whole-token replacement cannot match and therefore leaking part of the token.
+// The display bound is applied to the already-redacted text, so the snippet is
+// still bounded and the redaction placeholder may be the only thing clipped.
+//
+// Redaction is literal only (see sanitizeError): encoded, escaped, or split
+// forms of the token are not detected. This snippet is a best-effort preview, not
+// a universal secret filter, and must not be treated as guaranteed secret-free.
+func errorBodySnippet(body []byte, token string) string {
+	sanitized := sanitizeError(errors.New(string(body)), token)
+	if len(sanitized) > MaxErrorBodySnippetBytes {
+		sanitized = sanitized[:MaxErrorBodySnippetBytes]
+	}
+	return sanitized
+}
+
 // Outcome classifies the result of an API operation per go-rules.md.
 type Outcome int
 
@@ -31,6 +57,7 @@ const (
 	OutcomeRetryable
 	OutcomeTerminal
 	OutcomeRateLimited
+	OutcomeUncertain
 )
 
 func (o Outcome) String() string {
@@ -43,6 +70,8 @@ func (o Outcome) String() string {
 		return "OutcomeTerminal"
 	case OutcomeRateLimited:
 		return "OutcomeRateLimited"
+	case OutcomeUncertain:
+		return "OutcomeUncertain"
 	default:
 		return fmt.Sprintf("Outcome(%d)", int(o))
 	}
@@ -56,12 +85,20 @@ type OperatingError struct {
 	Err     error
 }
 
+// sanitizeError removes the literal bearer token and URL credentials from an
+// error message.
+//
+// Redaction is literal only: it replaces exact occurrences of the token as a
+// substring. Encoded, escaped, split, or otherwise transformed forms of the
+// token (for example percent-encoded, base64, or JSON-escaped) are NOT detected
+// and are NOT redacted. Treat the result as best-effort defense in depth, not as
+// a guaranteed secret-free string.
 func sanitizeError(err error, token string) string {
 	if err == nil {
 		return ""
 	}
 	msg := err.Error()
-	if token != "" && len(token) > 4 {
+	if token != "" {
 		msg = strings.ReplaceAll(msg, token, "<redacted-token>")
 	}
 	var urlErr *url.Error
@@ -86,6 +123,72 @@ func (e *OperatingError) Error() string {
 
 func (e *OperatingError) Unwrap() error {
 	return e.Err
+}
+
+// IsUncertain reports whether err describes an ambiguous non-idempotent write
+// whose remote outcome is unknown and must be reconciled before any retry.
+func IsUncertain(err error) bool {
+	var opErr *OperatingError
+	if errors.As(err, &opErr) {
+		return opErr.Outcome == OutcomeUncertain
+	}
+	return false
+}
+
+// isIdempotentMethod reports whether method is safe to retry after an
+// ambiguous failure (GET/HEAD only per RFC 9110 idempotency semantics).
+func isIdempotentMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		return true
+	default:
+		return false
+	}
+}
+
+// isAmbiguousWriteStatus reports whether status returned for a non-idempotent
+// write fails to establish that the mutation was rejected.
+//
+// RFC 9110 does not make any of these statuses prove that no mutation occurred,
+// and Gradion exposes neither an idempotency key nor a conditional-update /
+// version guard (see docs/gradion-mcp-verification.md §3 rows 7-8), so a write
+// receiving one has an unknown remote outcome and must be reconciled before any
+// retry. Reasoning and the unverified server assumptions:
+//
+//   - 408 Request Timeout: the server may have received and applied the request
+//     before timing out. The ambiguity is inherent, and no documented Gradion
+//     guarantee proves rejection, so it is treated as uncertain.
+//   - 409 Conflict: the status means the request conflicted with current state,
+//     but neither RFC 9110 nor any Gradion contract guarantees the server
+//     rejected the write atomically without applying anything (no transactional
+//     or versioned-update guarantee is documented). It is treated as uncertain
+//     for writes. This is deliberately conservative: a wrong "rejected" reading
+//     would let later writes create duplicates/overlaps.
+//   - 425 Too Early (RFC 8470): the status is defined around anti-replay
+//     refusal, but Gradion publishes no replay/idempotency contract, so the
+//     "not processed" claim cannot be relied upon and is treated as uncertain.
+//
+// Definitive 4xx rejections (400/401/403/404/405/413/415/422/428, ...) stay
+// OutcomeTerminal because the server rejects the request without applying the
+// mutation. Idempotent methods are excluded: a repeated read is harmless.
+func isAmbiguousWriteStatus(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly:
+		return true
+	default:
+		return false
+	}
+}
+
+// uncertainWriteError builds the stable error returned when a non-idempotent
+// write (POST/PATCH/DELETE) fails ambiguously and must not be blindly retried.
+func uncertainWriteError(method string, detail error) error {
+	return &OperatingError{
+		Outcome: OutcomeUncertain,
+		Code:    "API_ERR_UNCERTAIN_WRITE",
+		Message: fmt.Sprintf("%s write outcome unknown; remote state must be re-fetched and reconciled before any retry (never silently resent)", method),
+		Err:     detail,
+	}
 }
 
 // Client communicates with the Gradion Timesheet API service.
@@ -247,6 +350,11 @@ func (c *Client) executeRequest(ctx context.Context, method, endpoint string, re
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
+			if !isIdempotentMethod(method) {
+				// Non-idempotent write: transport failure is ambiguous; the
+				// server may have processed the request. Stop, do not retry.
+				return nil, 0, uncertainWriteError(method, errors.New(sanitizeError(err, c.token)))
+			}
 			lastErr = &OperatingError{
 				Outcome: OutcomeRetryable,
 				Code:    "API_ERR_NETWORK_TRANSPORT",
@@ -258,6 +366,11 @@ func (c *Client) executeRequest(ctx context.Context, method, endpoint string, re
 
 		bodyBytes, readErr := c.readBoundedBody(resp.Body)
 		if readErr != nil {
+			if !isIdempotentMethod(method) {
+				// Non-idempotent write: we cannot read the outcome; treat as
+				// uncertain and stop rather than resend.
+				return nil, resp.StatusCode, uncertainWriteError(method, readErr)
+			}
 			lastErr = readErr
 			continue
 		}
@@ -267,8 +380,12 @@ func (c *Client) executeRequest(ctx context.Context, method, endpoint string, re
 			return bodyBytes, resp.StatusCode, nil
 		}
 
-		// 429 Rate Limited: Retryable within bounds
+		// 429 Rate Limited: Retryable within bounds for idempotent methods.
+		// For non-idempotent methods the write outcome is ambiguous.
 		if resp.StatusCode == http.StatusTooManyRequests {
+			if !isIdempotentMethod(method) {
+				return nil, resp.StatusCode, uncertainWriteError(method, nil)
+			}
 			lastErr = &OperatingError{
 				Outcome: OutcomeRateLimited,
 				Code:    "API_ERR_RATE_LIMITED",
@@ -277,8 +394,12 @@ func (c *Client) executeRequest(ctx context.Context, method, endpoint string, re
 			continue
 		}
 
-		// 5xx Server Error: Retryable within bounds
+		// 5xx Server Error: Retryable within bounds for idempotent methods.
+		// For non-idempotent methods the write outcome is ambiguous.
 		if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
+			if !isIdempotentMethod(method) {
+				return nil, resp.StatusCode, uncertainWriteError(method, nil)
+			}
 			lastErr = &OperatingError{
 				Outcome: OutcomeRetryable,
 				Code:    "API_ERR_SERVER_ERROR",
@@ -294,6 +415,14 @@ func (c *Client) executeRequest(ctx context.Context, method, endpoint string, re
 				Code:    "API_ERR_REDIRECT_NOT_ALLOWED",
 				Message: fmt.Sprintf("HTTP redirect %d not followed", resp.StatusCode),
 			}
+		}
+
+		// Ambiguous 4xx outcomes for non-idempotent writes (408/409/425). These
+		// do not prove the mutation was rejected, so the remote outcome is
+		// unknown: return OutcomeUncertain and never auto-retry. See
+		// isAmbiguousWriteStatus for the reasoning and unverified assumptions.
+		if !isIdempotentMethod(method) && isAmbiguousWriteStatus(resp.StatusCode) {
+			return nil, resp.StatusCode, uncertainWriteError(method, nil)
 		}
 
 		// 4xx Client Errors: Terminal
@@ -312,7 +441,7 @@ func (c *Client) executeRequest(ctx context.Context, method, endpoint string, re
 		return nil, resp.StatusCode, &OperatingError{
 			Outcome: OutcomeTerminal,
 			Code:    code,
-			Message: fmt.Sprintf("Gradion API returned HTTP %d: %s", resp.StatusCode, string(bodyBytes)),
+			Message: fmt.Sprintf("Gradion API returned HTTP %d: %s", resp.StatusCode, errorBodySnippet(bodyBytes, c.token)),
 		}
 	}
 

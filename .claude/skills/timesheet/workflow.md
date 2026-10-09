@@ -109,12 +109,26 @@ go run ./cmd/review-timesheet -date "$TARGET_DATE" -input .cache/timesheet/$TARG
 Reconcile the saved daily timesheet record with the remote Gradion Timesheet API (`ts-prod.gradion.com`). Fetches existing remote entries, creates missing slots via `POST /api/entries`, updates modified descriptions via `PATCH /api/entries/{id}`, and skips identical entries. Guarantees zero duplicate creates on repeated executions. Exports local clean markdown summary to `timesheet/$TARGET_DATE.md`.
 
 ```bash
-# Dry run preview (optional)
+# Review preview (always safe; performs zero remote writes)
 go run ./cmd/sync-timesheet -date "$TARGET_DATE" -dry-run
 
-# Live reconciliation
-go run ./cmd/sync-timesheet -date "$TARGET_DATE"
+# Approved live reconciliation (requires explicit -approve)
+go run ./cmd/sync-timesheet -date "$TARGET_DATE" -approve
 ```
+
+Submission is deferred until explicit approval: a non-dry-run execution without
+`-approve` mutates nothing and asks for approval. Because the remote API exposes
+no idempotency keys and no conditional updates, an **uncertain** write stops the
+run and is marked unresolved (partial) rather than retried blindly; remote state
+must be re-fetched before any retry.
+
+> **`-approve` is a temporary mutation gate, not revision-bound approval.**
+> It authorizes the mutations of the current run only. It is *not* tied to the
+> exact preview shown, nor to a specific local record revision, and there is no
+> durable mapping store yet (see ADR-005's revision-tied approval and the
+> "not-started" redesign). Any remote change between preview and execution is
+> therefore unenforced. Preview with `-dry-run` before approving, and treat
+> production submission as **not ready**.
 
 **Output Seam**: Remote entries synchronized and local `timesheet/$TARGET_DATE.md` generated.
 

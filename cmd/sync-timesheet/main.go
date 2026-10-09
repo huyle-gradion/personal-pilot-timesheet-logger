@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/api"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
 )
 
@@ -34,6 +35,11 @@ const (
 	ExitOK    = 0
 	ExitUsage = 64 // EX_USAGE
 	ExitErr   = 1
+)
+
+// Stable, secret-free CLI error codes.
+const (
+	ErrCodeKeychainFailed = "SYNC_CLI_KEYCHAIN_FAILED"
 )
 
 // Invariant assertion identifiers.
@@ -108,6 +114,7 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	var (
 		targetDate       string
 		dryRun           bool
+		approve          bool
 		storageDir       string
 		token            string
 		classificationID string
@@ -120,6 +127,7 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	today := time.Now().UTC().Format("2006-01-02")
 	fs.StringVar(&targetDate, "date", today, "Target date in YYYY-MM-DD format")
 	fs.BoolVar(&dryRun, "dry-run", false, "Preview reconciliation plan without sending network writes")
+	fs.BoolVar(&approve, "approve", false, "Temporary mutation gate: required to execute a non-dry-run sync (not revision-bound approval)")
 	fs.StringVar(&storageDir, "storage-dir", "", "Directory for Tier 2 persistent storage (default: ~/.timesheet/records)")
 	fs.StringVar(&token, "token", "", "Gradion API Bearer token (default: TIMESHEET_API_TOKEN env var)")
 	fs.StringVar(&classificationID, "classification-id", "", "Default classification ID (default: DEFAULT_CLASSIFICATION_ID or fallback)")
@@ -144,17 +152,35 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		return ExitUsage
 	}
 
-	// 3. Resolve API Bearer token
+	// 3. Resolve API Bearer token: -token -> TIMESHEET_API_TOKEN env -> macOS Keychain.
+	// The token value is never logged; only the non-secret service label appears.
 	token = strings.TrimSpace(token)
 	if token == "" {
 		token = strings.TrimSpace(os.Getenv("TIMESHEET_API_TOKEN"))
+	}
+	if token == "" {
+		// Keychain is the authoritative secret store. Only a genuine NotFound
+		// falls through to the missing-token error below. Any other failure
+		// (timeout, access failure, malformed/oversized output, ...) stops
+		// resolution and is surfaced as a typed, secret-free error; it must
+		// never silently downgrade to a legacy credential source.
+		kcToken, kcErr := keychain.Lookup(ctx, keychain.ServiceGradionMCP)
+		switch {
+		case kcErr == nil:
+			token = strings.TrimSpace(kcToken)
+		case keychain.IsNotFound(kcErr):
+			// Absent item: fall through to the missing-token error.
+		default:
+			fmt.Fprintf(errOut, "error: [%s] keychain lookup for %s failed: %v\n", ErrCodeKeychainFailed, keychain.ServiceGradionMCP, kcErr)
+			return ExitErr
+		}
 	}
 	if len(token) > MaxTokenLengthBytes {
 		fmt.Fprintf(errOut, "error: token exceeds maximum length of %d bytes\n", MaxTokenLengthBytes)
 		return ExitUsage
 	}
 	if token == "" {
-		fmt.Fprintln(errOut, "error: missing TIMESHEET_API_TOKEN. Export TIMESHEET_API_TOKEN or provide -token flag.")
+		fmt.Fprintln(errOut, "error: missing TIMESHEET_API_TOKEN. Export TIMESHEET_API_TOKEN, provide -token, or store it in the macOS Keychain (service "+keychain.ServiceGradionMCP+").")
 		return ExitUsage
 	}
 
@@ -220,13 +246,24 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	// 9. Render ASCII reconciliation plan table
 	renderPlanTable(out, summary, dryRun)
 
+	// 9b. Approval gate: remote mutations are deferred until explicit approval.
+	// A dry-run performs zero remote mutations and needs no approval.
+	if !dryRun && !approve {
+		fmt.Fprintln(out, "\nRemote mutations require explicit approval.")
+		fmt.Fprintln(out, "Re-run with -approve to execute, or -dry-run to preview.")
+		return ExitUsage
+	}
+
 	// 10. Execute mutations if not dry-run
+	unresolved := false
+	hasMutationError := false
+	var outcomes []operationOutcome
+
 	if dryRun {
 		fmt.Fprintf(out, "\n[DRY-RUN] Simulation complete: %d to create, %d to update, %d identical (skipped). No remote modifications executed.\n",
 			summary.Created, summary.Updated, summary.Skipped)
 	} else {
 		fmt.Fprintln(out, "\nExecuting remote synchronization mutations...")
-		hasMutationError := false
 
 		for _, item := range items {
 			switch item.Action {
@@ -240,10 +277,18 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 				}
 				created, cErr := client.CreateEntry(ctx, req)
 				if cErr != nil {
+					if api.IsUncertain(cErr) {
+						fmt.Fprintf(errOut, "error: uncertain write creating entry [%s - %s]: %v\n", item.StartTime, item.EndTime, cErr)
+						outcomes = append(outcomes, newOutcome("uncertain", item, ""))
+						unresolved = true
+						break
+					}
 					fmt.Fprintf(errOut, "error: creating entry [%s - %s]: %v\n", item.StartTime, item.EndTime, cErr)
+					outcomes = append(outcomes, newOutcome("failed", item, ""))
 					hasMutationError = true
 				} else {
 					fmt.Fprintf(out, "Created remote entry %s [%s - %s]\n", created.ID, item.StartTime, item.EndTime)
+					outcomes = append(outcomes, newOutcome("create", item, created.ID))
 				}
 			case api.ActionUpdate:
 				req := api.PatchEntryRequest{
@@ -254,17 +299,34 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 				}
 				updated, pErr := client.PatchEntry(ctx, item.RemoteID, req)
 				if pErr != nil {
+					if api.IsUncertain(pErr) {
+						fmt.Fprintf(errOut, "error: uncertain write patching entry %s [%s - %s]: %v\n", item.RemoteID, item.StartTime, item.EndTime, pErr)
+						outcomes = append(outcomes, newOutcome("uncertain", item, item.RemoteID))
+						unresolved = true
+						break
+					}
 					fmt.Fprintf(errOut, "error: patching entry %s [%s - %s]: %v\n", item.RemoteID, item.StartTime, item.EndTime, pErr)
+					outcomes = append(outcomes, newOutcome("failed", item, item.RemoteID))
 					hasMutationError = true
 				} else {
 					fmt.Fprintf(out, "Updated remote entry %s [%s - %s]\n", updated.ID, item.StartTime, item.EndTime)
+					outcomes = append(outcomes, newOutcome("update", item, updated.ID))
 				}
 			case api.ActionSkip:
 				fmt.Fprintf(out, "Skipped [%s - %s]: %s\n", item.StartTime, item.EndTime, item.Reason)
+				outcomes = append(outcomes, newOutcome("skip", item, item.RemoteID))
+			}
+
+			// An uncertain write stops the run: never send further writes and
+			// never blindly retry a non-idempotent mutation.
+			if unresolved {
+				break
 			}
 		}
 
-		if hasMutationError {
+		if unresolved {
+			fmt.Fprintln(errOut, "warning: submission is partial and unresolved: an uncertain remote write must be re-fetched and reconciled before any retry.")
+		} else if hasMutationError {
 			fmt.Fprintln(errOut, "warning: one or more mutations failed during synchronization.")
 		} else {
 			fmt.Fprintf(out, "\nSynchronization successful: %d created, %d updated, %d skipped.\n",
@@ -272,9 +334,21 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		}
 	}
 
+	// Determine the honest submission status from the ACTUAL outcome. Only a
+	// full, clean success is reported as Synchronized.
+	status := "Synchronized"
+	switch {
+	case dryRun:
+		status = "Dry-Run Preview (Not submitted)"
+	case unresolved:
+		status = "Partial Submission (Unresolved)"
+	case hasMutationError:
+		status = "Partial Submission (Failed)"
+	}
+
 	// 11. Write clean Markdown record in timesheet/YYYY-MM-DD.md
 	if writeMarkdown {
-		if mdErr := writeMarkdownFile(markdownDir, targetDate, summary, dryRun); mdErr != nil {
+		if mdErr := writeMarkdownFile(markdownDir, targetDate, summary, dryRun, status, outcomes); mdErr != nil {
 			fmt.Fprintf(errOut, "warning: writing markdown record: %v\n", mdErr)
 		} else {
 			mdPath := filepath.Join(markdownDir, targetDate+".md")
@@ -282,7 +356,51 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		}
 	}
 
+	if unresolved || hasMutationError {
+		return ExitErr
+	}
+
 	return ExitOK
+}
+
+// operationOutcome records the ACTUAL result of a single planned mutation so the
+// markdown record reports remote truth rather than the pre-write plan.
+type operationOutcome struct {
+	StartTime        string
+	EndTime          string
+	Action           string // create | update | skip | failed | uncertain
+	ClassificationID string
+	Description      string
+	RemoteID         string
+}
+
+func newOutcome(action string, item api.ReconciledItem, remoteID string) operationOutcome {
+	return operationOutcome{
+		StartTime:        item.StartTime,
+		EndTime:          item.EndTime,
+		Action:           action,
+		ClassificationID: item.ClassificationID,
+		Description:      item.Description,
+		RemoteID:         remoteID,
+	}
+}
+
+// outcomeCounts tallies clear outcomes; "uncertain" is intentionally excluded
+// because its remote result is unknown.
+func outcomeCounts(outcomes []operationOutcome) (created, updated, skipped, failed int) {
+	for _, o := range outcomes {
+		switch o.Action {
+		case "create":
+			created++
+		case "update":
+			updated++
+		case "skip":
+			skipped++
+		case "failed":
+			failed++
+		}
+	}
+	return created, updated, skipped, failed
 }
 
 func renderPlanTable(out io.Writer, summary api.SyncSummary, dryRun bool) {
@@ -317,31 +435,46 @@ func renderPlanTable(out io.Writer, summary api.SyncSummary, dryRun bool) {
 		summary.Created, summary.Updated, summary.Skipped, summary.TotalHours)
 }
 
-func formatMarkdownRecord(date string, summary api.SyncSummary, dryRun bool) string {
+func formatMarkdownRecord(date string, summary api.SyncSummary, dryRun bool, status string, outcomes []operationOutcome) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Timesheet: %s\n\n", date))
 
-	status := "Synchronized"
-	if dryRun {
-		status = "Dry-Run Preview (Not submitted)"
-	}
 	sb.WriteString(fmt.Sprintf("- **Status**: %s\n", status))
 	sb.WriteString(fmt.Sprintf("- **Total hours**: %.2fh\n", summary.TotalHours))
-	sb.WriteString(fmt.Sprintf("- **Created**: %d | **Updated**: %d | **Skipped**: %d\n", summary.Created, summary.Updated, summary.Skipped))
+
+	created, updated, skipped, failed := outcomeCounts(outcomes)
+	if dryRun {
+		created, updated, skipped, failed = summary.Created, summary.Updated, summary.Skipped, 0
+	}
+	if failed > 0 {
+		sb.WriteString(fmt.Sprintf("- **Created**: %d | **Updated**: %d | **Skipped**: %d | **Failed**: %d\n", created, updated, skipped, failed))
+	} else {
+		sb.WriteString(fmt.Sprintf("- **Created**: %d | **Updated**: %d | **Skipped**: %d\n", created, updated, skipped))
+	}
 	sb.WriteString(fmt.Sprintf("- **Sync timestamp**: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
 
 	sb.WriteString("## Entries\n\n")
 	sb.WriteString("| Start | End | Action | Classification | Description |\n")
 	sb.WriteString("|---|---|---|---|---|\n")
 
-	for _, item := range summary.Items {
-		desc := strings.ReplaceAll(item.Description, "|", "\\|")
+	// Dry-run previews the plan; a live run reports the ACTUAL outcomes only,
+	// so operations never dispatched after an uncertain stop are not shown.
+	rows := outcomes
+	if dryRun {
+		rows = plannedOutcomes(summary)
+	}
+
+	for _, r := range rows {
+		desc := strings.ReplaceAll(r.Description, "|", "\\|")
 		desc = strings.ReplaceAll(desc, "\n", " ")
+		if r.RemoteID != "" {
+			desc = fmt.Sprintf("%s [remote: %s]", desc, r.RemoteID)
+		}
 		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n",
-			item.StartTime,
-			item.EndTime,
-			item.Action,
-			item.ClassificationID,
+			r.StartTime,
+			r.EndTime,
+			r.Action,
+			r.ClassificationID,
 			desc,
 		))
 	}
@@ -349,14 +482,30 @@ func formatMarkdownRecord(date string, summary api.SyncSummary, dryRun bool) str
 	return sb.String()
 }
 
-func writeMarkdownFile(dir, date string, summary api.SyncSummary, dryRun bool) error {
+// plannedOutcomes converts the reconciliation plan into preview rows for dry-run.
+func plannedOutcomes(summary api.SyncSummary) []operationOutcome {
+	rows := make([]operationOutcome, 0, len(summary.Items))
+	for _, item := range summary.Items {
+		rows = append(rows, operationOutcome{
+			StartTime:        item.StartTime,
+			EndTime:          item.EndTime,
+			Action:           string(item.Action),
+			ClassificationID: item.ClassificationID,
+			Description:      item.Description,
+			RemoteID:         item.RemoteID,
+		})
+	}
+	return rows
+}
+
+func writeMarkdownFile(dir, date string, summary api.SyncSummary, dryRun bool, status string, outcomes []operationOutcome) error {
 	cleanDir := filepath.Clean(dir)
 	if err := os.MkdirAll(cleanDir, 0755); err != nil {
 		return fmt.Errorf("creating directory %s: %w", cleanDir, err)
 	}
 
 	filePath := filepath.Join(cleanDir, date+".md")
-	content := formatMarkdownRecord(date, summary, dryRun)
+	content := formatMarkdownRecord(date, summary, dryRun, status, outcomes)
 
 	tmpFile := filePath + fmt.Sprintf(".tmp-%d", time.Now().UnixNano())
 	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {

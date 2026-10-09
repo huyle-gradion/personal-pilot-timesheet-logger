@@ -23,17 +23,20 @@ Invoke this skill when the user issues any of the following triggers:
 - `--non-interactive`: Headless review mode bypassing interactive prompts.
 - `--auto-resolve <keep_both|separate|discard>`: Automatic collision resolution strategy in non-interactive mode (default: `keep_both`).
 - `--dry-run`: Simulates API reconciliation without committing remote mutations to Gradion.
+- `--approve`: Temporary mutation gate; required to execute a non-dry-run sync. It is *not* approval tied to an exact preview or to a local record revision — see `workflow.md` Step 6. Production submission remains not ready.
 - `--sink <console|obsidian|all|none>`: Exporter destination (default: `obsidian`).
 - `--storage-dir <path>`: Custom Tier 2 persistent JSON archive directory (default: `~/.timesheet/records/`).
 
 ## Pre-flight configuration check (ADR-005)
 
-Before executing the pipeline steps, verify that necessary credentials exist. Per [[ADR-005 - Interactive Preflight Onboarding and Semantic Time Clumping]], secrets are resolved in the following priority:
-1. Environment variables (`CALENDAR_FEED_URL`, `GITHUB_TOKEN`, `TIMESHEET_API_TOKEN`)
-2. macOS Keychain items (`calendar_feed_url`, `gh_auth_token`, `timesheet_api_token`)
-3. Project local `.env` file
+Before executing the pipeline steps, verify that necessary credentials exist. Per [[ADR-005 - Review-First Timesheet Architecture]] and `docs/agents/credentials.md`, the macOS Keychain is the authoritative secret store and configuration holds references only. Each collector resolves its secret in this order (highest priority first):
+1. Explicit CLI flag (transient override for tests/CI only)
+2. macOS Keychain item, account `$USER`: `calendar_feed_url`, `gh_auth_token`, `gradion.workspace.ApiKey`
+3. Legacy environment variables / project `.env` (`GCAL_ICS_URL`, `GITHUB_TOKEN`/`GH_TOKEN`, `TIMESHEET_API_TOKEN`) — **deprecated**; do not store new secrets there
 
-If any required secret is missing, do not proceed with blind execution. Prompt the user with explicit instructions on how to set the credential via Keychain or `.env`.
+The service `gradion.workspace.ApiKey` supersedes the earlier `timesheet_api_token` name.
+
+If any required secret is missing, do not proceed with blind execution. Prompt the user with explicit instructions to create the Keychain item via `security add-generic-password`.
 
 ## Execution workflow
 

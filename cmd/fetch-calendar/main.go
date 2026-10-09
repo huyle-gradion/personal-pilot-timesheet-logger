@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/calendar"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 )
 
 // Named finite bounds with explicit units (TigerStyle).
@@ -52,6 +53,7 @@ const (
 	ErrCodeBoundExceeded   = "CAL_CLI_BOUND_EXCEEDED"
 	ErrCodeEnvFailed       = "CAL_CLI_ENV_FAILED"
 	ErrCodeTimeout         = "CAL_CLI_TIMEOUT"
+	ErrCodeKeychainFailed  = "CAL_CLI_KEYCHAIN_FAILED"
 )
 
 // Config represents validated CLI options.
@@ -115,7 +117,7 @@ func loadEnv(path string) error {
 }
 
 // parseConfig parses CLI flags and enforces finite bounds on all string inputs.
-func parseConfig(args []string, stderr io.Writer) (*Config, int, error) {
+func parseConfig(ctx context.Context, args []string, stderr io.Writer) (*Config, int, error) {
 	fs := flag.NewFlagSet("fetch-calendar", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -139,6 +141,22 @@ func parseConfig(args []string, stderr io.Writer) (*Config, int, error) {
 	}
 	if source == "" {
 		source = os.Getenv("GCAL_ICS_URL")
+	}
+	if source == "" {
+		// Keychain is the authoritative secret store. Only a genuine NotFound
+		// (absent item, or unavailable security tooling) falls through to the
+		// missing-source error. Any other failure (timeout, access failure,
+		// malformed/oversized output, ...) stops resolution and is surfaced as
+		// a typed, secret-free error rather than silently downgraded.
+		tok, kcErr := keychain.Lookup(ctx, keychain.ServiceCalendarFeed)
+		switch {
+		case kcErr == nil:
+			source = tok
+		case keychain.IsNotFound(kcErr):
+			// Absent item: fall through to the missing-source error.
+		default:
+			return nil, 1, fmt.Errorf("[%s] keychain lookup for %s failed: %w", ErrCodeKeychainFailed, keychain.ServiceCalendarFeed, kcErr)
+		}
 	}
 
 	if len(source) > int(MaxSourceLengthBytes) {
@@ -204,7 +222,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	cfg, exitCode, err := parseConfig(args, stderr)
+	cfg, exitCode, err := parseConfig(ctx, args, stderr)
 	if err != nil {
 		if exitCode == 2 {
 			return 2

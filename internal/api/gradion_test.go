@@ -478,6 +478,68 @@ func TestClient_RetriesExhausted(t *testing.T) {
 	}
 }
 
+// TestClient_NonIdempotentWrite_NoRetryOn5xx verifies that a non-idempotent
+// write (POST) is never retried on an ambiguous 5xx failure: it returns
+// OutcomeUncertain immediately so remote state can be reconciled.
+func TestClient_NonIdempotentWrite_NoRetryOn5xx(t *testing.T) {
+	var attempts int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("server error"))
+	}))
+	defer server.Close()
+
+	c, _ := NewClient(server.URL, "test-token", WithRetryCount(3), WithBackoffBase(1*time.Millisecond))
+	_, err := c.CreateEntry(context.Background(), CreateEntryRequest{
+		Date:             "2026-10-08",
+		StartTime:        "09:00",
+		EndTime:          "10:00",
+		ClassificationID: DefaultClassificationID,
+		Description:      "uncertain write",
+	})
+	if err == nil {
+		t.Fatal("expected uncertain write error, got nil")
+	}
+	if !IsUncertain(err) {
+		t.Errorf("expected IsUncertain(err)=true, got false: %v", err)
+	}
+	if !strings.Contains(err.Error(), "API_ERR_UNCERTAIN_WRITE") {
+		t.Errorf("expected API_ERR_UNCERTAIN_WRITE, got: %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("expected exactly 1 POST attempt (no retry), got %d", got)
+	}
+}
+
+// TestClient_NonIdempotentWrite_NoRetryOn429 verifies the same no-retry
+// guarantee for a 429 rate limit on a non-idempotent write.
+func TestClient_NonIdempotentWrite_NoRetryOn429(t *testing.T) {
+	var attempts int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	c, _ := NewClient(server.URL, "test-token", WithRetryCount(3), WithBackoffBase(1*time.Millisecond))
+	_, err := c.PatchEntry(context.Background(), "entry-1", PatchEntryRequest{
+		DTO:    PatchEntryDTO{Description: "uncertain patch"},
+		Reason: "sync",
+	})
+	if err == nil {
+		t.Fatal("expected uncertain write error, got nil")
+	}
+	if !IsUncertain(err) {
+		t.Errorf("expected IsUncertain(err)=true, got false: %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("expected exactly 1 PATCH attempt (no retry), got %d", got)
+	}
+}
+
 func TestClient_RedirectNotAllowed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/other", http.StatusFound)
@@ -683,11 +745,162 @@ func TestOperatingError_Sanitization(t *testing.T) {
 	}
 
 	// Outcome strings
-	outcomes := []Outcome{OutcomeAcknowledged, OutcomeRetryable, OutcomeTerminal, OutcomeRateLimited, Outcome(99)}
+	outcomes := []Outcome{OutcomeAcknowledged, OutcomeRetryable, OutcomeTerminal, OutcomeRateLimited, OutcomeUncertain, Outcome(99)}
 	for _, oc := range outcomes {
 		if oc.String() == "" {
 			t.Errorf("empty outcome string for %v", oc)
 		}
+	}
+
+	// F5: short tokens are redacted too (no len>4 guard).
+	shortToken := "abc"
+	shortSanitized := sanitizeError(fmt.Errorf("header contains abc end"), shortToken)
+	if strings.Contains(shortSanitized, shortToken) {
+		t.Errorf("short token leaked in sanitized error: %s", shortSanitized)
+	}
+	if !strings.Contains(shortSanitized, "<redacted-token>") {
+		t.Errorf("expected short token to be redacted: %s", shortSanitized)
+	}
+}
+
+// TestClient_ErrorBodySnippetBoundedAndSanitized verifies F3: a 4xx error
+// embeds only a bounded, token-redacted snippet of the response body.
+func TestClient_ErrorBodySnippetBoundedAndSanitized(t *testing.T) {
+	secretToken := "test-token"
+	// Body echoes the token and is far larger than the snippet bound.
+	body := "auth=" + secretToken + " " + strings.Repeat("A", MaxErrorBodySnippetBytes*4)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	c, _ := NewClient(server.URL, secretToken, WithRetryCount(0), WithBackoffBase(1*time.Millisecond))
+	_, err := c.CreateEntry(context.Background(), CreateEntryRequest{
+		Date:             "2026-10-08",
+		StartTime:        "09:00",
+		EndTime:          "10:00",
+		ClassificationID: DefaultClassificationID,
+		Description:      "x",
+	})
+	if err == nil {
+		t.Fatal("expected 4xx error, got nil")
+	}
+	errText := err.Error()
+	if strings.Contains(errText, secretToken) {
+		t.Errorf("token leaked in error text: %s", errText)
+	}
+	// The tail of the oversized body must not be embedded.
+	if strings.Contains(errText, strings.Repeat("A", MaxErrorBodySnippetBytes+100)) {
+		t.Errorf("unbounded response body embedded in error text")
+	}
+}
+
+// TestErrorBodySnippet_SecretCrossesTruncationBoundary is the key regression
+// for redaction-before-truncation: a token that straddles the 512-byte display
+// bound must not leave a detectable prefix behind.
+func TestErrorBodySnippet_SecretCrossesTruncationBoundary(t *testing.T) {
+	token := "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	// Start the token 5 bytes before the display bound so it is split by it.
+	body := strings.Repeat("x", MaxErrorBodySnippetBytes-5) + token + strings.Repeat("y", 64)
+
+	snippet := errorBodySnippet([]byte(body), token)
+	if len(snippet) > MaxErrorBodySnippetBytes {
+		t.Fatalf("snippet exceeds display bound: %d bytes", len(snippet))
+	}
+	if strings.Contains(snippet, token) {
+		t.Fatalf("full token leaked through snippet: %q", snippet)
+	}
+	// Every prefix of the token must be absent: truncating before redaction
+	// would leave the first ~5 bytes of the token at the cut.
+	for n := 1; n <= len(token); n++ {
+		if strings.Contains(snippet, token[:n]) {
+			t.Fatalf("token prefix %q leaked through the truncation boundary", token[:n])
+		}
+	}
+}
+
+// TestErrorBodySnippet_ShortSecretRedacted verifies short secrets (below the
+// old len>4 guard) are redacted from the snippet.
+func TestErrorBodySnippet_ShortSecretRedacted(t *testing.T) {
+	token := "zq7"
+	body := []byte("before zq7 middle zq7 after")
+
+	snippet := errorBodySnippet(body, token)
+	if strings.Contains(snippet, token) {
+		t.Fatalf("short token leaked: %q", snippet)
+	}
+}
+
+// TestErrorBodySnippet_RepeatedOccurrencesRedacted verifies every occurrence of
+// a secret is redacted, not just the first.
+func TestErrorBodySnippet_RepeatedOccurrencesRedacted(t *testing.T) {
+	token := "repeat-me-token-123"
+	body := []byte(token + " middle " + token + " tail " + token)
+
+	snippet := errorBodySnippet(body, token)
+	if strings.Contains(snippet, token) {
+		t.Fatalf("repeated token occurrence leaked: %q", snippet)
+	}
+}
+
+// TestWriteStatusClassification is a table-driven check of non-idempotent write
+// error classification: ambiguous statuses are OutcomeUncertain with exactly one
+// attempt (no retry), definitive rejections stay terminal, and idempotent
+// methods are unaffected.
+func TestWriteStatusClassification(t *testing.T) {
+	cases := []struct {
+		name          string
+		method        string
+		status        int
+		wantUncertain bool
+		wantCode      string
+	}{
+		{"POST 408 uncertain", http.MethodPost, http.StatusRequestTimeout, true, ""},
+		{"PATCH 409 uncertain", http.MethodPatch, http.StatusConflict, true, ""},
+		{"DELETE 425 uncertain", http.MethodDelete, http.StatusTooEarly, true, ""},
+		{"POST 429 uncertain", http.MethodPost, http.StatusTooManyRequests, true, ""},
+		{"POST 500 uncertain", http.MethodPost, http.StatusInternalServerError, true, ""},
+		{"POST 400 terminal", http.MethodPost, http.StatusBadRequest, false, "API_ERR_BAD_REQUEST"},
+		{"PATCH 404 terminal", http.MethodPatch, http.StatusNotFound, false, "API_ERR_NOT_FOUND"},
+		{"POST 422 terminal", http.MethodPost, http.StatusUnprocessableEntity, false, "API_ERR_CLIENT_ERROR"},
+		{"POST 401 terminal", http.MethodPost, http.StatusUnauthorized, false, "API_ERR_UNAUTHORIZED"},
+		{"GET 408 terminal (idempotent unaffected)", http.MethodGet, http.StatusRequestTimeout, false, "API_ERR_CLIENT_ERROR"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&attempts, 1)
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte("body"))
+			}))
+			defer server.Close()
+
+			c, _ := NewClient(server.URL, "test-token", WithRetryCount(3), WithBackoffBase(1*time.Millisecond))
+			_, _, err := c.executeRequest(context.Background(), tc.method, "/api/entries", []byte(`{}`))
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+
+			if got := IsUncertain(err); got != tc.wantUncertain {
+				t.Fatalf("IsUncertain=%v, want %v (err: %v)", got, tc.wantUncertain, err)
+			}
+			if tc.wantUncertain {
+				if !strings.Contains(err.Error(), "API_ERR_UNCERTAIN_WRITE") {
+					t.Fatalf("expected API_ERR_UNCERTAIN_WRITE, got: %v", err)
+				}
+				if got := atomic.LoadInt32(&attempts); got != 1 {
+					t.Fatalf("expected exactly 1 attempt (no retry), got %d", got)
+				}
+				return
+			}
+			if tc.wantCode != "" && !strings.Contains(err.Error(), tc.wantCode) {
+				t.Fatalf("expected code %s, got: %v", tc.wantCode, err)
+			}
+		})
 	}
 }
 

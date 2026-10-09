@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 )
 
 // PreflightStatus conveys whether prerequisites are met to collect Git activity.
@@ -17,6 +19,7 @@ type PreflightStatus struct {
 	MissingKeys []string `json:"missing_keys"`
 	Guide       string   `json:"guide"`
 	Token       string   `json:"token,omitempty"`
+	Error       string   `json:"error,omitempty"`
 }
 
 // probeGHAuthToken queries `gh auth token` with bounded timeout and safe subprocess execution.
@@ -54,21 +57,36 @@ func probeGHAuthToken(ctx context.Context) (string, error) {
 	return tok, nil
 }
 
-// ResolveAuthToken resolves a GitHub authentication token from arguments, env vars, or GitHub CLI.
-func ResolveAuthToken(ctx context.Context, explicitToken string) string {
+// ResolveAuthToken resolves a GitHub authentication token from arguments, env
+// vars, the macOS Keychain, or GitHub CLI.
+//
+// Only a genuine Keychain NotFound (absent item, or unavailable security
+// tooling) falls through to the legacy `gh auth token` source. A timeout,
+// access failure, malformed output, or any other non-NotFound failure stops
+// resolution and is returned as a typed, secret-free error, so a real Keychain
+// failure can never be silently downgraded to a weaker credential source.
+func ResolveAuthToken(ctx context.Context, explicitToken string) (string, error) {
 	if tok := strings.TrimSpace(explicitToken); tok != "" {
-		return tok
+		return tok, nil
 	}
 	if tok := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); tok != "" {
-		return tok
+		return tok, nil
 	}
 	if tok := strings.TrimSpace(os.Getenv("GH_TOKEN")); tok != "" {
-		return tok
+		return tok, nil
+	}
+	// Keychain is the authoritative secret store.
+	if tok, err := keychain.Lookup(ctx, keychain.ServiceGitHubToken); err != nil {
+		if !keychain.IsNotFound(err) {
+			return "", err
+		}
+	} else if tok != "" {
+		return tok, nil
 	}
 	if tok, err := probeGHAuthToken(ctx); err == nil && tok != "" {
-		return tok
+		return tok, nil
 	}
-	return ""
+	return "", nil
 }
 
 // CheckPreflight validates prerequisites for Git collection (authentication and target repositories).
@@ -76,15 +94,34 @@ func CheckPreflight(ctx context.Context, token string, repos []string) Preflight
 	var missing []string
 	var guideParts []string
 
-	resolvedToken := ResolveAuthToken(ctx, token)
+	resolvedToken, resolveErr := ResolveAuthToken(ctx, token)
+	if resolveErr != nil {
+		// Surface the typed, secret-free Keychain failure instead of masking it
+		// as a missing token or silently degrading to another source.
+		guideParts = append(guideParts,
+			"GitHub credential lookup failed:\n"+
+				"  "+resolveErr.Error()+"\n"+
+				"Resolve the macOS Keychain error (or pass -token for tests/CI) before retrying. "+
+				"Resolution does not fall back to `gh auth token` after a non-NotFound Keychain failure.",
+		)
+		return PreflightStatus{
+			Ready:       false,
+			MissingKeys: []string{"GITHUB_TOKEN"},
+			Guide:       strings.Join(guideParts, "\n\n"),
+			Error:       resolveErr.Error(),
+		}
+	}
 	if resolvedToken == "" {
 		missing = append(missing, "GITHUB_TOKEN")
 		guideParts = append(guideParts,
 			"GitHub authentication token is missing or not configured.\n"+
 				"To resolve this, please do one of the following:\n"+
-				"  1. Log in with GitHub CLI (recommended):\n"+
+				"  1. Store the token in the macOS Keychain (recommended):\n"+
+				"     security add-generic-password -s gh_auth_token -a \"$USER\" -l gh_auth_token -w\n"+
+				"     (security prompts for the secret; never place it on the command line)\n\n"+
+				"  2. Or log in with GitHub CLI:\n"+
 				"     gh auth login\n\n"+
-				"  2. Or generate a Personal Access Token (classic) with 'repo' and 'read:user' scopes:\n"+
+				"  3. Or generate a Personal Access Token (classic) with 'repo' and 'read:user' scopes:\n"+
 				"     Visit: https://github.com/settings/tokens\n"+
 				"     Then export the token:\n"+
 				"     export GITHUB_TOKEN=\"ghp_your_personal_access_token_here\"",

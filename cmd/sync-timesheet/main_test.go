@@ -16,9 +16,21 @@ import (
 	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/api"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
 )
+
+// fakeKeychainResolver is an in-process Resolver test double; it avoids
+// spawning the real `security` binary (and its subprocess/deadline flakiness).
+type fakeKeychainResolver struct {
+	secret string
+	err    error
+}
+
+func (f fakeKeychainResolver) Lookup(context.Context, string, string) (string, error) {
+	return f.secret, f.err
+}
 
 func createTestStorageRecord(t *testing.T, dir, date string, blocks []timesheet.TimeBlock) {
 	t.Helper()
@@ -42,6 +54,10 @@ func createTestStorageRecord(t *testing.T, dir, date string, blocks []timesheet.
 
 func TestCLI_MissingToken_ExitUsage(t *testing.T) {
 	t.Setenv("TIMESHEET_API_TOKEN", "")
+	// Deterministic: inject an in-process resolver reporting an absent item.
+	t.Cleanup(keychain.SetDefaultResolver(fakeKeychainResolver{
+		err: &keychain.OperatingError{Outcome: keychain.OutcomeNotFound, Code: "KEYCHAIN_ERR_NOT_FOUND", Message: "absent"},
+	}))
 	var out, errOut bytes.Buffer
 
 	args := []string{"-date=2026-10-08", "-token="}
@@ -51,6 +67,263 @@ func TestCLI_MissingToken_ExitUsage(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "missing TIMESHEET_API_TOKEN") {
 		t.Errorf("expected missing token error message, got: %s", errOut.String())
+	}
+}
+
+// TestCLI_KeychainTokenResolution verifies the third token source: with -token
+// empty and TIMESHEET_API_TOKEN unset, the token is read from the Keychain via
+// an injected in-process resolver.
+func TestCLI_KeychainTokenResolution(t *testing.T) {
+	t.Cleanup(keychain.SetDefaultResolver(fakeKeychainResolver{secret: "keychain-token-abc123"}))
+	t.Setenv("TIMESHEET_API_TOKEN", "")
+
+	tempStorage := t.TempDir()
+	tempMarkdown := t.TempDir()
+	tempEnvDir := t.TempDir()
+	targetDate := "2026-10-08"
+	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
+		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Keychain task"},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer keychain-token-abc123" {
+			t.Errorf("expected keychain-derived token, got: %s", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	args := []string{
+		"-date=" + targetDate,
+		"-dry-run=true",
+		"-env=" + filepath.Join(tempEnvDir, "no-such.env"),
+		"-storage-dir=" + tempStorage,
+		"-markdown-dir=" + tempMarkdown,
+		"-base-url=" + server.URL,
+	}
+	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	if code != ExitOK {
+		t.Fatalf("expected ExitOK with keychain token, got %d (err: %s)", code, errOut.String())
+	}
+}
+
+// TestCLI_KeychainTerminalError_ExitErrNoRequest proves a non-NotFound Keychain
+// failure stops credential resolution: it is surfaced as a typed, secret-free
+// error, returns a non-usage failure code, and performs no remote request.
+func TestCLI_KeychainTerminalError_ExitErrNoRequest(t *testing.T) {
+	t.Setenv("TIMESHEET_API_TOKEN", "")
+
+	const secret = "gradion-super-secret-token-value"
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+	}))
+	defer server.Close()
+
+	t.Cleanup(keychain.SetDefaultResolver(fakeKeychainResolver{
+		// Wrongly returning a secret alongside an error must not leak it.
+		secret: secret,
+		err: &keychain.OperatingError{
+			Outcome: keychain.OutcomeTerminal,
+			Code:    "KEYCHAIN_ERR_TIMEOUT",
+			Message: "keychain lookup exceeded deadline",
+		},
+	}))
+
+	var out, errOut bytes.Buffer
+	args := []string{
+		"-date=2026-10-08",
+		"-dry-run=true",
+		"-env=" + filepath.Join(t.TempDir(), "no-such.env"),
+		"-storage-dir=" + t.TempDir(),
+		"-markdown-dir=" + t.TempDir(),
+		"-base-url=" + server.URL,
+	}
+	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	if code != ExitErr {
+		t.Fatalf("expected ExitErr on terminal keychain failure, got %d (err: %s)", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), ErrCodeKeychainFailed) {
+		t.Errorf("expected %s, got: %s", ErrCodeKeychainFailed, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "KEYCHAIN_ERR_TIMEOUT") {
+		t.Errorf("expected typed keychain code, got: %s", errOut.String())
+	}
+	if strings.Contains(errOut.String(), secret) {
+		t.Errorf("secret leaked into diagnostics: %s", errOut.String())
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Errorf("expected zero remote requests on terminal keychain failure, got %d", got)
+	}
+}
+
+// TestCLI_UncertainWrite_408_StopsRun proves HTTP 408 on a non-idempotent write
+// is treated as an uncertain outcome: one attempt, no retry, no subsequent
+// writes, and an unresolved (partial) result.
+func TestCLI_UncertainWrite_408_StopsRun(t *testing.T) {
+	tempStorage := t.TempDir()
+	tempMarkdown := t.TempDir()
+	targetDate := "2026-10-08"
+	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
+		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Create one"},
+		{ID: "block-2", Date: targetDate, StartTime: "10:00", EndTime: "11:00", Description: "Create two"},
+	})
+
+	var postCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
+		case http.MethodPost:
+			atomic.AddInt32(&postCount, 1)
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = w.Write([]byte("timeout"))
+		}
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	args := []string{
+		"-date=" + targetDate,
+		"-dry-run=false",
+		"-approve",
+		"-storage-dir=" + tempStorage,
+		"-markdown-dir=" + tempMarkdown,
+		"-token=test-token",
+		"-base-url=" + server.URL,
+	}
+	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	if code != ExitErr {
+		t.Fatalf("expected ExitErr on 408 uncertain write, got %d (err: %s)", code, errOut.String())
+	}
+	if got := atomic.LoadInt32(&postCount); got != 1 {
+		t.Errorf("expected exactly 1 POST attempt on 408, got %d", got)
+	}
+	content, err := os.ReadFile(filepath.Join(tempMarkdown, targetDate+".md"))
+	if err != nil {
+		t.Fatalf("expected markdown record: %v", err)
+	}
+	if !strings.Contains(string(content), "Partial Submission (Unresolved)") {
+		t.Errorf("expected unresolved status, got: %s", string(content))
+	}
+	if strings.Contains(string(content), "Create two") {
+		t.Errorf("never-dispatched planned item must not be rendered, got: %s", string(content))
+	}
+}
+
+// TestCLI_NonDryRunRequiresApproval verifies that a non-dry-run without
+// -approve performs zero remote mutations and returns ExitUsage.
+func TestCLI_NonDryRunRequiresApproval(t *testing.T) {
+	tempStorage := t.TempDir()
+	tempMarkdown := t.TempDir()
+	targetDate := "2026-10-08"
+	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
+		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Needs create"},
+	})
+
+	var postCount, patchCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
+		case http.MethodPost:
+			atomic.AddInt32(&postCount, 1)
+		case http.MethodPatch:
+			atomic.AddInt32(&patchCount, 1)
+		}
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	args := []string{
+		"-date=" + targetDate,
+		"-dry-run=false",
+		"-storage-dir=" + tempStorage,
+		"-markdown-dir=" + tempMarkdown,
+		"-token=test-token",
+		"-base-url=" + server.URL,
+	}
+	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	if code != ExitUsage {
+		t.Fatalf("expected ExitUsage without -approve, got %d (err: %s)", code, errOut.String())
+	}
+	if atomic.LoadInt32(&postCount) != 0 || atomic.LoadInt32(&patchCount) != 0 {
+		t.Errorf("expected zero mutations without -approve, got POST=%d PATCH=%d",
+			atomic.LoadInt32(&postCount), atomic.LoadInt32(&patchCount))
+	}
+	if !strings.Contains(out.String(), "-approve") {
+		t.Errorf("expected approval instruction in output, got: %s", out.String())
+	}
+	// No markdown record should be produced for an unapproved run.
+	if _, err := os.Stat(filepath.Join(tempMarkdown, targetDate+".md")); !os.IsNotExist(err) {
+		t.Errorf("expected no markdown record for unapproved run")
+	}
+}
+
+// TestCLI_UncertainWrite_StopsAndUnresolved verifies that a non-idempotent
+// write that fails ambiguously (HTTP 500) is attempted exactly once, stops the
+// submission immediately with no further writes, and reports unresolved.
+func TestCLI_UncertainWrite_StopsAndUnresolved(t *testing.T) {
+	tempStorage := t.TempDir()
+	tempMarkdown := t.TempDir()
+	targetDate := "2026-10-08"
+	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
+		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Create one"},
+		{ID: "block-2", Date: targetDate, StartTime: "10:00", EndTime: "11:00", Description: "Create two"},
+	})
+
+	var postCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
+		case http.MethodPost:
+			atomic.AddInt32(&postCount, 1)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("server error"))
+		}
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	args := []string{
+		"-date=" + targetDate,
+		"-dry-run=false",
+		"-approve",
+		"-storage-dir=" + tempStorage,
+		"-markdown-dir=" + tempMarkdown,
+		"-token=test-token",
+		"-base-url=" + server.URL,
+	}
+	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	if code != ExitErr {
+		t.Fatalf("expected ExitErr on uncertain write, got %d (err: %s)", code, errOut.String())
+	}
+	if got := atomic.LoadInt32(&postCount); got != 1 {
+		t.Errorf("expected exactly 1 POST attempt (no retry, no subsequent writes), got %d", got)
+	}
+	if !strings.Contains(errOut.String(), "uncertain") || !strings.Contains(errOut.String(), "reconciled") {
+		t.Errorf("expected unresolved reconciliation message, got: %s", errOut.String())
+	}
+	content, err := os.ReadFile(filepath.Join(tempMarkdown, targetDate+".md"))
+	if err != nil {
+		t.Fatalf("expected markdown record for unresolved run: %v", err)
+	}
+	if !strings.Contains(string(content), "Partial Submission (Unresolved)") {
+		t.Errorf("expected unresolved status in markdown, got: %s", string(content))
+	}
+	// F2: only ACTUAL outcomes are rendered. The second create was never
+	// dispatched and must not appear.
+	if !strings.Contains(string(content), "| uncertain |") {
+		t.Errorf("expected the uncertain write to be recorded, got: %s", string(content))
+	}
+	if strings.Contains(string(content), "Create two") {
+		t.Errorf("never-dispatched planned item must not be rendered, got: %s", string(content))
 	}
 }
 
@@ -357,6 +630,7 @@ func TestCLI_LiveSync_MutationsAndIdempotency(t *testing.T) {
 	args := []string{
 		"-date=" + targetDate,
 		"-dry-run=false",
+		"-approve",
 		"-storage-dir=" + tempStorage,
 		"-markdown-dir=" + tempMarkdown,
 		"-token=test-token",
@@ -383,6 +657,13 @@ func TestCLI_LiveSync_MutationsAndIdempotency(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "**Status**: Synchronized") {
 		t.Errorf("expected Synchronized status in markdown, got: %s", string(content))
+	}
+	// F2: successes persist the stable remote ID inside the Description cell.
+	if !strings.Contains(string(content), "[remote: created-1]") {
+		t.Errorf("expected created remote ID in markdown, got: %s", string(content))
+	}
+	if !strings.Contains(string(content), "[remote: remote-2]") {
+		t.Errorf("expected updated remote ID in markdown, got: %s", string(content))
 	}
 
 	// --- RUN 2: Re-running must produce ZERO duplicate entries (DoD 3.3 Idempotency) ---
@@ -455,6 +736,7 @@ func TestCLI_MutationErrors(t *testing.T) {
 	args := []string{
 		"-date=" + targetDate,
 		"-dry-run=false",
+		"-approve",
 		"-storage-dir=" + tempStorage,
 		"-markdown-dir=" + tempMarkdown,
 		"-token=test-token",
@@ -462,11 +744,26 @@ func TestCLI_MutationErrors(t *testing.T) {
 	}
 
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitOK {
-		t.Fatalf("expected ExitOK with mutation warnings, got %d", code)
+	if code != ExitErr {
+		t.Fatalf("expected ExitErr on terminal mutation failures, got %d", code)
 	}
 	if !strings.Contains(errOut.String(), "one or more mutations failed") {
 		t.Errorf("expected mutation failure warning, got: %s", errOut.String())
+	}
+
+	// Terminal failures must be reported honestly, not as Synchronized.
+	content, err := os.ReadFile(filepath.Join(tempMarkdown, targetDate+".md"))
+	if err != nil {
+		t.Fatalf("expected markdown record for failed run: %v", err)
+	}
+	if !strings.Contains(string(content), "**Status**: Partial Submission (Failed)") {
+		t.Errorf("expected Partial Submission (Failed) status, got: %s", string(content))
+	}
+	if strings.Contains(string(content), "**Status**: Synchronized") {
+		t.Errorf("terminal failures must not be reported as Synchronized, got: %s", string(content))
+	}
+	if !strings.Contains(string(content), "| failed |") {
+		t.Errorf("expected actual 'failed' outcomes in markdown, got: %s", string(content))
 	}
 }
 
