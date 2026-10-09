@@ -29,11 +29,11 @@ environment step below exists only for backward compatibility.
 | GitHub access token | `gh_auth_token` | `$USER` | created |
 | Google Calendar secret iCal URL | `calendar_feed_url` | `$USER` | created |
 
-`gh_auth_token` matches the reader in `scripts/sync-github-issues.sh:13`. The
-Gradion item was created as `gradion.workspace.ApiKey` before this note, so that
-name is fixed. The `.claude/skills/timesheet/SKILL.md` item name
-`timesheet_api_token` is **superseded and stale**; use
-`gradion.workspace.ApiKey`.
+`gh_auth_token` is the service read by the GitHub preflight resolver
+(`internal/git/preflight.go` via `keychain.ServiceGitHubToken`). The Gradion item
+was created as `gradion.workspace.ApiKey` before this note, so that name is
+fixed. The `.claude/skills/timesheet/SKILL.md` item name `timesheet_api_token`
+is **superseded and stale**; use `gradion.workspace.ApiKey`.
 
 ## Resolver — implemented (`internal/keychain`)
 
