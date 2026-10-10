@@ -131,9 +131,127 @@ func Build(ev []evidence.Evidence, opts ProposalOptions) (Proposal, error) {
 
 	prop.Meetings = meetings
 	prop.Manual = manual
+	prop.Work = buildWorkBlocks(prop.Topics, gitEv, meetings, opts.ProjectMap, loc)
 	sortProposal(&prop)
 	prop.Warnings = normalizeWarnings(warnings)
 	return prop, nil
+}
+
+// buildWorkBlocks materializes each git Activity Group into a ProposedTimeBlock.
+// A group interrupted by a meeting becomes a joint block (Kind=joint) combining
+// the meeting and the commits (union span, meeting-known duration, both texts,
+// Collision); otherwise it is a work block with an unknown duration. Project
+// hints come from the git adapter (resolved via ProjectMap, never titles).
+func buildWorkBlocks(topics []TopicCandidate, gitEv []evidence.Evidence, meetings []ProposedTimeBlock, projectMap map[string]string, loc *time.Location) []ProposedTimeBlock {
+	evByID := make(map[string]evidence.Evidence, len(gitEv))
+	for _, e := range gitEv {
+		evByID[e.ID] = e
+	}
+
+	var out []ProposedTimeBlock
+	for _, t := range topics {
+		for _, g := range t.Groups {
+			var hints []string
+			for _, id := range g.EvidenceIDs {
+				if e, ok := evByID[id]; ok {
+					hints = append(hints, e.ProjectHints...)
+				}
+			}
+			project := ResolveProject(projectMap, t.Repository, hints)
+			title := gitGroupTitle(g, evByID)
+
+			var meeting *ProposedTimeBlock
+			for i := range meetings {
+				if intervalsOverlap(meetings[i].StartAt, meetings[i].EndAt, g.SpanStart, g.SpanEnd) {
+					meeting = &meetings[i]
+					break
+				}
+			}
+
+			if meeting != nil {
+				start := earlierTime(g.SpanStart, meeting.StartAt)
+				end := laterTime(g.SpanEnd, meeting.EndAt)
+				out = append(out, ProposedTimeBlock{
+					ID:            hashID("joint", t.ID, g.ID, meeting.ID),
+					Kind:          BlockJoint,
+					Date:          start.In(loc).Format(defaultDateLayout),
+					Start:         start.In(loc).Format(defaultDisplayTimeLayout),
+					End:           end.In(loc).Format(defaultDisplayTimeLayout),
+					StartAt:       start,
+					EndAt:         end,
+					Duration:      meeting.Duration,
+					Project:       project,
+					Description:   joinNonEmpty(title, meeting.Description),
+					EvidenceIDs:   uniqueSorted(append(append([]string{}, g.EvidenceIDs...), meeting.EvidenceIDs...)),
+					Attendance:    AttendanceUnresolved,
+					Collision:     true,
+					GridSuggested: !onGrid(start, loc),
+				})
+				continue
+			}
+
+			out = append(out, ProposedTimeBlock{
+				ID:            hashID("work", t.ID, g.ID),
+				Kind:          BlockWork,
+				Date:          g.SpanStart.In(loc).Format(defaultDateLayout),
+				Start:         g.SpanStart.In(loc).Format(defaultDisplayTimeLayout),
+				End:           g.SpanEnd.In(loc).Format(defaultDisplayTimeLayout),
+				StartAt:       g.SpanStart,
+				EndAt:         g.SpanEnd,
+				Duration:      evidence.UnknownDuration(),
+				Project:       project,
+				Description:   title,
+				EvidenceIDs:   append([]string{}, g.EvidenceIDs...),
+				Attendance:    AttendanceUnresolved,
+				Collision:     len(g.InterruptedBy) > 0,
+				GridSuggested: !onGrid(g.SpanStart, loc),
+			})
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartAt.Equal(out[j].StartAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].StartAt.Before(out[j].StartAt)
+	})
+	return out
+}
+
+// gitGroupTitle returns the first non-empty evidence title in a group.
+func gitGroupTitle(g ActivityGroup, evByID map[string]evidence.Evidence) string {
+	for _, id := range g.EvidenceIDs {
+		if e, ok := evByID[id]; ok {
+			if t := strings.TrimSpace(e.Title); t != "" {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+func earlierTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+func laterTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func joinNonEmpty(parts ...string) string {
+	var kept []string
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			kept = append(kept, s)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // exclusionReason maps a filtered-out evidence item to a stable reason.
@@ -348,6 +466,12 @@ func collectGroupSpans(topics []TopicCandidate) []span {
 }
 
 func sortProposal(p *Proposal) {
+	sort.Slice(p.Work, func(i, j int) bool {
+		if p.Work[i].StartAt.Equal(p.Work[j].StartAt) {
+			return p.Work[i].ID < p.Work[j].ID
+		}
+		return p.Work[i].StartAt.Before(p.Work[j].StartAt)
+	})
 	sort.Slice(p.Meetings, func(i, j int) bool {
 		if p.Meetings[i].StartAt.Equal(p.Meetings[j].StartAt) {
 			return p.Meetings[i].ID < p.Meetings[j].ID

@@ -496,6 +496,12 @@ func (s *JSONFileStore) writeRecordFile(date string, record Record) error {
 	return nil
 }
 
+// S4 review capacity bounds (named constants live here, beside checkCapacity).
+const (
+	MaxReviewExcludedCount   int = 500 // bounded review exclusions per day
+	MaxReviewAttendanceCount int = 200 // bounded attendance decisions per day
+)
+
 func checkCapacity(record Record) error {
 	if len(record.Evidence) > MaxEvidenceCount ||
 		len(record.Confirmed) > MaxConfirmedCount ||
@@ -503,6 +509,12 @@ func checkCapacity(record Record) error {
 		len(record.Outcomes) > MaxOutcomesCount ||
 		len(record.CollectedEvidence) > MaxCollectedEvidenceCount {
 		return ErrCapacityExceeded
+	}
+	if record.Review != nil {
+		if len(record.Review.ExcludedEvidence) > MaxReviewExcludedCount ||
+			len(record.Review.Attendance) > MaxReviewAttendanceCount {
+			return ErrCapacityExceeded
+		}
 	}
 	return nil
 }

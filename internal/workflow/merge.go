@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -29,9 +30,11 @@ func MergeEvidence(r *Record, refs []EvidenceReference) {
 	}
 }
 
-// MergeConfirmed upserts confirmed intervals by ID. When an incoming Description
-// or Project is empty and an existing entry is present, the existing value is
-// preserved. ConfirmedAt is (re)set to now when incoming is zero. Evidence is
+// MergeConfirmed upserts confirmed intervals by ID. A zero-valued incoming field
+// never clobbers an existing non-zero one: Description, Project, Kind, Attendance,
+// EvidenceIDs, Manual, OriginalStart/End, GridAdjusted, SplitGroupID, PartIndex,
+// offsets, and the Start/End/Date times are preserved when the incoming value is
+// empty/zero. ConfirmedAt is (re)set to now when incoming is zero. Evidence is
 // never mutated.
 func MergeConfirmed(r *Record, intervals []ConfirmedInterval) {
 	if r == nil {
@@ -54,18 +57,153 @@ func MergeConfirmed(r *Record, intervals []ConfirmedInterval) {
 		}
 
 		if index >= 0 {
-			existing := r.Confirmed[index]
-			if incoming.Description == "" {
-				incoming.Description = existing.Description
-			}
-			if incoming.Project == "" {
-				incoming.Project = existing.Project
-			}
+			incoming = preserveConfirmedFields(incoming, r.Confirmed[index])
 			r.Confirmed[index] = incoming
 			continue
 		}
 		r.Confirmed = append(r.Confirmed, incoming)
 	}
+}
+
+// preserveConfirmedFields keeps an existing non-zero field when the incoming
+// value is its zero value, so a re-assert cannot wipe user decisions or S4
+// review metadata.
+func preserveConfirmedFields(incoming, existing ConfirmedInterval) ConfirmedInterval {
+	if incoming.Date == "" {
+		incoming.Date = existing.Date
+	}
+	if incoming.StartTime == "" {
+		incoming.StartTime = existing.StartTime
+	}
+	if incoming.EndTime == "" {
+		incoming.EndTime = existing.EndTime
+	}
+	if incoming.Description == "" {
+		incoming.Description = existing.Description
+	}
+	if incoming.Project == "" {
+		incoming.Project = existing.Project
+	}
+	if incoming.Kind == "" {
+		incoming.Kind = existing.Kind
+	}
+	if !incoming.Attendance {
+		incoming.Attendance = existing.Attendance
+	}
+	if len(incoming.EvidenceIDs) == 0 {
+		incoming.EvidenceIDs = existing.EvidenceIDs
+	}
+	if !incoming.Manual {
+		incoming.Manual = existing.Manual
+	}
+	if incoming.OriginalStart == "" {
+		incoming.OriginalStart = existing.OriginalStart
+	}
+	if incoming.OriginalEnd == "" {
+		incoming.OriginalEnd = existing.OriginalEnd
+	}
+	if !incoming.GridAdjusted {
+		incoming.GridAdjusted = existing.GridAdjusted
+	}
+	if incoming.SplitGroupID == "" {
+		incoming.SplitGroupID = existing.SplitGroupID
+	}
+	if incoming.PartIndex == 0 {
+		incoming.PartIndex = existing.PartIndex
+	}
+	if incoming.StartOffsetMin == 0 {
+		incoming.StartOffsetMin = existing.StartOffsetMin
+	}
+	if incoming.EndOffsetMin == nil {
+		incoming.EndOffsetMin = existing.EndOffsetMin
+	}
+	return incoming
+}
+
+// MergeReviewState merges an incoming ReviewState into r.Reviewed flags are
+// unioned, excluded-evidence and attendance rows are upserted by EvidenceID,
+// acknowledged sources are unioned, and LastProposalHash/ReviewedAt take the
+// latest non-zero value.
+func MergeReviewState(r *Record, incoming ReviewState) {
+	if r == nil {
+		return
+	}
+	if r.Review == nil {
+		cp := cloneReviewState(incoming)
+		r.Review = &cp
+		return
+	}
+	cur := r.Review
+	if incoming.Reviewed {
+		cur.Reviewed = true
+	}
+	if incoming.Empty {
+		cur.Empty = true
+	}
+	if !incoming.ReviewedAt.IsZero() {
+		cur.ReviewedAt = incoming.ReviewedAt
+	}
+	if incoming.LastProposalHash != "" {
+		cur.LastProposalHash = incoming.LastProposalHash
+	}
+	for _, ex := range incoming.ExcludedEvidence {
+		cur.ExcludedEvidence = upsertExcluded(cur.ExcludedEvidence, ex)
+	}
+	for _, ad := range incoming.Attendance {
+		cur.Attendance = upsertAttendance(cur.Attendance, ad)
+	}
+	cur.AcknowledgedSources = unionStrings(cur.AcknowledgedSources, incoming.AcknowledgedSources)
+}
+
+func upsertExcluded(rows []ExcludedEvidence, incoming ExcludedEvidence) []ExcludedEvidence {
+	for i := range rows {
+		if rows[i].EvidenceID == incoming.EvidenceID {
+			rows[i] = incoming
+			return rows
+		}
+	}
+	return append(rows, incoming)
+}
+
+func upsertAttendance(rows []AttendanceDecision, incoming AttendanceDecision) []AttendanceDecision {
+	for i := range rows {
+		if rows[i].EvidenceID == incoming.EvidenceID {
+			rows[i] = incoming
+			return rows
+		}
+	}
+	return append(rows, incoming)
+}
+
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	var out []string
+	for _, s := range a {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	for _, s := range b {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// cloneReviewState deep-copies a ReviewState so the returned value shares no
+// slice backing arrays with the caller.
+func cloneReviewState(in ReviewState) ReviewState {
+	out := in
+	out.ExcludedEvidence = append([]ExcludedEvidence(nil), in.ExcludedEvidence...)
+	out.Attendance = append([]AttendanceDecision(nil), in.Attendance...)
+	out.AcknowledgedSources = append([]string(nil), in.AcknowledgedSources...)
+	return out
 }
 
 // operationKeySeparator joins the stable identity fields of an operation. The

@@ -433,3 +433,58 @@ func TestBuild_ExcludesGitWithoutRepository(t *testing.T) {
 		}
 	}
 }
+
+// TestBuild_WorkBlocksFromGitGroups proves P1: git Activity Groups materialize
+// into ProposedTimeBlocks (Kind work, unknown duration) with project hints
+// carried through from the git adapter.
+func TestBuild_WorkBlocksFromGitGroups(t *testing.T) {
+	c := commitEvidence("c1", "acme/app", "sha1", at(6, 9, 0), 0, "main")
+	c.ProjectHints = []string{"Proj"}
+	p, err := Build([]evidence.Evidence{c}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p.Work) != 1 {
+		t.Fatalf("work blocks = %d, want 1", len(p.Work))
+	}
+	b := p.Work[0]
+	if b.Kind != BlockWork {
+		t.Errorf("kind = %q, want work", b.Kind)
+	}
+	if b.Duration.Known {
+		t.Error("work block duration must be unknown")
+	}
+	if !b.Project.Resolved || b.Project.Project != "Proj" {
+		t.Errorf("project = %+v, want resolved Proj from hints", b.Project)
+	}
+}
+
+// TestBuild_JointBlockForInterruptedGroup proves P1: a git group overlapped by a
+// meeting materializes as ONE joint block (union span, both evidence IDs, the
+// meeting's known duration, Collision).
+func TestBuild_JointBlockForInterruptedGroup(t *testing.T) {
+	pr := prEvidence("pr7", "acme/app", 7, "feature/a", map[string]time.Time{
+		"a": at(6, 9, 0), "b": at(6, 9, 40),
+	})
+	meeting := calendarEvidence("m1", "Standup", at(6, 9, 0), at(6, 9, 40), evidence.InvitationAccepted)
+	p, err := Build([]evidence.Evidence{pr, meeting}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p.Work) != 1 {
+		t.Fatalf("work blocks = %d, want 1", len(p.Work))
+	}
+	b := p.Work[0]
+	if b.Kind != BlockJoint {
+		t.Errorf("kind = %q, want joint", b.Kind)
+	}
+	if !b.Collision {
+		t.Error("joint block must be Collision")
+	}
+	if len(b.EvidenceIDs) != 2 {
+		t.Errorf("evidence = %v, want both work and meeting", b.EvidenceIDs)
+	}
+	if !b.Duration.Known {
+		t.Error("joint duration should be the meeting's known duration")
+	}
+}

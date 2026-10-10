@@ -4,9 +4,8 @@
 // meetings carry a calendar-known duration with attendance unresolved, and
 // manual intervals are proposed (not confirmed).
 //
-// It imports only internal/evidence (and its plugins subpackage for the shared
-// DefaultProposalFilter) plus the standard library, and takes an injectable clock
-// via ProposalOptions.Now.
+// It imports only internal/evidence plus the standard library, and takes an
+// injectable clock via ProposalOptions.Now.
 package proposal
 
 import (
@@ -133,8 +132,13 @@ type ProposedTimeBlock struct {
 
 // Proposal is the deterministic, unconfirmed draft for one local day.
 type Proposal struct {
-	Date     string              `json:"date"`
-	Topics   []TopicCandidate    `json:"topics"`
+	Date   string           `json:"date"`
+	Topics []TopicCandidate `json:"topics"`
+	// Work holds materialized git work blocks. A git group interrupted by a
+	// meeting is materialized as a joint block (Kind=joint) combining the meeting
+	// and the commits; its duration is the meeting's known duration and it counts
+	// once.
+	Work     []ProposedTimeBlock `json:"work,omitempty"`
 	Meetings []ProposedTimeBlock `json:"meetings"`
 	Manual   []ProposedTimeBlock `json:"manual"`
 	Excluded []ExcludedEvidence  `json:"excluded"`

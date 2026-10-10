@@ -33,6 +33,13 @@ type EvidenceReference struct {
 
 // ConfirmedInterval is a user-confirmed interval. User-authored Description and
 // Project are preserved across evidence refreshes.
+//
+// The fields below Kind are ADDITIVE S4 review fields (omitempty). Kind records
+// the block kind (work|meeting|joint|manual) so a joint meeting+commit interval
+// is representable. Manual marks a user-entered interval. OriginalStart/End keep
+// the pre-adjustment display times; GridAdjusted marks a grid suggestion;
+// SplitGroupID/PartIndex link split fragments; StartOffsetMin/EndOffsetMin record
+// the trim delta in minutes.
 type ConfirmedInterval struct {
 	ID          string    `json:"id"`
 	Date        string    `json:"date"`
@@ -43,6 +50,45 @@ type ConfirmedInterval struct {
 	Attendance  bool      `json:"attendance"`
 	ConfirmedAt time.Time `json:"confirmed_at"`
 	Revision    int       `json:"revision"`
+
+	Kind           string   `json:"kind,omitempty"`
+	EvidenceIDs    []string `json:"evidence_ids,omitempty"`
+	Manual         bool     `json:"manual,omitempty"`
+	OriginalStart  string   `json:"original_start,omitempty"`
+	OriginalEnd    string   `json:"original_end,omitempty"`
+	GridAdjusted   bool     `json:"grid_adjusted,omitempty"`
+	SplitGroupID   string   `json:"split_group_id,omitempty"`
+	PartIndex      int      `json:"part_index,omitempty"`
+	StartOffsetMin int      `json:"start_offset_min,omitempty"`
+	EndOffsetMin   *int     `json:"end_offset_min,omitempty"`
+}
+
+// ExcludedEvidence records a review-time decision to exclude an evidence item
+// from confirmed work. The evidence itself is RETAINED (a not-attended meeting
+// stays visible calendar evidence); only its inclusion in work is excluded.
+type ExcludedEvidence struct {
+	EvidenceID string    `json:"evidence_id"`
+	Reason     string    `json:"reason"`
+	ExcludedAt time.Time `json:"excluded_at"`
+}
+
+// AttendanceDecision records an explicit attendance decision for a meeting.
+type AttendanceDecision struct {
+	EvidenceID string    `json:"evidence_id"`
+	Attended   bool      `json:"attended"`
+	DecidedAt  time.Time `json:"decided_at"`
+}
+
+// ReviewState records the durable review outcome for a day. A reviewed empty day
+// is Empty with no Confirmed intervals and no zero-hour block.
+type ReviewState struct {
+	Reviewed            bool                 `json:"reviewed"`
+	Empty               bool                 `json:"empty"`
+	ReviewedAt          time.Time            `json:"reviewed_at"`
+	ExcludedEvidence    []ExcludedEvidence   `json:"excluded_evidence,omitempty"`
+	Attendance          []AttendanceDecision `json:"attendance,omitempty"`
+	AcknowledgedSources []string             `json:"acknowledged_sources,omitempty"`
+	LastProposalHash    string               `json:"last_proposal_hash,omitempty"`
 }
 
 // RemoteMapping binds a local interval identity to a stable remote ID. Identity
@@ -123,4 +169,5 @@ type Record struct {
 	Outcomes          []OperationOutcome          `json:"outcomes"`
 	CollectedEvidence []evidence.Evidence         `json:"collected_evidence,omitempty"`
 	Collection        *evidence.CollectionSummary `json:"collection,omitempty"`
+	Review            *ReviewState                `json:"review,omitempty"`
 }
