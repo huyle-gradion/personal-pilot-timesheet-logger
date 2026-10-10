@@ -66,6 +66,24 @@ Independent @oracle review (session `ses_edc16670fffe3xSQjc6J3sSybD`, read-only,
 
 Findings F1, F2, F3, F4, F6 are the accepted set handed to `S1-FIX-1`. F5, F7, F8 are recorded follow-ups. This disposition is the orchestrator's independent assessment, not a copy of reviewer labels.
 
+## S2 active slice: crash-safe submission lifecycle
+
+| Field | Status |
+| --- | --- |
+| Slice | S2 crash-safe submission lifecycle |
+| Lifecycle | implementing (design accepted; single bounded writer dispatched) |
+| Branch / base | `feat/s2-crash-safe-lifecycle` at `2507498` (S1 `d471b46` is an ancestor) |
+| Design | @oracle design pass completed and accepted by the orchestrator; recorded below |
+| Current writer | @fixer session `ses_edc02ce48ffeDu2D5hOUm03WOU` (alias fix-2) |
+| Next gate | independent read-only review of the implemented snapshot |
+
+Owner-confirmed product decisions (2026-10-10):
+1. An unresolved in-flight operation BLOCKS submission and is resolved by S6; S2 adds no manual mark-applied override.
+2. S2 locks submission only; unifying the review and submit write paths under one day lock is deferred to S8, gap documented.
+3. Stale-lock recovery is manual and token-gated; no auto-break.
+
+Accepted design decisions: one operation ledger (reuse `Record.Outcomes`) with a durable `in_flight` intent state rather than a second collection; deterministic operation identity `DeriveOperationKey` over date/action/remoteID/localID/slot (closes F5); an explicit `Session`/`BeginDaySession` holding the day lock once so per-operation persistence does not deadlock; lock payload with host + token and pid-liveness (`syscall.Kill(pid,0)`) with manual `BreakStaleLock`; revision-checked `SaveDayCAS` and unexported `saveDay`. Explicit non-goals: S4 confirmations, S5 live/MCP semantics, S6 reconciliation identity and approval binding, and remote transactionality.
+
 Reported limitations to investigate, not blanket exceptions: stale locks, package-only evidence/confirmation integration, skipped mappings, whole-record SaveDay races, unmanaged interval revision, and best-effort directory fsync.
 
 ## Readiness blockers
@@ -146,6 +164,17 @@ Open findings and disposition: none new.
 Commit and publication status: docs update committed locally; NOT pushed.
 Vault sync status: complete for S1.
 Next gate and blockers: begin S2 (crash-safe submission lifecycle) as the next safety slice; or S3. No blockers.
+```
+
+```text
+2026-10-10 / S2 / planned -> authorized -> designing -> implementing
+Owner authority reference: direct-dispatch session grant (S1-S9 bounded worker tasks, isolated branches, local commits of accepted slices). Owner confirmed three S2 product decisions (block-only/S6 resolution; submission-only lock deferring unification to S8; manual token-gated break).
+Branch / HEAD / exact snapshot: feat/s2-crash-safe-lifecycle created at 2507498 (S1 d471b46 ancestor); tree clean of tracked changes at dispatch.
+Worker/reviewer report references and verification level: @oracle S2 design pass completed and accepted (session ses_edc07a847ffeGqOzf8mRUaG8oW). @fixer S2-IMPL-1 dispatched (ses_edc02ce48ffeDu2D5hOUm03WOU); result pending, uncommitted.
+Open findings and disposition: none yet; S1 carried items (F2->S6, F5 addressed by design DeriveOperationKey, F7/F8 recorded) remain.
+Commit and publication status: uncommitted; no push.
+Vault sync status: S1 synced; S2 pending acceptance.
+Next gate and blockers: independent read-only review of the S2 implementation snapshot. No architectural blockers.
 ```
 
 ## Documentation review
