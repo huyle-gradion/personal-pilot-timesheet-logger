@@ -54,7 +54,7 @@ func TestJSONFileStore_SaveLoadRevisionAndStableRemoteID(t *testing.T) {
 			Description:      "Work",
 		}},
 	}
-	if err := store.SaveDay(ctx, record); err != nil {
+	if err := store.saveDay(ctx, record); err != nil {
 		t.Fatalf("SaveDay failed: %v", err)
 	}
 
@@ -71,7 +71,7 @@ func TestJSONFileStore_SaveLoadRevisionAndStableRemoteID(t *testing.T) {
 
 	record.Revision = loaded.Revision
 	record.RemoteMappings = loaded.RemoteMappings
-	if err := store.SaveDay(ctx, record); err != nil {
+	if err := store.saveDay(ctx, record); err != nil {
 		t.Fatalf("second SaveDay failed: %v", err)
 	}
 
@@ -267,7 +267,7 @@ func TestJSONFileStore_CorruptRecordFailsClosed(t *testing.T) {
 		t.Errorf("expected GetDay ErrRecordCorrupt, got %v", err)
 	}
 
-	if err := store.SaveDay(ctx, Record{SchemaVersion: SchemaVersion, Date: date}); !errors.Is(err, ErrRecordCorrupt) {
+	if err := store.saveDay(ctx, Record{SchemaVersion: SchemaVersion, Date: date}); !errors.Is(err, ErrRecordCorrupt) {
 		t.Errorf("expected SaveDay ErrRecordCorrupt, got %v", err)
 	}
 
@@ -316,7 +316,7 @@ func TestJSONFileStore_NonRecordPayloadsFailClosed(t *testing.T) {
 				t.Errorf("GetDay: expected ErrRecordCorrupt, got %v", err)
 			}
 
-			if err := store.SaveDay(ctx, Record{
+			if err := store.saveDay(ctx, Record{
 				SchemaVersion: SchemaVersion,
 				Date:          date,
 				Outcomes:      []OperationOutcome{{LocalID: "a", Action: "create", Status: OutcomeConfirmed}},
@@ -437,7 +437,7 @@ func TestJSONFileStore_DirectorySyncFailureSurfaces(t *testing.T) {
 		t.Errorf("expected wrapped directory sync error, got %v", err)
 	}
 
-	if err := store.SaveDay(ctx, Record{SchemaVersion: SchemaVersion, Date: date}); err == nil {
+	if err := store.saveDay(ctx, Record{SchemaVersion: SchemaVersion, Date: date}); err == nil {
 		t.Error("expected SaveDay to surface directory sync failure, got nil")
 	}
 

@@ -40,23 +40,138 @@ const (
 
 // Stable, secret-free CLI error codes.
 const (
-	ErrCodeKeychainFailed     = "SYNC_CLI_KEYCHAIN_FAILED"
-	ErrCodePersistenceFailed  = "SYNC_CLI_PERSISTENCE_FAILED"
-	ErrCodeRecorderInitFailed = "SYNC_CLI_RECORDER_INIT_FAILED"
+	ErrCodeKeychainFailed      = "SYNC_CLI_KEYCHAIN_FAILED"
+	ErrCodePersistenceFailed   = "SYNC_CLI_PERSISTENCE_FAILED"
+	ErrCodeRecorderInitFailed  = "SYNC_CLI_RECORDER_INIT_FAILED"
+	ErrCodeWriterBusy          = "SYNC_CLI_WRITER_BUSY"
+	ErrCodeStaleLock           = "SYNC_CLI_STALE_LOCK"
+	ErrCodeUnresolvedOperation = "SYNC_CLI_UNRESOLVED_OPERATION"
+	ErrCodeIntentPersistFailed = "SYNC_CLI_INTENT_PERSIST_FAILED"
 )
+
+// SubmissionAbortedStatus is the distinct markdown status reported when a
+// durable pre-write intent could not be persisted; no remote write was attempted.
+const SubmissionAbortedStatus = "Submission Aborted (Intent Persist Failed)"
 
 // RecoveryRequiredStatus is the distinct markdown status reported when a remote
 // write succeeded but its outcome could not be persisted locally.
 const RecoveryRequiredStatus = "Recovery Required (Persistence Failed)"
 
-// workflowRecorder persists durable, revisioned operation outcomes for a day.
+// submissionSession is an exclusive day-writer session exposed to the CLI. Each
+// RecordIntent/RecordOutcome durably persists under the single held day lock, so
+// a submission never re-acquires (and deadlocks on) the lock per operation.
+type submissionSession interface {
+	// RecordIntent durably persists a pre-write in_flight intent BEFORE any
+	// remote dispatch. It must be fsynced: a crash after this returns leaves an
+	// unresolved in_flight row that blocks replay.
+	RecordIntent(ctx context.Context, outcome workflow.OperationOutcome) error
+	// RecordOutcome durably persists the terminal outcome (and optional mapping)
+	// for an operation.
+	RecordOutcome(ctx context.Context, outcome workflow.OperationOutcome, mapping *workflow.RemoteMapping) error
+	// UnresolvedOperations returns operations that must be reconciled before any
+	// resubmission: durable in_flight intents and terminal-but-unresolved
+	// (uncertain / unidentified) results.
+	UnresolvedOperations(ctx context.Context) ([]workflow.OperationOutcome, error)
+	// Close releases the day lock. It is idempotent.
+	Close() error
+}
+
+// workflowRecorder persists durable, revisioned operation outcomes for a day and
+// owns the exclusive day lock for the duration of a submission.
 type workflowRecorder interface {
-	UpdateDay(ctx context.Context, date string, mutate func(*workflow.Record) error) (*workflow.Record, error)
+	BeginDaySession(ctx context.Context, date string) (submissionSession, error)
+	BreakStaleLock(ctx context.Context, date, expectedToken string) error
+	DayLockInfo(ctx context.Context, date string) (workflow.LockInfo, error)
 }
 
 // newWorkflowRecorder is a test seam for injecting a recorder (or a failing one).
 var newWorkflowRecorder = func(rootDir string) (workflowRecorder, error) {
-	return workflow.NewJSONFileStore(rootDir)
+	return newJSONFileRecorder(rootDir)
+}
+
+// jsonFileRecorder adapts *workflow.JSONFileStore to the workflowRecorder seam.
+type jsonFileRecorder struct {
+	store *workflow.JSONFileStore
+}
+
+func newJSONFileRecorder(rootDir string) (*jsonFileRecorder, error) {
+	store, err := workflow.NewJSONFileStore(rootDir)
+	if err != nil {
+		return nil, err
+	}
+	return &jsonFileRecorder{store: store}, nil
+}
+
+func (r *jsonFileRecorder) BeginDaySession(ctx context.Context, date string) (submissionSession, error) {
+	session, err := r.store.BeginDaySession(ctx, date)
+	if err != nil {
+		return nil, err
+	}
+	return &jsonFileSession{session: session}, nil
+}
+
+// BreakStaleLock breaks a manual, token-gated stale lock. The operator asserts
+// the owner is dead; BreakStaleLock re-verifies liveness and the token under the
+// lock and fails closed otherwise.
+func (r *jsonFileRecorder) BreakStaleLock(ctx context.Context, date, expectedToken string) error {
+	return r.store.BreakStaleLock(ctx, date, expectedToken, true)
+}
+
+func (r *jsonFileRecorder) DayLockInfo(ctx context.Context, date string) (workflow.LockInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return workflow.LockInfo{}, err
+	}
+	return r.store.DayLockInfo(date)
+}
+
+// jsonFileSession adapts workflow.Session to submissionSession.
+type jsonFileSession struct {
+	session workflow.Session
+}
+
+func (s *jsonFileSession) RecordIntent(ctx context.Context, outcome workflow.OperationOutcome) error {
+	_, err := s.session.Update(ctx, func(r *workflow.Record) error {
+		workflow.UpsertIntent(r, outcome)
+		return nil
+	})
+	return err
+}
+
+func (s *jsonFileSession) RecordOutcome(ctx context.Context, outcome workflow.OperationOutcome, mapping *workflow.RemoteMapping) error {
+	_, err := s.session.Update(ctx, func(r *workflow.Record) error {
+		workflow.UpsertOutcome(r, outcome)
+		if mapping != nil {
+			return workflow.UpsertMapping(r, *mapping)
+		}
+		return nil
+	})
+	return err
+}
+
+func (s *jsonFileSession) UnresolvedOperations(ctx context.Context) ([]workflow.OperationOutcome, error) {
+	record, err := s.session.Get(ctx)
+	if err != nil {
+		if errors.Is(err, workflow.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	// Block on ANY operation that is not a resolved outcome: a durable in_flight
+	// intent (crash before/at the remote write) or a terminal but unresolved
+	// (uncertain / unidentified) result. Never blindly resubmit either. This is
+	// the CLI's reconciliation gate; workflow.UnresolvedOperations is the
+	// in_flight-only primitive it builds on.
+	pending := workflow.UnresolvedOperations(record)
+	for _, o := range record.Outcomes {
+		if o.Status != workflow.OutcomeInFlight && !o.Resolved {
+			pending = append(pending, o)
+		}
+	}
+	return pending, nil
+}
+
+func (s *jsonFileSession) Close() error {
+	return s.session.Close()
 }
 
 // Invariant assertion identifiers.
@@ -139,6 +254,7 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		envFile          string
 		markdownDir      string
 		writeMarkdown    bool
+		breakLock        string
 	)
 
 	today := time.Now().UTC().Format("2006-01-02")
@@ -152,8 +268,16 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	fs.StringVar(&envFile, "env", ".env", "Path to .env configuration file")
 	fs.StringVar(&markdownDir, "markdown-dir", "timesheet", "Directory for clean markdown timesheet records")
 	fs.BoolVar(&writeMarkdown, "write-markdown", true, "Write clean Markdown record in <markdown-dir>/YYYY-MM-DD.md")
+	fs.StringVar(&breakLock, "break-lock", "", "Manually break a stale day lock: token from the day's lock file (owner must be dead; fails closed)")
 
 	if err := fs.Parse(args); err != nil {
+		return ExitUsage
+	}
+
+	// -break-lock acts on the live day lock; a dry-run takes no lock, so the
+	// combination would silently do nothing. Reject it rather than mislead.
+	if dryRun && strings.TrimSpace(breakLock) != "" {
+		fmt.Fprintln(errOut, "error: -break-lock has no effect with -dry-run (dry-run takes no day lock); run without -dry-run to break a stale lock")
 		return ExitUsage
 	}
 
@@ -275,44 +399,99 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	unresolved := false
 	hasMutationError := false
 	recoveryRequired := false
+	intentFailed := false
 	var outcomes []operationOutcome
 
 	if dryRun {
 		fmt.Fprintf(out, "\n[DRY-RUN] Simulation complete: %d to create, %d to update, %d identical (skipped). No remote modifications executed.\n",
 			summary.Created, summary.Updated, summary.Skipped)
 	} else {
-		// Durable outcome persistence is constructed only after approval passes.
-		// Each executed operation's outcome is persisted immediately AFTER its
-		// remote response, so the record of a COMPLETED mutation is written
-		// before the loop continues. The window between a remote write and its
-		// local persistence is NOT crash-protected, and durable pre-write
-		// intent/recovery is S2 scope.
+		// Durable persistence is constructed only after approval passes. The
+		// recorder owns ONE exclusive day-lock session for the whole submission:
+		// every intent and outcome is fsynced under that held lock, so per-op
+		// persistence does not re-acquire (and deadlock on) the lock.
 		recorder, recorderErr := newWorkflowRecorder(dataDir)
 		if recorderErr != nil {
 			fmt.Fprintf(errOut, "error: [%s] initializing workflow recorder: %v\n", ErrCodeRecorderInitFailed, recorderErr)
 			return ExitErr
 		}
 
+		// Manual, token-gated stale-lock break. Never automatic. Only meaningful
+		// for a live submission (dry-run is lock-free and needs no lock).
+		if breakLock != "" {
+			if brErr := recorder.BreakStaleLock(ctx, targetDate, breakLock); brErr != nil {
+				info, _ := recorder.DayLockInfo(ctx, targetDate)
+				fmt.Fprintf(errOut, "error: [%s] could not break the day lock for %s: %v\n", ErrCodeStaleLock, targetDate, brErr)
+				reportLockOwner(errOut, info)
+				return ExitErr
+			}
+			fmt.Fprintf(out, "Cleared stale day lock for %s.\n", targetDate)
+		}
+
+		// (1) Acquire the day lock exactly once. On failure, print a typed,
+		// secret-free diagnostic and abort with ZERO remote writes.
+		session, sessionErr := recorder.BeginDaySession(ctx, targetDate)
+		if sessionErr != nil {
+			info, _ := recorder.DayLockInfo(ctx, targetDate)
+			switch {
+			case errors.Is(sessionErr, workflow.ErrWriterLockStale):
+				fmt.Fprintf(errOut, "error: [%s] the day lock for %s is stale (recorded owner is not alive on this host); break it manually with -break-lock=<token from the lock file>. No remote writes were attempted.\n", ErrCodeStaleLock, targetDate)
+				reportLockOwner(errOut, info)
+			case errors.Is(sessionErr, workflow.ErrWriterBusy):
+				fmt.Fprintf(errOut, "error: [%s] another writer holds the day lock for %s. No remote writes were attempted.\n", ErrCodeWriterBusy, targetDate)
+				reportLockOwner(errOut, info)
+			default:
+				fmt.Fprintf(errOut, "error: [%s] acquiring day session for %s: %v\n", ErrCodeRecorderInitFailed, targetDate, sessionErr)
+			}
+			return ExitErr
+		}
+		// (2) Hold the lock for the whole submission.
+		defer func() { _ = session.Close() }()
+
+		// (3) Restart gate: any unresolved operation blocks replay with ZERO
+		// remote writes. Resolution is deferred to S6; there is deliberately no
+		// manual mark-applied/not-applied override.
+		unresolvedOps, unresolvedErr := session.UnresolvedOperations(ctx)
+		if unresolvedErr != nil {
+			fmt.Fprintf(errOut, "error: [%s] reading unresolved operations for %s: %v\n", ErrCodeRecorderInitFailed, targetDate, unresolvedErr)
+			return ExitErr
+		}
+		if len(unresolvedOps) > 0 {
+			fmt.Fprintf(errOut, "error: [%s] %d unresolved operation(s) block submission for %s; no remote writes were attempted:\n", ErrCodeUnresolvedOperation, len(unresolvedOps), targetDate)
+			for _, o := range unresolvedOps {
+				fmt.Fprintf(errOut, "  - action=%s slot=[%s - %s] remote_id=%q intent_at=%s\n",
+					o.Action, o.StartTime, o.EndTime, o.RemoteID, formatIntentAt(o.IntentAt))
+			}
+			fmt.Fprintln(errOut, "Reconcile these operations before resubmitting (S6 owns reconciliation).")
+			return ExitErr
+		}
+
+		// (4) Fetch remote entries AFTER acquiring the lock so the executed plan
+		// reflects the freshest remote state (query-before-write). The fetch above
+		// only drove the displayed plan. Stale-approval invalidation when the
+		// refreshed plan differs is NOT implemented here; it is deferred with
+		// reconciliation (S6).
+		remoteEntries, getErr = client.GetEntries(ctx, targetDate)
+		if getErr != nil {
+			fmt.Fprintf(errOut, "error: querying remote entries from %s: %v\n", baseURL, getErr)
+			return ExitErr
+		}
+		items, reconErr = api.Reconcile(ctx, record.Blocks, remoteEntries, classificationID)
+		if reconErr != nil {
+			fmt.Fprintf(errOut, "error: reconciling timesheet entries: %v\n", reconErr)
+			return ExitErr
+		}
+		summary = api.BuildSummary(targetDate, items)
+
 		persistOutcome := func(outcome workflow.OperationOutcome, mapping *workflow.RemoteMapping) error {
-			_, persistErr := recorder.UpdateDay(ctx, targetDate, func(record *workflow.Record) error {
-				workflow.UpsertOutcome(record, outcome)
-				if mapping != nil {
-					if mapErr := workflow.UpsertMapping(record, *mapping); mapErr != nil {
-						return mapErr
-					}
-				}
-				return nil
-			})
-			return persistErr
+			return session.RecordOutcome(ctx, outcome, mapping)
 		}
 
 		// reportPersistenceFailure is secret-free: it carries a stable code and a
 		// local file error only, never a token, URL, or raw remote error body.
 		// wroteRemote distinguishes a confirmed remote write from a terminal
 		// failure/uncertain result where no remote write succeeded. The message
-		// is guidance to reconcile remote state before retrying; it does not
-		// assert an enforced guarantee. Durable unresolved-state enforcement is
-		// S2-owned.
+		// is guidance to reconcile remote state before retrying.
 		reportPersistenceFailure := func(wroteRemote bool, persistErr error) {
 			if wroteRemote {
 				fmt.Fprintf(errOut, "error: [%s] a remote write succeeded but local persistence failed; reconcile remote state before retrying: %v\n", ErrCodePersistenceFailed, persistErr)
@@ -321,9 +500,43 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 			fmt.Fprintf(errOut, "error: [%s] local persistence failed; reconcile local and remote state before retrying: %v\n", ErrCodePersistenceFailed, persistErr)
 		}
 
+		// Count remote writes actually dispatched so a mid-plan halt reports the
+		// truth: earlier operations in the plan may already have written remotely,
+		// so a halt must never claim zero remote writes.
+		remoteWritesExecuted := 0
+		remoteWritesSucceeded := 0
+
 		fmt.Fprintln(out, "\nExecuting remote synchronization mutations...")
 
 		for _, item := range items {
+			opKey := operationKeyFor(item)
+
+			// (5) Persist a durable pre-write in_flight intent BEFORE this
+			// operation's remote call. If it fails, HALT before dispatching THIS
+			// operation (earlier operations in the plan may already have written
+			// remotely, so the diagnostic reports how many).
+			if item.Action == api.ActionCreate || item.Action == api.ActionUpdate {
+				intent := workflow.OperationOutcome{
+					OperationKey: opKey,
+					LocalID:      item.LocalBlockID,
+					RemoteID:     item.RemoteID,
+					Action:       string(item.Action),
+					Status:       workflow.OutcomeInFlight,
+					Date:         item.Date,
+					StartTime:    item.StartTime,
+					EndTime:      item.EndTime,
+					Description:  item.Description,
+					IntentAt:     time.Now().UTC(),
+				}
+				if intentErr := session.RecordIntent(ctx, intent); intentErr != nil {
+					fmt.Fprintf(errOut, "error: [%s] failed to persist the pre-write intent for [%s - %s]; submission halted: %d remote write(s) already executed (%d succeeded, %d failed/uncertain): %v\n",
+						ErrCodeIntentPersistFailed, item.StartTime, item.EndTime,
+						remoteWritesExecuted, remoteWritesSucceeded, remoteWritesExecuted-remoteWritesSucceeded, intentErr)
+					intentFailed = true
+					break
+				}
+			}
+
 			switch item.Action {
 			case api.ActionCreate:
 				req := api.CreateEntryRequest{
@@ -334,12 +547,15 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 					Description:      item.Description,
 				}
 				created, cErr := client.CreateEntry(ctx, req)
+				remoteWritesExecuted++
 				if cErr != nil {
 					if api.IsUncertain(cErr) {
 						fmt.Fprintf(errOut, "error: uncertain write creating entry [%s - %s]: %v\n", item.StartTime, item.EndTime, cErr)
 						outcomes = append(outcomes, newOutcome("uncertain", item, ""))
 						unresolved = true
-						if persistErr := persistOutcome(workflowFailureOutcome(item, workflow.OutcomeUncertain, "", false), nil); persistErr != nil {
+						uncertain := workflowFailureOutcome(item, workflow.OutcomeUncertain, "", false)
+						uncertain.OperationKey = opKey
+						if persistErr := persistOutcome(uncertain, nil); persistErr != nil {
 							reportPersistenceFailure(false, persistErr)
 							recoveryRequired = true
 						}
@@ -347,14 +563,17 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 					}
 					fmt.Fprintf(errOut, "error: creating entry [%s - %s]: %v\n", item.StartTime, item.EndTime, cErr)
 					outcomes = append(outcomes, newOutcome("failed", item, ""))
-					if persistErr := persistOutcome(workflowFailureOutcome(item, workflow.OutcomeFailed, operatingErrorCode(cErr), true), nil); persistErr != nil {
+					failed := workflowFailureOutcome(item, workflow.OutcomeFailed, operatingErrorCode(cErr), true)
+					failed.OperationKey = opKey
+					if persistErr := persistOutcome(failed, nil); persistErr != nil {
 						reportPersistenceFailure(false, persistErr)
 						recoveryRequired = true
 						break
 					}
 					hasMutationError = true
 				} else {
-					identified, persistErr := persistConfirmedOutcome(persistOutcome, item, *created)
+					remoteWritesSucceeded++
+					identified, persistErr := persistConfirmedOutcome(persistOutcome, item, *created, opKey)
 					switch {
 					case persistErr != nil:
 						outcomes = append(outcomes, newOutcome("create", item, created.ID))
@@ -377,12 +596,14 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 					Reason: "Automated timesheet sync update",
 				}
 				updated, pErr := client.PatchEntry(ctx, item.RemoteID, req)
+				remoteWritesExecuted++
 				if pErr != nil {
 					if api.IsUncertain(pErr) {
 						fmt.Fprintf(errOut, "error: uncertain write patching entry %s [%s - %s]: %v\n", item.RemoteID, item.StartTime, item.EndTime, pErr)
 						outcomes = append(outcomes, newOutcome("uncertain", item, item.RemoteID))
 						unresolved = true
 						uncertain := workflowFailureOutcome(item, workflow.OutcomeUncertain, "", false)
+						uncertain.OperationKey = opKey
 						uncertain.RemoteID = item.RemoteID
 						if persistErr := persistOutcome(uncertain, nil); persistErr != nil {
 							reportPersistenceFailure(false, persistErr)
@@ -393,6 +614,7 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 					fmt.Fprintf(errOut, "error: patching entry %s [%s - %s]: %v\n", item.RemoteID, item.StartTime, item.EndTime, pErr)
 					outcomes = append(outcomes, newOutcome("failed", item, item.RemoteID))
 					failed := workflowFailureOutcome(item, workflow.OutcomeFailed, operatingErrorCode(pErr), true)
+					failed.OperationKey = opKey
 					failed.RemoteID = item.RemoteID
 					if persistErr := persistOutcome(failed, nil); persistErr != nil {
 						reportPersistenceFailure(false, persistErr)
@@ -401,7 +623,8 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 					}
 					hasMutationError = true
 				} else {
-					identified, persistErr := persistConfirmedOutcome(persistOutcome, item, *updated)
+					remoteWritesSucceeded++
+					identified, persistErr := persistConfirmedOutcome(persistOutcome, item, *updated, opKey)
 					switch {
 					case persistErr != nil:
 						outcomes = append(outcomes, newOutcome("update", item, updated.ID))
@@ -421,14 +644,17 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 				outcomes = append(outcomes, newOutcome("skip", item, item.RemoteID))
 			}
 
-			// An uncertain write or a local persistence failure stops the run:
-			// never send further writes and never blindly retry a mutation.
-			if unresolved || recoveryRequired {
+			// An uncertain write, a local persistence failure, or a failed
+			// pre-write intent stops the run: never send further writes and
+			// never blindly retry a mutation.
+			if unresolved || recoveryRequired || intentFailed {
 				break
 			}
 		}
 
-		if recoveryRequired {
+		if intentFailed {
+			fmt.Fprintf(errOut, "error: submission halted because a durable pre-write intent could not be persisted; %d remote write(s) already executed and no further remote writes were attempted.\n", remoteWritesExecuted)
+		} else if recoveryRequired {
 			fmt.Fprintln(errOut, "error: local persistence failed; recovery is required before continuing and no further remote writes were attempted.")
 		} else if unresolved {
 			fmt.Fprintln(errOut, "warning: submission is partial and unresolved: an uncertain remote write must be re-fetched and reconciled before any retry.")
@@ -446,6 +672,8 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	switch {
 	case dryRun:
 		status = "Dry-Run Preview (Not submitted)"
+	case intentFailed:
+		status = SubmissionAbortedStatus
 	case recoveryRequired:
 		status = RecoveryRequiredStatus
 	case unresolved:
@@ -464,11 +692,48 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		}
 	}
 
-	if recoveryRequired || unresolved || hasMutationError {
+	if intentFailed || recoveryRequired || unresolved || hasMutationError {
 		return ExitErr
 	}
 
 	return ExitOK
+}
+
+// operationKeyFor derives the stable operation identity for a planned item from
+// its pre-write fields. The planned RemoteID is used (empty for a create), so the
+// same key is used for the in_flight intent and the terminal outcome.
+func operationKeyFor(item api.ReconciledItem) string {
+	return workflow.DeriveOperationKey(workflow.OperationOutcome{
+		Date:      item.Date,
+		Action:    string(item.Action),
+		RemoteID:  item.RemoteID,
+		LocalID:   item.LocalBlockID,
+		StartTime: item.StartTime,
+		EndTime:   item.EndTime,
+	})
+}
+
+// formatIntentAt renders an intent timestamp for diagnostics without panicking on
+// a zero value (e.g. a terminal-but-unresolved row that carries no intent).
+func formatIntentAt(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// reportLockOwner prints a secret-free day-lock diagnostic. It NEVER renders the
+// lock token; it points the operator at the lock file to obtain it for a manual,
+// token-gated break.
+func reportLockOwner(errOut io.Writer, info workflow.LockInfo) {
+	if !info.Present {
+		return
+	}
+	if info.PID > 0 {
+		fmt.Fprintf(errOut, "  lock owner pid=%d host=%s acquired_at=%s\n", info.PID, info.Host, info.AcquiredAt)
+	}
+	fmt.Fprintf(errOut, "  lock file: %s\n", info.Path)
+	fmt.Fprintln(errOut, "  If the owner process is not running, break the lock manually with -break-lock=<token from the lock file>.")
 }
 
 // operatingErrorCode extracts only the stable code from a typed API error, so no
@@ -503,26 +768,29 @@ func workflowFailureOutcome(item api.ReconciledItem, status workflow.OutcomeStat
 // block ID is also non-empty, records a remote mapping built from the returned
 // entry. A successful response that carries NO remote ID is recorded as an
 // unresolved "unidentified" outcome with no mapping (identified=false); identity
-// is never fabricated from time-slot equality.
+// is never fabricated from time-slot equality. opKey is the operation's stable
+// pre-write identity so this terminal outcome overwrites its in_flight intent.
 func persistConfirmedOutcome(
 	persist func(workflow.OperationOutcome, *workflow.RemoteMapping) error,
 	item api.ReconciledItem,
 	remote api.RemoteEntry,
+	opKey string,
 ) (identified bool, err error) {
 	now := time.Now().UTC()
 
 	if remote.ID == "" {
 		outcome := workflow.OperationOutcome{
-			LocalID:     item.LocalBlockID,
-			Action:      string(item.Action),
-			Status:      workflow.OutcomeUnidentified,
-			Date:        item.Date,
-			StartTime:   item.StartTime,
-			EndTime:     item.EndTime,
-			Description: item.Description,
-			ErrorCode:   "REMOTE_ID_MISSING",
-			Resolved:    false,
-			RecordedAt:  now,
+			OperationKey: opKey,
+			LocalID:      item.LocalBlockID,
+			Action:       string(item.Action),
+			Status:       workflow.OutcomeUnidentified,
+			Date:         item.Date,
+			StartTime:    item.StartTime,
+			EndTime:      item.EndTime,
+			Description:  item.Description,
+			ErrorCode:    "REMOTE_ID_MISSING",
+			Resolved:     false,
+			RecordedAt:   now,
 		}
 		if persistErr := persist(outcome, nil); persistErr != nil {
 			return false, persistErr
@@ -531,16 +799,17 @@ func persistConfirmedOutcome(
 	}
 
 	outcome := workflow.OperationOutcome{
-		LocalID:     item.LocalBlockID,
-		RemoteID:    remote.ID,
-		Action:      string(item.Action),
-		Status:      workflow.OutcomeConfirmed,
-		Date:        item.Date,
-		StartTime:   item.StartTime,
-		EndTime:     item.EndTime,
-		Description: item.Description,
-		Resolved:    true,
-		RecordedAt:  now,
+		OperationKey: opKey,
+		LocalID:      item.LocalBlockID,
+		RemoteID:     remote.ID,
+		Action:       string(item.Action),
+		Status:       workflow.OutcomeConfirmed,
+		Date:         item.Date,
+		StartTime:    item.StartTime,
+		EndTime:      item.EndTime,
+		Description:  item.Description,
+		Resolved:     true,
+		RecordedAt:   now,
 	}
 
 	var mapping *workflow.RemoteMapping

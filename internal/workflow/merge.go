@@ -68,21 +68,84 @@ func MergeConfirmed(r *Record, intervals []ConfirmedInterval) {
 	}
 }
 
+// operationKeySeparator joins the stable identity fields of an operation. The
+// ASCII unit separator never appears in dates, action names, IDs, or HH:MM
+// times, so it cannot be confused with field content.
+const operationKeySeparator = "\x1f"
+
+// DeriveOperationKey returns a deterministic operation identity from the stable
+// fields of an operation: Date, Action, RemoteID, LocalID, StartTime, EndTime,
+// joined by the unit separator. Description and Classification are deliberately
+// excluded so editing text does not change identity. The planned RemoteID is the
+// one known BEFORE the write (empty for a create), so the key is stable across
+// the intent and the terminal outcome even when a create later returns a remote
+// ID. This closes the F5 same-slot / empty-LocalID collision.
+func DeriveOperationKey(o OperationOutcome) string {
+	return strings.Join([]string{
+		o.Date,
+		o.Action,
+		o.RemoteID,
+		o.LocalID,
+		o.StartTime,
+		o.EndTime,
+	}, operationKeySeparator)
+}
+
+// UpsertIntent records a durable pre-write operation intent as in_flight. It is a
+// NO-OP when a terminal (non-in_flight) row already exists for the key, so a
+// resolved operation is never resurrected into an unresolved state. When the key
+// is empty it is derived via DeriveOperationKey.
+func UpsertIntent(r *Record, intent OperationOutcome) {
+	if r == nil {
+		return
+	}
+	if intent.OperationKey == "" {
+		intent.OperationKey = DeriveOperationKey(intent)
+	}
+
+	for i := range r.Outcomes {
+		if r.Outcomes[i].OperationKey != intent.OperationKey {
+			continue
+		}
+		if r.Outcomes[i].Status != OutcomeInFlight {
+			// A terminal result already exists: never resurrect a resolved op.
+			return
+		}
+		r.Outcomes[i] = intent
+		return
+	}
+	r.Outcomes = append(r.Outcomes, intent)
+}
+
+// UnresolvedOperations returns the durable in_flight intent rows of a record.
+// These are operations whose remote effect is unknown and whose replay must be
+// blocked until reconciled. A nil record yields no results.
+func UnresolvedOperations(r *Record) []OperationOutcome {
+	if r == nil {
+		return nil
+	}
+	var pending []OperationOutcome
+	for _, o := range r.Outcomes {
+		if o.Status == OutcomeInFlight {
+			pending = append(pending, o)
+		}
+	}
+	return pending
+}
+
 // UpsertOutcome records an operation outcome keyed by OperationKey. A confirmed
-// success is never overwritten by a later failed/uncertain outcome. When
-// OperationKey is empty it is derived from LocalID + ":" + Action, falling back
-// to Date+StartTime+EndTime+Action when both are empty.
+// success is never overwritten by a later failed/uncertain outcome. A terminal
+// (non-in_flight) row is never downgraded back to an in_flight intent. When
+// OperationKey is empty it is derived via DeriveOperationKey, exactly as
+// UpsertIntent does, so an intent and its outcome always resolve to the same
+// ledger row and cannot create a duplicate.
 func UpsertOutcome(r *Record, outcome OperationOutcome) {
 	if r == nil {
 		return
 	}
 
 	if outcome.OperationKey == "" {
-		if outcome.LocalID != "" {
-			outcome.OperationKey = outcome.LocalID + ":" + outcome.Action
-		} else {
-			outcome.OperationKey = outcome.Date + outcome.StartTime + outcome.EndTime + outcome.Action
-		}
+		outcome.OperationKey = DeriveOperationKey(outcome)
 	}
 
 	index := -1
@@ -94,7 +157,12 @@ func UpsertOutcome(r *Record, outcome OperationOutcome) {
 	}
 
 	if index >= 0 {
-		if r.Outcomes[index].Status == OutcomeConfirmed {
+		existing := r.Outcomes[index].Status
+		if existing == OutcomeConfirmed {
+			return
+		}
+		// Never downgrade a terminal row back to an unresolved in_flight intent.
+		if outcome.Status == OutcomeInFlight && existing != OutcomeInFlight {
 			return
 		}
 		r.Outcomes[index] = outcome

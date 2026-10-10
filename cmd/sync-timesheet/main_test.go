@@ -924,8 +924,10 @@ func TestCLI_SubprocessAssertions(t *testing.T) {
 	}
 }
 
-// failingWorkflowRecorder always fails persistence, simulating a local disk
-// failure after a remote write has already succeeded.
+// failingWorkflowRecorder simulates a local disk failure AFTER a remote write:
+// the session opens and pre-write intents succeed, but terminal outcome
+// persistence fails. This is the S2 successor to the S1 "persist after write"
+// failure injection.
 type failingWorkflowRecorder struct {
 	err error
 }
@@ -933,6 +935,32 @@ type failingWorkflowRecorder struct {
 func (f failingWorkflowRecorder) UpdateDay(context.Context, string, func(*workflow.Record) error) (*workflow.Record, error) {
 	return nil, f.err
 }
+
+func (f failingWorkflowRecorder) BeginDaySession(context.Context, string) (submissionSession, error) {
+	return failingSession{err: f.err}, nil
+}
+
+func (f failingWorkflowRecorder) BreakStaleLock(context.Context, string, string) error { return nil }
+
+func (f failingWorkflowRecorder) DayLockInfo(context.Context, string) (workflow.LockInfo, error) {
+	return workflow.LockInfo{}, nil
+}
+
+type failingSession struct {
+	err error
+}
+
+func (f failingSession) RecordIntent(context.Context, workflow.OperationOutcome) error { return nil }
+
+func (f failingSession) RecordOutcome(context.Context, workflow.OperationOutcome, *workflow.RemoteMapping) error {
+	return f.err
+}
+
+func (f failingSession) UnresolvedOperations(context.Context) ([]workflow.OperationOutcome, error) {
+	return nil, nil
+}
+
+func (f failingSession) Close() error { return nil }
 
 // TestCLI_PersistenceFailure_StopsAfterOneMutation proves that when persistence
 // fails after a remote write, exactly one remote mutation is issued, no further

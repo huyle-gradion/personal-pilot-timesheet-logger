@@ -83,17 +83,15 @@ func (s *JSONFileStore) GetDay(ctx context.Context, date string) (*Record, error
 	return s.readRecordFile(s.recordPath(date), date)
 }
 
-// SaveDay atomically persists a caller-scoped workflow record under the exclusive
+// saveDay atomically persists a caller-scoped workflow record under the exclusive
 // day lock. It fails closed: a pre-existing corrupt record returns
 // ErrRecordCorrupt without writing and leaves the bytes untouched.
 //
-// HAZARD: SaveDay overwrites the WHOLE record with no revision compare-and-swap.
-// A caller holding a stale full snapshot will silently overwrite any intervening
-// updates; only the Revision counter is bumped. Callers MUST carry forward the
-// current Revision and every collection (Evidence, Confirmed, RemoteMappings,
-// Outcomes) or they will drop concurrent changes. This method is intentionally
-// NOT part of the Store interface; S2 owns restricting callers or adding CAS.
-func (s *JSONFileStore) SaveDay(ctx context.Context, record Record) error {
+// It is UNEXPORTED and test-only. HAZARD: it overwrites the WHOLE record with no
+// revision compare-and-swap. A caller holding a stale full snapshot will silently
+// overwrite any intervening updates; only the Revision counter is bumped. Callers
+// that need a whole-record write must use SaveDayCAS instead.
+func (s *JSONFileStore) saveDay(ctx context.Context, record Record) error {
 	Assert(ctx != nil, AssertWorkflowContextNil)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -129,9 +127,56 @@ func (s *JSONFileStore) SaveDay(ctx context.Context, record Record) error {
 	return s.writeRecordFile(record.Date, record)
 }
 
+// SaveDayCAS persists a whole record only when the currently persisted Revision
+// equals expectedRevision. On mismatch it returns ErrRevisionConflict and writes
+// nothing, so a stale snapshot can never clobber an intervening update. On a
+// match the record is written with Revision = expectedRevision + 1. An absent
+// record has persisted revision 0, so expectedRevision 0 creates revision 1.
+func (s *JSONFileStore) SaveDayCAS(ctx context.Context, expectedRevision int, record Record) error {
+	Assert(ctx != nil, AssertWorkflowContextNil)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := ValidateDate(record.Date); err != nil {
+		return err
+	}
+	if err := checkCapacity(record); err != nil {
+		return err
+	}
+
+	release, err := s.AcquireDayLock(ctx, record.Date)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = release() }()
+
+	existing, err := s.loadForWrite(record.Date)
+	if err != nil {
+		return err
+	}
+	current := 0
+	if existing != nil {
+		current = existing.Revision
+	}
+	if current != expectedRevision {
+		return ErrRevisionConflict
+	}
+
+	if record.SchemaVersion <= 0 {
+		record.SchemaVersion = SchemaVersion
+	}
+	record.Revision = expectedRevision + 1
+	record.UpdatedAt = time.Now().UTC()
+
+	return s.writeRecordFile(record.Date, record)
+}
+
 // UpdateDay loads (or lazily initializes) a day record under the exclusive lock,
 // applies mutate to a fresh non-nil Record, and atomically persists the result.
 // It fails closed on a corrupt existing record. Returns the persisted record.
+//
+// It is the one-shot form of BeginDaySession + Session.Update + Session.Close and
+// preserves the self-locking external behavior of S1.
 func (s *JSONFileStore) UpdateDay(ctx context.Context, date string, mutate func(*Record) error) (*Record, error) {
 	Assert(ctx != nil, AssertWorkflowContextNil)
 	Assert(mutate != nil, AssertWorkflowNilMutate)
@@ -142,11 +187,27 @@ func (s *JSONFileStore) UpdateDay(ctx context.Context, date string, mutate func(
 		return nil, err
 	}
 
-	release, err := s.AcquireDayLock(ctx, date)
+	session, err := s.BeginDaySession(ctx, date)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = release() }()
+	defer func() { _ = session.Close() }()
+
+	return session.Update(ctx, mutate)
+}
+
+// updateLocked is UpdateDay's body without lock acquisition. Callers MUST already
+// hold the day lock (via BeginDaySession or AcquireDayLock); otherwise concurrent
+// writers are not serialized.
+func (s *JSONFileStore) updateLocked(ctx context.Context, date string, mutate func(*Record) error) (*Record, error) {
+	Assert(ctx != nil, AssertWorkflowContextNil)
+	Assert(mutate != nil, AssertWorkflowNilMutate)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := ValidateDate(date); err != nil {
+		return nil, err
+	}
 
 	existing, err := s.loadForWrite(date)
 	if err != nil {
@@ -182,10 +243,11 @@ func (s *JSONFileStore) UpdateDay(ctx context.Context, date string, mutate func(
 	return &record, nil
 }
 
-// AcquireDayLock takes the exclusive per-day writer lock. If it is already held
-// it returns ErrWriterBusy; stale locks are never auto-broken. The release closure
-// removes the lock and is idempotent.
-func (s *JSONFileStore) AcquireDayLock(ctx context.Context, date string) (func() error, error) {
+// BeginDaySession acquires the exclusive day lock exactly once and returns a
+// Session bound to the date. Per-operation persistence via Session.Update reuses
+// the held lock and never re-acquires it, so a submission that persists an intent
+// and an outcome per operation cannot deadlock. The caller must Close the session.
+func (s *JSONFileStore) BeginDaySession(ctx context.Context, date string) (Session, error) {
 	Assert(ctx != nil, AssertWorkflowContextNil)
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -194,41 +256,35 @@ func (s *JSONFileStore) AcquireDayLock(ctx context.Context, date string) (func()
 		return nil, err
 	}
 
-	if err := os.MkdirAll(s.workflowDir, DirPermPrivate); err != nil {
-		return nil, fmt.Errorf("failed to ensure workflow directory exists: %w", err)
-	}
-
-	lockPath := s.lockPath(date)
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, FilePermPrivate)
+	release, err := s.AcquireDayLock(ctx, date)
 	if err != nil {
-		if os.IsExist(err) {
-			return nil, ErrWriterBusy
-		}
-		return nil, fmt.Errorf("failed to acquire workflow day lock: %w", err)
+		return nil, err
 	}
+	return &daySession{store: s, date: date, release: release}, nil
+}
 
-	payload := fmt.Sprintf("pid=%d acquired_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
-	if _, err := file.WriteString(payload); err != nil {
-		_ = file.Close()
-		_ = os.Remove(lockPath)
-		return nil, fmt.Errorf("failed to write workflow day lock: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(lockPath)
-		return nil, fmt.Errorf("failed to close workflow day lock: %w", err)
-	}
+// daySession is the lock-holding Session implementation.
+type daySession struct {
+	store   *JSONFileStore
+	date    string
+	release func() error
+	once    sync.Once
+	err     error
+}
 
-	var once sync.Once
-	var releaseErr error
-	release := func() error {
-		once.Do(func() {
-			if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				releaseErr = err
-			}
-		})
-		return releaseErr
-	}
-	return release, nil
+func (d *daySession) Date() string { return d.date }
+
+func (d *daySession) Get(ctx context.Context) (*Record, error) {
+	return d.store.GetDay(ctx, d.date)
+}
+
+func (d *daySession) Update(ctx context.Context, mutate func(*Record) error) (*Record, error) {
+	return d.store.updateLocked(ctx, d.date, mutate)
+}
+
+func (d *daySession) Close() error {
+	d.once.Do(func() { d.err = d.release() })
+	return d.err
 }
 
 // ListDays lists workflow dates within [fromDate, toDate] inclusive, sorted

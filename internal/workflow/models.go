@@ -72,6 +72,12 @@ const (
 	// stable remote entry ID, so no mapping can be created; reconciliation is
 	// required.
 	OutcomeUnidentified OutcomeStatus = "unidentified"
+	// OutcomeInFlight is a durable PRE-WRITE intent: it records that an
+	// operation is about to be dispatched remotely but has not yet produced a
+	// terminal outcome. An in_flight row found on restart is UNRESOLVED and
+	// must block replay until reconciled (S6 owns reconciliation). It is never
+	// a terminal success.
+	OutcomeInFlight OutcomeStatus = "in_flight"
 )
 
 // OperationOutcome records the durable result of one executed operation. ErrorCode
@@ -89,6 +95,10 @@ type OperationOutcome struct {
 	ErrorCode    string        `json:"error_code"`
 	Resolved     bool          `json:"resolved"`
 	RecordedAt   time.Time     `json:"recorded_at"`
+	// IntentAt is stamped when the operation's pre-write intent was persisted.
+	// It is distinct from RecordedAt (last update time) and lets a restart
+	// report when an unresolved in_flight operation began.
+	IntentAt time.Time `json:"intent_at,omitempty"`
 }
 
 // Record is the durable per-day workflow document. It is stored separately from

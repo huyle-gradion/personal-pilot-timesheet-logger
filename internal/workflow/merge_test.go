@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMergeEvidence_PreservesConfirmed proves an evidence refresh does not touch
@@ -88,30 +89,62 @@ func TestUpsertOutcome_DoesNotOverwriteConfirmed(t *testing.T) {
 	}
 }
 
-// TestUpsertOutcome_DerivesOperationKey proves empty keys are derived from
-// LocalID+":"+Action when LocalID is set, and from the time slot + action
-// otherwise, so distinct empty-LocalID slots never collide.
+// TestUpsertOutcome_DerivesOperationKey proves empty keys are derived via
+// DeriveOperationKey, so distinct empty-key slots never collide.
 func TestUpsertOutcome_DerivesOperationKey(t *testing.T) {
 	r := &Record{}
-	UpsertOutcome(r, OperationOutcome{LocalID: "local-a", Action: "create", Status: OutcomeConfirmed})
-	if r.Outcomes[0].OperationKey != "local-a:create" {
-		t.Errorf("expected derived key local-a:create, got %q", r.Outcomes[0].OperationKey)
+	a := OperationOutcome{LocalID: "local-a", Action: "create", Status: OutcomeConfirmed}
+	UpsertOutcome(r, a)
+	if r.Outcomes[0].OperationKey != DeriveOperationKey(a) {
+		t.Errorf("expected DeriveOperationKey fallback, got %q", r.Outcomes[0].OperationKey)
 	}
 
-	UpsertOutcome(r, OperationOutcome{Date: "2026-10-08", StartTime: "09:00", EndTime: "10:00", Action: "create", Status: OutcomeFailed})
-	UpsertOutcome(r, OperationOutcome{Date: "2026-10-08", StartTime: "10:00", EndTime: "11:00", Action: "create", Status: OutcomeFailed})
+	b := OperationOutcome{Date: "2026-10-08", StartTime: "09:00", EndTime: "10:00", Action: "create", Status: OutcomeFailed}
+	c := OperationOutcome{Date: "2026-10-08", StartTime: "10:00", EndTime: "11:00", Action: "create", Status: OutcomeFailed}
+	UpsertOutcome(r, b)
+	UpsertOutcome(r, c)
 
 	if len(r.Outcomes) != 3 {
 		t.Fatalf("expected 3 outcomes, got %d", len(r.Outcomes))
 	}
-	if r.Outcomes[1].OperationKey != "2026-10-0809:0010:00create" {
-		t.Errorf("expected time-slot derived key, got %q", r.Outcomes[1].OperationKey)
+	if r.Outcomes[1].OperationKey != DeriveOperationKey(b) {
+		t.Errorf("expected DeriveOperationKey fallback, got %q", r.Outcomes[1].OperationKey)
 	}
-	if r.Outcomes[2].OperationKey != "2026-10-0810:0011:00create" {
-		t.Errorf("expected time-slot derived key, got %q", r.Outcomes[2].OperationKey)
+	if r.Outcomes[2].OperationKey != DeriveOperationKey(c) {
+		t.Errorf("expected DeriveOperationKey fallback, got %q", r.Outcomes[2].OperationKey)
 	}
 	if r.Outcomes[1].OperationKey == r.Outcomes[2].OperationKey {
-		t.Errorf("empty-LocalID outcomes for different slots collided on key %q", r.Outcomes[1].OperationKey)
+		t.Errorf("empty-key outcomes for different slots collided on key %q", r.Outcomes[1].OperationKey)
+	}
+}
+
+// TestUpsertOutcome_EmptyKeyMatchesIntentRow proves an intent and its outcome,
+// both with an empty OperationKey, resolve to the SAME ledger row via
+// DeriveOperationKey (no duplicate row).
+func TestUpsertOutcome_EmptyKeyMatchesIntentRow(t *testing.T) {
+	r := &Record{}
+	base := OperationOutcome{
+		Date: "2026-10-08", Action: "create", LocalID: "local-a",
+		StartTime: "09:00", EndTime: "10:00",
+	}
+	intent := base
+	intent.Status = OutcomeInFlight
+	intent.IntentAt = time.Now().UTC()
+	UpsertIntent(r, intent)
+
+	outcome := base
+	outcome.Status = OutcomeConfirmed
+	outcome.Resolved = true
+	UpsertOutcome(r, outcome)
+
+	if len(r.Outcomes) != 1 {
+		t.Fatalf("expected a single ledger row shared by intent and outcome, got %d: %+v", len(r.Outcomes), r.Outcomes)
+	}
+	if r.Outcomes[0].Status != OutcomeConfirmed {
+		t.Errorf("expected the terminal outcome to replace the in_flight row, got %s", r.Outcomes[0].Status)
+	}
+	if UnresolvedOperations(r) != nil && len(UnresolvedOperations(r)) != 0 {
+		t.Errorf("expected no unresolved operations after the terminal outcome")
 	}
 }
 
@@ -190,6 +223,14 @@ func TestNoTimeSlotInferenceFunction(t *testing.T) {
 			ast.Inspect(file, func(n ast.Node) bool {
 				fn, ok := n.(*ast.FuncDecl)
 				if !ok {
+					return true
+				}
+				// DeriveOperationKey is an explicit allowlist: it derives a
+				// deterministic OPERATION key (date/action/ids/slot, unit
+				// separated) for the operation ledger. It never fabricates a
+				// REMOTE MAPPING identity from time-slot equality, which is what
+				// this guard exists to prevent.
+				if fn.Name.Name == "DeriveOperationKey" {
 					return true
 				}
 				if badName.MatchString(fn.Name.Name) {
