@@ -140,10 +140,15 @@ Carried S5 follow-ups (non-blocking): N1 `tools.go` doc-precision nit; S5L1-9 ne
 | Field | Status |
 | --- | --- |
 | Slice | S6 revision-bound plans, approval, and reconciliation |
-| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
-| Branch / base | `feat/s6-plans-approval-reconciliation` at `f041bae` (S1-S5 ancestors verified) |
-| Designer | @oracle session `ses_edadd7e1dffeoojCEagYiCl8LA` (alias ora-14) |
-| Next gate | accept the design (owner decisions only if it surfaces product trade-offs or live authority), then implement hermetically |
+| Lifecycle | implementing layer 1 (representation + pure plan/reconcile/approval); layer 2 (execution + restart gate) follows |
+| Branch / base | `feat/s6-plans-approval-reconciliation` at `85ee6dd` (S1-S5 ancestors verified) |
+| Design | @oracle design pass accepted by the orchestrator (session `ses_edadd7e1dffeoojCEagYiCl8LA`) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S6-IMPL-1 |
+| Next gate | independent review of layer 1, then S6-IMPL-2 (execution + restart gate) |
+
+Owner-confirmed S6 decisions (2026-10-10): (1) Project→classification uses a configured default resolver plus a review override (additive optional `ConfirmedInterval.ClassificationID`), blocked when neither resolves; (2) an uncertain create is resolved only by explicit adoption (a complete listing showing the slot absent is not proof of failure); (3) the edit audit reason is a fixed, honest machine-readable string.
+
+Engineering decisions (orchestrator): new `internal/submit` package owns identity/plan/approval/execution; `internal/workflow` owns representation; `internal/gradion` owns observation; additive `Record.Plans`/`Approvals` (omitempty, SchemaVersion 1); `LocalFingerprint` content hash replaces raw `Record.Revision` as the approval key (revision bumps on every write); `RemoteObserver`/`RemoteWriter` interfaces for hermetic injection; slot overlap only blocks, never matches; plan immutability via content hash; partial success builds a new plan for remaining ops (no replay); no delete path. Non-goals: S7 editorial, S8 entry points, S9 acceptance.
 
 S6 owns exact create/edit plan construction, immutable plan content hashing, approval bound to plan revision + remote assumptions with invalidation, reconciliation identity by stable IDs with explicit adoption, conservative handling of uncertain operations, and partial-success handling with per-operation outcomes and stable IDs (no blind replay, no deletion, no silent replacement). It also re-creates the dormant restart gate (S5 F4 carry). Depends on S2, S4, S5. Non-goals: S7 editorial, S8 entry points, S9 acceptance.
 
