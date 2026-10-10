@@ -84,6 +84,18 @@ Findings F1, F2, F3, F4, F6 are the accepted set handed to `S1-FIX-1`. F5, F7, F
 
 Carried S2 follow-ups (non-blocking): S2-R6 lock file not fsynced (harmless, O_EXCL serializes live processes); S2-R7 `SaveDayCAS` production-dead (intended S6 primitive); test doubles retain unused `UpdateDay` methods; multi-op crash where an earlier op is `uncertain` is untested (the loop breaks before a later intent).
 
+## S3 active slice: evidence contracts and collector adapters
+
+| Field | Status |
+| --- | --- |
+| Slice | S3 evidence contracts and collector adapters |
+| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
+| Branch / base | `feat/s3-evidence-contracts` at `7433729` (S2 `d4d6c00` and S1 `d471b46` ancestors) |
+| Designer | @oracle session `ses_edbe7dae8ffe7t2q6wrEbgh6ct` (alias ora-4) |
+| Next gate | accept the design, then dispatch a bounded implementer |
+
+S3 defines a new minimal Evidence contract (stable source identity, original timestamps, provenance, invitation status, project hints, unknown-duration representation) with calendar/git/PR adapters, an explicit plugin registry with contract checks and a fixture plugin, and visibly-incomplete failed sources. Legacy `SimpleEntry` is not assumed sufficient. Non-goals: S4 proposal/review model, S5 transport, S6 reconciliation identity.
+
 S2 review dispositions (orchestrator, independent of reviewer labels):
 - S2-R1 misleading "zero remote writes" diagnostic on non-first intent failure: accepted, fix now (diagnostic honesty).
 - S2-R2 `-break-lock` silently ignored under `-dry-run`: accepted, fix now (reject or announce).

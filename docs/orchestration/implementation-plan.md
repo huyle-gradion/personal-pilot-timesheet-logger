@@ -52,6 +52,8 @@ Exit: a restart cannot blindly resend an in-flight operation; persistence failur
 
 ## S3. Evidence contracts and collector adapters
 
+State: designing on branch `feat/s3-evidence-contracts` (base `7433729`, S1 `d471b46` and S2 `d4d6c00` ancestors). Bounded @oracle design pass in progress; no implementation writer dispatched.
+
 Depends on S1. Can proceed independently of S2 only in an isolated authorized worktree with non-overlapping files and a stable store contract.
 
 Define a minimal new Evidence contract with stable source identity, original timestamps, provenance, invitation status, project hints, and unknown-duration representation. Adapt calendar, local git and PR sources without assuming legacy SimpleEntry is sufficient. Deduplicate PR/commit evidence and retain separate source references.
