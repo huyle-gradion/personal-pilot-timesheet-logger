@@ -18,6 +18,7 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/api"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
 // Named constants and TigerStyle bounds.
@@ -39,8 +40,24 @@ const (
 
 // Stable, secret-free CLI error codes.
 const (
-	ErrCodeKeychainFailed = "SYNC_CLI_KEYCHAIN_FAILED"
+	ErrCodeKeychainFailed     = "SYNC_CLI_KEYCHAIN_FAILED"
+	ErrCodePersistenceFailed  = "SYNC_CLI_PERSISTENCE_FAILED"
+	ErrCodeRecorderInitFailed = "SYNC_CLI_RECORDER_INIT_FAILED"
 )
+
+// RecoveryRequiredStatus is the distinct markdown status reported when a remote
+// write succeeded but its outcome could not be persisted locally.
+const RecoveryRequiredStatus = "Recovery Required (Persistence Failed)"
+
+// workflowRecorder persists durable, revisioned operation outcomes for a day.
+type workflowRecorder interface {
+	UpdateDay(ctx context.Context, date string, mutate func(*workflow.Record) error) (*workflow.Record, error)
+}
+
+// newWorkflowRecorder is a test seam for injecting a recorder (or a failing one).
+var newWorkflowRecorder = func(rootDir string) (workflowRecorder, error) {
+	return workflow.NewJSONFileStore(rootDir)
+}
 
 // Invariant assertion identifiers.
 const (
@@ -257,12 +274,53 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	// 10. Execute mutations if not dry-run
 	unresolved := false
 	hasMutationError := false
+	recoveryRequired := false
 	var outcomes []operationOutcome
 
 	if dryRun {
 		fmt.Fprintf(out, "\n[DRY-RUN] Simulation complete: %d to create, %d to update, %d identical (skipped). No remote modifications executed.\n",
 			summary.Created, summary.Updated, summary.Skipped)
 	} else {
+		// Durable outcome persistence is constructed only after approval passes.
+		// Each executed operation's outcome is persisted immediately AFTER its
+		// remote response, so the record of a COMPLETED mutation is written
+		// before the loop continues. The window between a remote write and its
+		// local persistence is NOT crash-protected, and durable pre-write
+		// intent/recovery is S2 scope.
+		recorder, recorderErr := newWorkflowRecorder(dataDir)
+		if recorderErr != nil {
+			fmt.Fprintf(errOut, "error: [%s] initializing workflow recorder: %v\n", ErrCodeRecorderInitFailed, recorderErr)
+			return ExitErr
+		}
+
+		persistOutcome := func(outcome workflow.OperationOutcome, mapping *workflow.RemoteMapping) error {
+			_, persistErr := recorder.UpdateDay(ctx, targetDate, func(record *workflow.Record) error {
+				workflow.UpsertOutcome(record, outcome)
+				if mapping != nil {
+					if mapErr := workflow.UpsertMapping(record, *mapping); mapErr != nil {
+						return mapErr
+					}
+				}
+				return nil
+			})
+			return persistErr
+		}
+
+		// reportPersistenceFailure is secret-free: it carries a stable code and a
+		// local file error only, never a token, URL, or raw remote error body.
+		// wroteRemote distinguishes a confirmed remote write from a terminal
+		// failure/uncertain result where no remote write succeeded. The message
+		// is guidance to reconcile remote state before retrying; it does not
+		// assert an enforced guarantee. Durable unresolved-state enforcement is
+		// S2-owned.
+		reportPersistenceFailure := func(wroteRemote bool, persistErr error) {
+			if wroteRemote {
+				fmt.Fprintf(errOut, "error: [%s] a remote write succeeded but local persistence failed; reconcile remote state before retrying: %v\n", ErrCodePersistenceFailed, persistErr)
+				return
+			}
+			fmt.Fprintf(errOut, "error: [%s] local persistence failed; reconcile local and remote state before retrying: %v\n", ErrCodePersistenceFailed, persistErr)
+		}
+
 		fmt.Fprintln(out, "\nExecuting remote synchronization mutations...")
 
 		for _, item := range items {
@@ -281,14 +339,35 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 						fmt.Fprintf(errOut, "error: uncertain write creating entry [%s - %s]: %v\n", item.StartTime, item.EndTime, cErr)
 						outcomes = append(outcomes, newOutcome("uncertain", item, ""))
 						unresolved = true
+						if persistErr := persistOutcome(workflowFailureOutcome(item, workflow.OutcomeUncertain, "", false), nil); persistErr != nil {
+							reportPersistenceFailure(false, persistErr)
+							recoveryRequired = true
+						}
 						break
 					}
 					fmt.Fprintf(errOut, "error: creating entry [%s - %s]: %v\n", item.StartTime, item.EndTime, cErr)
 					outcomes = append(outcomes, newOutcome("failed", item, ""))
+					if persistErr := persistOutcome(workflowFailureOutcome(item, workflow.OutcomeFailed, operatingErrorCode(cErr), true), nil); persistErr != nil {
+						reportPersistenceFailure(false, persistErr)
+						recoveryRequired = true
+						break
+					}
 					hasMutationError = true
 				} else {
-					fmt.Fprintf(out, "Created remote entry %s [%s - %s]\n", created.ID, item.StartTime, item.EndTime)
-					outcomes = append(outcomes, newOutcome("create", item, created.ID))
+					identified, persistErr := persistConfirmedOutcome(persistOutcome, item, *created)
+					switch {
+					case persistErr != nil:
+						outcomes = append(outcomes, newOutcome("create", item, created.ID))
+						reportPersistenceFailure(true, persistErr)
+						recoveryRequired = true
+					case !identified:
+						fmt.Fprintf(errOut, "warning: remote create succeeded for [%s - %s] but returned no stable entry ID; reconciliation is required before any retry.\n", item.StartTime, item.EndTime)
+						outcomes = append(outcomes, newOutcome("unidentified", item, ""))
+						unresolved = true
+					default:
+						fmt.Fprintf(out, "Created remote entry %s [%s - %s]\n", created.ID, item.StartTime, item.EndTime)
+						outcomes = append(outcomes, newOutcome("create", item, created.ID))
+					}
 				}
 			case api.ActionUpdate:
 				req := api.PatchEntryRequest{
@@ -303,28 +382,55 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 						fmt.Fprintf(errOut, "error: uncertain write patching entry %s [%s - %s]: %v\n", item.RemoteID, item.StartTime, item.EndTime, pErr)
 						outcomes = append(outcomes, newOutcome("uncertain", item, item.RemoteID))
 						unresolved = true
+						uncertain := workflowFailureOutcome(item, workflow.OutcomeUncertain, "", false)
+						uncertain.RemoteID = item.RemoteID
+						if persistErr := persistOutcome(uncertain, nil); persistErr != nil {
+							reportPersistenceFailure(false, persistErr)
+							recoveryRequired = true
+						}
 						break
 					}
 					fmt.Fprintf(errOut, "error: patching entry %s [%s - %s]: %v\n", item.RemoteID, item.StartTime, item.EndTime, pErr)
 					outcomes = append(outcomes, newOutcome("failed", item, item.RemoteID))
+					failed := workflowFailureOutcome(item, workflow.OutcomeFailed, operatingErrorCode(pErr), true)
+					failed.RemoteID = item.RemoteID
+					if persistErr := persistOutcome(failed, nil); persistErr != nil {
+						reportPersistenceFailure(false, persistErr)
+						recoveryRequired = true
+						break
+					}
 					hasMutationError = true
 				} else {
-					fmt.Fprintf(out, "Updated remote entry %s [%s - %s]\n", updated.ID, item.StartTime, item.EndTime)
-					outcomes = append(outcomes, newOutcome("update", item, updated.ID))
+					identified, persistErr := persistConfirmedOutcome(persistOutcome, item, *updated)
+					switch {
+					case persistErr != nil:
+						outcomes = append(outcomes, newOutcome("update", item, updated.ID))
+						reportPersistenceFailure(true, persistErr)
+						recoveryRequired = true
+					case !identified:
+						fmt.Fprintf(errOut, "warning: remote update succeeded for [%s - %s] but returned no stable entry ID; reconciliation is required before any retry.\n", item.StartTime, item.EndTime)
+						outcomes = append(outcomes, newOutcome("unidentified", item, updated.ID))
+						unresolved = true
+					default:
+						fmt.Fprintf(out, "Updated remote entry %s [%s - %s]\n", updated.ID, item.StartTime, item.EndTime)
+						outcomes = append(outcomes, newOutcome("update", item, updated.ID))
+					}
 				}
 			case api.ActionSkip:
 				fmt.Fprintf(out, "Skipped [%s - %s]: %s\n", item.StartTime, item.EndTime, item.Reason)
 				outcomes = append(outcomes, newOutcome("skip", item, item.RemoteID))
 			}
 
-			// An uncertain write stops the run: never send further writes and
-			// never blindly retry a non-idempotent mutation.
-			if unresolved {
+			// An uncertain write or a local persistence failure stops the run:
+			// never send further writes and never blindly retry a mutation.
+			if unresolved || recoveryRequired {
 				break
 			}
 		}
 
-		if unresolved {
+		if recoveryRequired {
+			fmt.Fprintln(errOut, "error: local persistence failed; recovery is required before continuing and no further remote writes were attempted.")
+		} else if unresolved {
 			fmt.Fprintln(errOut, "warning: submission is partial and unresolved: an uncertain remote write must be re-fetched and reconciled before any retry.")
 		} else if hasMutationError {
 			fmt.Fprintln(errOut, "warning: one or more mutations failed during synchronization.")
@@ -340,6 +446,8 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	switch {
 	case dryRun:
 		status = "Dry-Run Preview (Not submitted)"
+	case recoveryRequired:
+		status = RecoveryRequiredStatus
 	case unresolved:
 		status = "Partial Submission (Unresolved)"
 	case hasMutationError:
@@ -356,11 +464,113 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		}
 	}
 
-	if unresolved || hasMutationError {
+	if recoveryRequired || unresolved || hasMutationError {
 		return ExitErr
 	}
 
 	return ExitOK
+}
+
+// operatingErrorCode extracts only the stable code from a typed API error, so no
+// raw error message or response body is ever persisted.
+func operatingErrorCode(err error) string {
+	var opErr *api.OperatingError
+	if errors.As(err, &opErr) && opErr.Code != "" {
+		return opErr.Code
+	}
+	return "API_ERR_UNKNOWN"
+}
+
+// workflowFailureOutcome builds a durable non-success outcome. ErrorCode carries
+// only a stable string; raw messages/bodies are never persisted.
+func workflowFailureOutcome(item api.ReconciledItem, status workflow.OutcomeStatus, errorCode string, resolved bool) workflow.OperationOutcome {
+	return workflow.OperationOutcome{
+		LocalID:     item.LocalBlockID,
+		Action:      string(item.Action),
+		Status:      status,
+		Date:        item.Date,
+		StartTime:   item.StartTime,
+		EndTime:     item.EndTime,
+		Description: item.Description,
+		ErrorCode:   errorCode,
+		Resolved:    resolved,
+		RecordedAt:  time.Now().UTC(),
+	}
+}
+
+// persistConfirmedOutcome records a remote write result. A remote response with
+// a non-empty ID is a confirmed success (identified=true) and, when the local
+// block ID is also non-empty, records a remote mapping built from the returned
+// entry. A successful response that carries NO remote ID is recorded as an
+// unresolved "unidentified" outcome with no mapping (identified=false); identity
+// is never fabricated from time-slot equality.
+func persistConfirmedOutcome(
+	persist func(workflow.OperationOutcome, *workflow.RemoteMapping) error,
+	item api.ReconciledItem,
+	remote api.RemoteEntry,
+) (identified bool, err error) {
+	now := time.Now().UTC()
+
+	if remote.ID == "" {
+		outcome := workflow.OperationOutcome{
+			LocalID:     item.LocalBlockID,
+			Action:      string(item.Action),
+			Status:      workflow.OutcomeUnidentified,
+			Date:        item.Date,
+			StartTime:   item.StartTime,
+			EndTime:     item.EndTime,
+			Description: item.Description,
+			ErrorCode:   "REMOTE_ID_MISSING",
+			Resolved:    false,
+			RecordedAt:  now,
+		}
+		if persistErr := persist(outcome, nil); persistErr != nil {
+			return false, persistErr
+		}
+		return false, nil
+	}
+
+	outcome := workflow.OperationOutcome{
+		LocalID:     item.LocalBlockID,
+		RemoteID:    remote.ID,
+		Action:      string(item.Action),
+		Status:      workflow.OutcomeConfirmed,
+		Date:        item.Date,
+		StartTime:   item.StartTime,
+		EndTime:     item.EndTime,
+		Description: item.Description,
+		Resolved:    true,
+		RecordedAt:  now,
+	}
+
+	var mapping *workflow.RemoteMapping
+	if item.LocalBlockID != "" {
+		mapping = &workflow.RemoteMapping{
+			LocalID:          item.LocalBlockID,
+			RemoteID:         remote.ID,
+			Date:             item.Date,
+			StartTime:        item.StartTime,
+			EndTime:          item.EndTime,
+			ClassificationID: item.ClassificationID,
+			Description:      item.Description,
+			LastObserved: workflow.RemoteState{
+				RemoteID:         remote.ID,
+				Date:             remote.Date,
+				StartTime:        remote.StartTime,
+				EndTime:          remote.EndTime,
+				ClassificationID: remote.ClassificationID,
+				Description:      remote.Description,
+				ObservedAt:       now,
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+	}
+
+	if persistErr := persist(outcome, mapping); persistErr != nil {
+		return false, persistErr
+	}
+	return true, nil
 }
 
 // operationOutcome records the ACTUAL result of a single planned mutation so the
