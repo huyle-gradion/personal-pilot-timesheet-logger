@@ -40,6 +40,8 @@ Exit: independent findings disposition, tests for actual guarantees, accepted bo
 
 ## S2. Crash-safe submission lifecycle
 
+State: designing. Dependency S1 is committed (`d471b46`). @oracle design pass in progress; no implementation writer dispatched yet.
+
 Depends on S1. Authorize as a separate safety slice before any production writes.
 
 Persist a stable operation identity and pre-write intent before mutation. Keep the operation unresolved across crashes until reconciliation establishes its outcome. Protect same-day submission across processes, not just individual record saves. Define safe manual recovery for stale locks with active-owner checks. Add revision-checked save semantics or restrict unsafe whole-record callers based on S1 evidence.

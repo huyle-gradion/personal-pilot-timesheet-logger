@@ -33,4 +33,4 @@ An implementer's self-review is useful evidence, not independent acceptance. Rev
 
 ## Next handoff
 
-The durable workflow storage slice (S1) is uncommitted and under independent read-only review against the frozen snapshot in [state](state.md). Do not launch another writer in the current checkout. When the review verdict returns, fix accepted findings through a fixer worker and obtain a focused re-review before committing.
+S1 (durable workflow store and outcome contract) is committed at `d471b46` after independent review and focused re-review; orchestration docs are committed at `d3b9378`. The next dependency-ready slice is S2 (crash-safe submission lifecycle), a safety slice required before any production writes; a bounded @oracle design pass is in progress and no implementation writer is dispatched until the design is accepted. See [state](state.md) and [implementation plan](implementation-plan.md).
