@@ -66,6 +66,10 @@ type ConfirmedInterval struct {
 	PartIndex      int      `json:"part_index,omitempty"`
 	StartOffsetMin int      `json:"start_offset_min,omitempty"`
 	EndOffsetMin   *int     `json:"end_offset_min,omitempty"`
+	// ClassificationID is the ADDITIVE S6 review override for the Gradion
+	// classification. When empty, the configured project->classification resolver
+	// supplies it; when neither resolves, submission is blocked.
+	ClassificationID string `json:"classification_id,omitempty"`
 }
 
 // ExcludedEvidence records a review-time decision to exclude an evidence item
@@ -156,6 +160,66 @@ type OperationOutcome struct {
 	IntentAt time.Time `json:"intent_at,omitempty"`
 }
 
+// PlanOpKind classifies a planned remote operation. There is deliberately no
+// delete kind: remote entries are editable but not removable.
+type PlanOpKind string
+
+const (
+	PlanOpCreate PlanOpKind = "create"
+	PlanOpEdit   PlanOpKind = "edit"
+)
+
+// PlanOperation is one planned remote write. RemoteID is empty for a create.
+// ExpectedRemote is the observed remote content the plan assumed for an edit
+// (nil for a create). Reason is the fixed audit reason for an edit.
+//
+// Task and Billable are NOT populated by the S6 planning layer: layer 2 sources
+// them from ExpectedRemote for edits (a partial edit preserves remote-only
+// fields), and a create has no local source for them.
+type PlanOperation struct {
+	LocalID          string       `json:"local_id"`
+	Kind             PlanOpKind   `json:"kind"`
+	RemoteID         string       `json:"remote_id,omitempty"`
+	Date             string       `json:"date"`
+	StartTime        string       `json:"start_time"`
+	EndTime          string       `json:"end_time"`
+	ClassificationID string       `json:"classification_id"`
+	Description      string       `json:"description"`
+	Task             string       `json:"task,omitempty"`
+	Billable         *bool        `json:"billable,omitempty"`
+	Reason           string       `json:"reason,omitempty"`
+	ExpectedRemote   *RemoteState `json:"expected_remote,omitempty"`
+}
+
+// SubmissionPlan is a content-addressed plan for one day. PlanID is the plan
+// content hash (PlanHash). RecordRevision is audit-only and excluded from the
+// hash so a revision bump does not invalidate an otherwise-identical plan.
+type SubmissionPlan struct {
+	PlanID           string          `json:"plan_id"`
+	Date             string          `json:"date"`
+	LocalFingerprint string          `json:"local_fingerprint"`
+	RecordRevision   int             `json:"record_revision"`
+	RemoteObservedAt time.Time       `json:"remote_observed_at"`
+	RemoteComplete   bool            `json:"remote_complete"`
+	Operations       []PlanOperation `json:"operations"`
+	CreatedAt        time.Time       `json:"created_at"`
+}
+
+// Approval binds a plan to its content and the remote assumptions it was
+// approved against. ApprovalID is the approved plan content hash. An approval is
+// single-use: any local, plan, or remote change invalidates it.
+type Approval struct {
+	ApprovalID        string     `json:"approval_id"`
+	PlanID            string     `json:"plan_id"`
+	Date              string     `json:"date"`
+	RecordRevision    int        `json:"record_revision"`
+	RemoteObservedAt  time.Time  `json:"remote_observed_at"`
+	ApprovedAt        time.Time  `json:"approved_at"`
+	Superseded        bool       `json:"superseded,omitempty"`
+	InvalidatedAt     *time.Time `json:"invalidated_at,omitempty"`
+	InvalidatedReason string     `json:"invalidated_reason,omitempty"`
+}
+
 // Record is the durable per-day workflow document. It is stored separately from
 // the legacy storage.TimesheetRecord and never overwrites or migrates it.
 //
@@ -163,6 +227,10 @@ type OperationOutcome struct {
 // the raw collected evidence and the collection summary for the day. The legacy
 // Evidence []EvidenceReference field is a separate representation and is left
 // untouched.
+//
+// Plans and Approvals are ADDITIVE S6 fields (omitempty). A SubmissionPlan is a
+// content-addressed plan of create/edit operations; an Approval binds a plan to
+// its content and remote assumptions. SchemaVersion stays 1.
 type Record struct {
 	SchemaVersion     int                         `json:"schema_version"`
 	Date              string                      `json:"date"`
@@ -175,4 +243,6 @@ type Record struct {
 	CollectedEvidence []evidence.Evidence         `json:"collected_evidence,omitempty"`
 	Collection        *evidence.CollectionSummary `json:"collection,omitempty"`
 	Review            *ReviewState                `json:"review,omitempty"`
+	Plans             []SubmissionPlan            `json:"plans,omitempty"`
+	Approvals         []Approval                  `json:"approvals,omitempty"`
 }

@@ -1,6 +1,9 @@
 package workflow
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -116,6 +119,9 @@ func preserveConfirmedFields(incoming, existing ConfirmedInterval) ConfirmedInte
 	}
 	if incoming.EndOffsetMin == nil {
 		incoming.EndOffsetMin = existing.EndOffsetMin
+	}
+	if incoming.ClassificationID == "" {
+		incoming.ClassificationID = existing.ClassificationID
 	}
 	return incoming
 }
@@ -340,4 +346,248 @@ func UpsertMapping(r *Record, mapping RemoteMapping) error {
 	mapping.UpdatedAt = now
 	r.RemoteMappings = append(r.RemoteMappings, mapping)
 	return nil
+}
+
+// --- S6 plan/approval representation helpers --------------------------------
+
+// PlanHash returns the content-addressed identity of a plan: sha256 over the
+// canonical JSON of {Date, LocalFingerprint, RemoteObservedAt, RemoteComplete,
+// Operations}, EXCLUDING PlanID, CreatedAt, and RecordRevision. Operations are
+// ordered by a full-content key (see canonicalOperations), so the hash is a pure
+// function of the operation multiset.
+func PlanHash(plan SubmissionPlan) string {
+	canonical := struct {
+		Date             string          `json:"date"`
+		LocalFingerprint string          `json:"local_fingerprint"`
+		RemoteObservedAt time.Time       `json:"remote_observed_at"`
+		RemoteComplete   bool            `json:"remote_complete"`
+		Operations       []PlanOperation `json:"operations"`
+	}{
+		Date:             plan.Date,
+		LocalFingerprint: plan.LocalFingerprint,
+		RemoteObservedAt: plan.RemoteObservedAt.UTC(),
+		RemoteComplete:   plan.RemoteComplete,
+		Operations:       canonicalOperations(plan.Operations),
+	}
+	data, err := json.Marshal(canonical)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// canonicalOperations returns a deterministically ordered copy of ops. It sorts
+// with a STABLE sort over a full-content key, so even operations that share
+// (LocalID, Kind, RemoteID) hash independently of their input order: the result
+// is a pure function of the operation multiset.
+func canonicalOperations(ops []PlanOperation) []PlanOperation {
+	out := make([]PlanOperation, len(ops))
+	copy(out, ops)
+	sort.SliceStable(out, func(i, j int) bool {
+		return canonicalOperationKey(out[i]) < canonicalOperationKey(out[j])
+	})
+	return out
+}
+
+// canonicalOperationKey is a deterministic, full-content encoding of one
+// operation used as a stable sort key. Identical content yields an identical key,
+// so interchangeable operations never affect the resulting order.
+func canonicalOperationKey(op PlanOperation) string {
+	data, err := json.Marshal(op)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// LocalFingerprint returns a content hash over the plan-relevant local state:
+// confirmed intervals (identity, times, project, description, attendance, kind,
+// and ClassificationID), review decisions, and the mappings used (identity fields
+// only; LastObserved and timestamps are excluded). Record.Revision is deliberately
+// EXCLUDED so a revision bump alone does not invalidate an otherwise-identical
+// plan.
+//
+// The classification resolver's output is also deliberately NOT hashed here: an
+// approval binds the exact approved operation content (PlanHash covers each
+// operation's resolved classification), so a resolver change yields a different
+// plan on the next BuildPlan and therefore requires a fresh approval. It is not a
+// ValidateApproval defect.
+func LocalFingerprint(rec Record) string {
+	type confirmed struct {
+		ID               string `json:"id"`
+		Date             string `json:"date"`
+		StartTime        string `json:"start_time"`
+		EndTime          string `json:"end_time"`
+		Project          string `json:"project"`
+		Description      string `json:"description"`
+		Attendance       bool   `json:"attendance"`
+		Kind             string `json:"kind"`
+		ClassificationID string `json:"classification_id"`
+	}
+	type reviewExcluded struct {
+		EvidenceID string `json:"evidence_id"`
+		Reason     string `json:"reason"`
+	}
+	type reviewAttendance struct {
+		EvidenceID string `json:"evidence_id"`
+		Attended   bool   `json:"attended"`
+	}
+	type review struct {
+		Reviewed     bool               `json:"reviewed"`
+		Empty        bool               `json:"empty"`
+		Excluded     []reviewExcluded   `json:"excluded"`
+		Attendance   []reviewAttendance `json:"attendance"`
+		Acknowledged []string           `json:"acknowledged"`
+	}
+	type mapping struct {
+		LocalID          string `json:"local_id"`
+		RemoteID         string `json:"remote_id"`
+		Date             string `json:"date"`
+		StartTime        string `json:"start_time"`
+		EndTime          string `json:"end_time"`
+		ClassificationID string `json:"classification_id"`
+		Description      string `json:"description"`
+	}
+
+	confirmedRows := make([]confirmed, 0, len(rec.Confirmed))
+	for _, c := range rec.Confirmed {
+		confirmedRows = append(confirmedRows, confirmed{
+			ID: c.ID, Date: c.Date, StartTime: c.StartTime, EndTime: c.EndTime,
+			Project: c.Project, Description: c.Description, Attendance: c.Attendance,
+			Kind: c.Kind, ClassificationID: c.ClassificationID,
+		})
+	}
+	sort.Slice(confirmedRows, func(i, j int) bool { return confirmedRows[i].ID < confirmedRows[j].ID })
+
+	var reviewRow review
+	if rec.Review != nil {
+		reviewRow = review{Reviewed: rec.Review.Reviewed, Empty: rec.Review.Empty}
+		for _, ex := range rec.Review.ExcludedEvidence {
+			reviewRow.Excluded = append(reviewRow.Excluded, reviewExcluded{EvidenceID: ex.EvidenceID, Reason: ex.Reason})
+		}
+		for _, ad := range rec.Review.Attendance {
+			reviewRow.Attendance = append(reviewRow.Attendance, reviewAttendance{EvidenceID: ad.EvidenceID, Attended: ad.Attended})
+		}
+		reviewRow.Acknowledged = append([]string(nil), rec.Review.AcknowledgedSources...)
+		sort.Slice(reviewRow.Excluded, func(i, j int) bool { return reviewRow.Excluded[i].EvidenceID < reviewRow.Excluded[j].EvidenceID })
+		sort.Slice(reviewRow.Attendance, func(i, j int) bool { return reviewRow.Attendance[i].EvidenceID < reviewRow.Attendance[j].EvidenceID })
+		sort.Strings(reviewRow.Acknowledged)
+	}
+
+	mappingRows := make([]mapping, 0, len(rec.RemoteMappings))
+	for _, m := range rec.RemoteMappings {
+		mappingRows = append(mappingRows, mapping{
+			LocalID: m.LocalID, RemoteID: m.RemoteID, Date: m.Date,
+			StartTime: m.StartTime, EndTime: m.EndTime,
+			ClassificationID: m.ClassificationID, Description: m.Description,
+		})
+	}
+	sort.Slice(mappingRows, func(i, j int) bool { return mappingRows[i].LocalID < mappingRows[j].LocalID })
+
+	canonical := struct {
+		Confirmed []confirmed `json:"confirmed"`
+		Review    review      `json:"review"`
+		Mappings  []mapping   `json:"mappings"`
+	}{Confirmed: confirmedRows, Review: reviewRow, Mappings: mappingRows}
+
+	data, err := json.Marshal(canonical)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// UpsertPlan inserts or replaces a plan by PlanID.
+func UpsertPlan(r *Record, plan SubmissionPlan) {
+	if r == nil {
+		return
+	}
+	for i := range r.Plans {
+		if r.Plans[i].PlanID == plan.PlanID {
+			r.Plans[i] = plan
+			return
+		}
+	}
+	r.Plans = append(r.Plans, plan)
+}
+
+// FindPlan returns the plan with the given PlanID.
+func FindPlan(r *Record, planID string) (SubmissionPlan, bool) {
+	if r == nil {
+		return SubmissionPlan{}, false
+	}
+	for _, p := range r.Plans {
+		if p.PlanID == planID {
+			return p, true
+		}
+	}
+	return SubmissionPlan{}, false
+}
+
+// UpsertApproval inserts or replaces an approval by ApprovalID.
+func UpsertApproval(r *Record, a Approval) {
+	if r == nil {
+		return
+	}
+	for i := range r.Approvals {
+		if r.Approvals[i].ApprovalID == a.ApprovalID {
+			r.Approvals[i] = a
+			return
+		}
+	}
+	r.Approvals = append(r.Approvals, a)
+}
+
+// InvalidateApproval marks an approval invalidated with a stable reason and time.
+// It never overwrites an existing invalidation.
+func InvalidateApproval(r *Record, approvalID, reason string, now time.Time) {
+	if r == nil {
+		return
+	}
+	for i := range r.Approvals {
+		if r.Approvals[i].ApprovalID != approvalID {
+			continue
+		}
+		if r.Approvals[i].InvalidatedAt == nil {
+			t := now
+			r.Approvals[i].InvalidatedAt = &t
+			r.Approvals[i].InvalidatedReason = reason
+		}
+		return
+	}
+}
+
+// SupersedeApproval marks every other approval for the date superseded, keeping
+// keepApprovalID active.
+func SupersedeApproval(r *Record, keepApprovalID, date string) {
+	if r == nil {
+		return
+	}
+	for i := range r.Approvals {
+		if r.Approvals[i].Date == date && r.Approvals[i].ApprovalID != keepApprovalID {
+			r.Approvals[i].Superseded = true
+		}
+	}
+}
+
+// ActiveApproval returns the current non-superseded, non-invalidated approval for
+// the date (the latest ApprovedAt when several qualify).
+func ActiveApproval(r *Record, date string) (Approval, bool) {
+	if r == nil {
+		return Approval{}, false
+	}
+	var best Approval
+	found := false
+	for _, a := range r.Approvals {
+		if a.Date != date || a.Superseded || a.InvalidatedAt != nil {
+			continue
+		}
+		if !found || a.ApprovedAt.After(best.ApprovedAt) {
+			best = a
+			found = true
+		}
+	}
+	return best, found
 }

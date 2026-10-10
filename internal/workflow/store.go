@@ -41,6 +41,8 @@ const (
 	MaxConfirmedCount         int         = 100              // bounded confirmed intervals per day
 	MaxMappingsCount          int         = 100              // bounded remote mappings per day
 	MaxOutcomesCount          int         = 1000             // bounded operation outcomes per day
+	MaxPlansCount             int         = 50               // bounded submission plans per day
+	MaxApprovalsCount         int         = 50               // bounded approvals per day
 	MaxDaysListedCount        int         = 365              // bounded ListDays result
 	FilePermPrivate           os.FileMode = 0600
 	DirPermPrivate            os.FileMode = 0750
