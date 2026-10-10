@@ -473,3 +473,84 @@ func dump(ev []Evidence, summary CollectionSummary) string {
 	}{Evidence: ev, Summary: summary})
 	return string(data)
 }
+
+// TestRegistry_WarningsPreservedOnIncomplete proves a source's self-reported
+// warnings survive an incomplete result.
+func TestRegistry_WarningsPreservedOnIncomplete(t *testing.T) {
+	reg := NewRegistry()
+	p := &testPlugin{
+		kind:     SourceManual,
+		declared: []SourceKind{SourceManual},
+		collect: func(context.Context, SourceConfig, CollectRequest) (CollectResult, error) {
+			return CollectResult{Result: SourceResult{Status: StatusIncomplete, Warnings: []string{"w-incomplete"}}}, nil
+		},
+	}
+	reg.Register(p)
+
+	_, summary, err := reg.CollectDay(context.Background(), []SourceConfig{source("s", SourceManual, true, nil)}, CollectRequest{Date: "2026-10-08"})
+	if err != nil {
+		t.Fatalf("CollectDay returned error: %v", err)
+	}
+	if summary.Sources[0].Status != StatusIncomplete {
+		t.Fatalf("expected incomplete, got %+v", summary.Sources[0])
+	}
+	if len(summary.Sources[0].Warnings) != 1 || summary.Sources[0].Warnings[0] != "w-incomplete" {
+		t.Errorf("warnings dropped on the incomplete path: %v", summary.Sources[0].Warnings)
+	}
+}
+
+// TestRegistry_WarningsPreservedWhenCheckFails proves warnings survive a
+// contract-check failure on the live path.
+func TestRegistry_WarningsPreservedWhenCheckFails(t *testing.T) {
+	reg := NewRegistry()
+	p := &testPlugin{
+		kind:     SourceManual,
+		declared: []SourceKind{SourceCalendar}, // manual evidence is undeclared
+		collect: func(context.Context, SourceConfig, CollectRequest) (CollectResult, error) {
+			return CollectResult{
+				Evidence: []Evidence{{ID: StableID(SourceManual, "x"), Kind: SourceManual}},
+				Result:   SourceResult{Status: StatusComplete, EvidenceCount: 1, Warnings: []string{"w-check"}},
+			}, nil
+		},
+	}
+	reg.Register(p)
+
+	_, summary, err := reg.CollectDay(context.Background(), []SourceConfig{source("s", SourceManual, true, nil)}, CollectRequest{Date: "2026-10-08"})
+	if err != nil {
+		t.Fatalf("CollectDay returned error: %v", err)
+	}
+	if summary.Sources[0].ErrorCode != CodeDeclaredKindsMismatch {
+		t.Fatalf("expected %s, got %+v", CodeDeclaredKindsMismatch, summary.Sources[0])
+	}
+	if len(summary.Sources[0].Warnings) != 1 || summary.Sources[0].Warnings[0] != "w-check" {
+		t.Errorf("warnings dropped on the check-failure path: %v", summary.Sources[0].Warnings)
+	}
+}
+
+// TestRegistry_WarningsPreservedOnContractPath proves warnings survive contract
+// verification too.
+func TestRegistry_WarningsPreservedOnContractPath(t *testing.T) {
+	reg := NewRegistry()
+	p := &testPlugin{
+		kind:     SourceManual,
+		declared: []SourceKind{SourceManual},
+		collect: func(context.Context, SourceConfig, CollectRequest) (CollectResult, error) {
+			return CollectResult{
+				Evidence: []Evidence{{ID: StableID(SourceManual, "x"), Kind: SourceManual}},
+				Result:   SourceResult{Status: StatusComplete, EvidenceCount: 1, Warnings: []string{"w-contract"}},
+			}, nil
+		},
+	}
+	reg.Register(p)
+
+	results, err := reg.VerifyContracts(context.Background(), []SourceConfig{source("s", SourceManual, true, nil)})
+	if err != nil {
+		t.Fatalf("VerifyContracts returned error: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != StatusComplete {
+		t.Fatalf("expected one complete contract result, got %+v", results)
+	}
+	if len(results[0].Warnings) != 1 || results[0].Warnings[0] != "w-contract" {
+		t.Errorf("warnings dropped on the contract path: %v", results[0].Warnings)
+	}
+}

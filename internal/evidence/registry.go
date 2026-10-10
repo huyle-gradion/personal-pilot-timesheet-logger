@@ -272,6 +272,9 @@ func (r *Registry) collectSource(ctx context.Context, s SourceConfig, req Collec
 	if code != "" {
 		return nil, failResult(result, checks, code, msg)
 	}
+	// Preserve the source's self-reported warnings even if a later check fails or
+	// the source reports incomplete, so a warning is never silently lost.
+	result.Warnings = res.Result.Warnings
 
 	checks = append(checks, checkDeclaredKinds(p.DeclaredEvidenceKinds(), res.Evidence))
 	checks = append(checks, checkRedaction(s, p.RequiredConfig(), res.Evidence, res.Result, checks))
@@ -290,6 +293,7 @@ func (r *Registry) collectSource(ctx context.Context, s SourceConfig, req Collec
 	result.Status = status
 	result.EvidenceCount = len(res.Evidence)
 	result.Checks = checks
+	result.Warnings = res.Result.Warnings
 	result.FinishedAt = time.Now().UTC()
 	return res.Evidence, result
 }
@@ -310,6 +314,31 @@ func (r *Registry) VerifyContracts(ctx context.Context, sources []SourceConfig) 
 		results = append(results, r.contractSource(ctx, s))
 	}
 	return results, nil
+}
+
+// PreflightContracts runs contract verification for the ENABLED sources and
+// returns per-source results. A caller must refuse enablement of any source whose
+// status is not StatusComplete. Disabled sources are not included. An
+// already-canceled context is the only function-level error.
+func (r *Registry) PreflightContracts(ctx context.Context, sources []SourceConfig) ([]SourceResult, error) {
+	enabled := make([]SourceConfig, 0, len(sources))
+	for _, s := range sources {
+		if s.Enabled {
+			enabled = append(enabled, s)
+		}
+	}
+	return r.VerifyContracts(ctx, enabled)
+}
+
+// ContractsComplete reports whether every result is complete, so a caller can
+// refuse enablement when any contract result is not.
+func ContractsComplete(results []SourceResult) bool {
+	for _, r := range results {
+		if r.Status != StatusComplete {
+			return false
+		}
+	}
+	return true
 }
 
 // contractSource is the CONTRACT-mode validation path for one configured source.
@@ -340,6 +369,8 @@ func (r *Registry) contractSource(ctx context.Context, s SourceConfig) SourceRes
 	if code1 != "" {
 		return failResult(result, checks, code1, msg1)
 	}
+	// Preserve self-reported warnings on the contract path too.
+	result.Warnings = res1.Result.Warnings
 	res2, code2, _ := r.collectOnce(ctx, p, s, req)
 	if code2 != "" {
 		return failResult(result, checks, code2, "determinism re-run failed")

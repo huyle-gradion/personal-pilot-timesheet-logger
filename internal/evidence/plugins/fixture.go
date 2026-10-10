@@ -1,8 +1,8 @@
 // Package plugins provides concrete evidence source adapters registered in the
-// compile-time evidence Registry. S3 ships the `fixture` plugin only: it emits
+// compile-time evidence Registry: the calendar, git (local commits + remote PRs),
+// and agent-session adapters, plus the `fixture` plugin. The fixture plugin emits
 // deterministic contract evidence from a fixture file so registry and
-// contract-check behavior can be exercised end to end. Real collector adapters
-// (calendar, git, agent) are a later slice.
+// contract-check behavior can be exercised end to end without a live source.
 package plugins
 
 import (

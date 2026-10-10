@@ -232,7 +232,7 @@ func FetchICS(ctx context.Context, source string, cachePath string, noCache bool
 				MaxResponseHeaderBytes: MaxResponseHeaderBytes,
 				DisableKeepAlives:      true,
 				ResponseHeaderTimeout:  HTTPRequestTimeoutSeconds,
-				TLSHandshakeTimeout:   HTTPRequestTimeoutSeconds,
+				TLSHandshakeTimeout:    HTTPRequestTimeoutSeconds,
 			},
 		}
 
@@ -982,4 +982,226 @@ func FormatJSON(entries []SimpleEntry, minified bool) ([]byte, error) {
 		}
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// --- Detailed (non-filtering) parsing (S3 evidence layer) --------------------
+//
+// The functions below are ADDITIVE: they share the existing helpers
+// (expandOccurrences, collectRecurrenceExceptions, getEventUID) but do NOT modify
+// filterEvent, buildSimpleEntry, SimpleEntry, or any existing behavior. They
+// retain cancelled events and declined/unknown invitations so the caller can keep
+// them as evidence and decide exclusion later (at proposal time).
+
+// InvitationStatus is a calendar-local tri-state (plus none) invitation response.
+// "unknown" is a REAL value and is never defaulted to accepted: iCalendar
+// PARTSTAT indicates an invitation response, not actual attendance.
+type InvitationStatus string
+
+const (
+	// InvitationNone means the event carries no attendee record for the user.
+	InvitationNone InvitationStatus = "none"
+	// InvitationUnknown means an attendee record exists but carries no readable
+	// PARTSTAT (or the user's attendee cannot be attributed).
+	InvitationUnknown     InvitationStatus = "unknown"
+	InvitationAccepted    InvitationStatus = "accepted"
+	InvitationDeclined    InvitationStatus = "declined"
+	InvitationTentative   InvitationStatus = "tentative"
+	InvitationNeedsAction InvitationStatus = "needs_action"
+)
+
+// CalendarEvent is a detailed, NON-filtering calendar observation. Unlike
+// SimpleEntry it is produced WITHOUT dropping cancelled events or declined
+// invitations. Start and End are UTC.
+type CalendarEvent struct {
+	UID         string
+	Start       time.Time
+	End         time.Time
+	AllDay      bool
+	Summary     string
+	Description string
+	Location    string
+	Status      string
+	Invitation  InvitationStatus
+	Transparent bool
+	Recurring   bool
+}
+
+// attendeeEmail returns the normalized email of an attendee, falling back to the
+// raw value when no mailto: prefix is present.
+func attendeeEmail(att *ics.Attendee) string {
+	if att == nil {
+		return ""
+	}
+	if e := NormalizeEmail(att.Email()); e != "" {
+		return e
+	}
+	return NormalizeEmail(att.Value)
+}
+
+// ClassifyInvitation distinguishes "no attendee record" (InvitationNone) from
+// "attendee present with no PARTSTAT" (InvitationUnknown). It never defaults to
+// accepted.
+func ClassifyInvitation(event *ics.VEvent, userEmail string) InvitationStatus {
+	if event == nil {
+		return InvitationNone
+	}
+	attendees := event.Attendees()
+	if len(attendees) == 0 {
+		return InvitationNone
+	}
+
+	normUser := NormalizeEmail(userEmail)
+	var target *ics.Attendee
+	if normUser != "" {
+		for _, att := range attendees {
+			if attendeeEmail(att) == normUser {
+				target = att
+				break
+			}
+		}
+		if target == nil {
+			// Attendee records exist but none is the user: no invitation for them.
+			return InvitationNone
+		}
+	} else if len(attendees) == 1 {
+		target = attendees[0]
+	} else {
+		// Multiple attendee records exist but the user cannot be attributed.
+		return InvitationUnknown
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(string(target.ParticipationStatus()))) {
+	case "ACCEPTED":
+		return InvitationAccepted
+	case "DECLINED":
+		return InvitationDeclined
+	case "TENTATIVE":
+		return InvitationTentative
+	case "NEEDS-ACTION", "NEEDSACTION":
+		return InvitationNeedsAction
+	default:
+		return InvitationUnknown
+	}
+}
+
+// eventSummary extracts and bounds an event summary (shared shape with
+// buildSimpleEntry without modifying it).
+func eventSummary(event *ics.VEvent) string {
+	summary := "(No Title)"
+	if p := event.GetProperty(ics.ComponentPropertySummary); p != nil {
+		if s := strings.TrimSpace(p.Value); s != "" {
+			summary = s
+		}
+	}
+	return TruncateString(summary, MaxSummaryLengthBytes)
+}
+
+// eventDescription extracts and bounds an event description.
+func eventDescription(event *ics.VEvent) string {
+	desc := ""
+	if p := event.GetProperty(ics.ComponentPropertyDescription); p != nil {
+		desc = strings.TrimSpace(p.Value)
+		desc = strings.ReplaceAll(desc, `\n`, " ")
+		desc = strings.ReplaceAll(desc, "\n", " ")
+	}
+	return TruncateString(desc, MaxDescriptionLengthBytes)
+}
+
+// eventLocation extracts and bounds an event location.
+func eventLocation(event *ics.VEvent) string {
+	if p := event.GetProperty(ics.ComponentPropertyLocation); p != nil {
+		return TruncateString(strings.TrimSpace(p.Value), 256)
+	}
+	return ""
+}
+
+// ParseCalendarEventsDetailed parses iCal data into detailed CalendarEvent
+// records for opts.TargetDate. Unlike ParseCalendarEventsWithOptions it does NOT
+// drop cancelled events or declined invitations: it records Status and
+// Invitation so the caller can retain them as evidence.
+func ParseCalendarEventsDetailed(icsData []byte, opts ParseOptions) ([]CalendarEvent, error) {
+	Assert(opts.Location != nil, AssertLocationNil)
+	Assert(!opts.TargetDate.IsZero(), AssertDateZero)
+
+	cal, err := ics.ParseCalendar(bytes.NewReader(icsData))
+	if err != nil {
+		return nil, &OperatingError{
+			Kind:    ErrKindParse,
+			Code:    "CAL_ERR_PARSE_ICS",
+			Message: "failed to parse calendar iCal data",
+		}
+	}
+
+	targetDate := opts.TargetDate
+	loc := opts.Location
+
+	userEmail := strings.TrimSpace(opts.UserEmail)
+	if userEmail == "" {
+		userEmail = extractCalendarOwnerEmail(cal)
+	}
+
+	startOfDay := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, loc)
+	endOfDay := startOfDay.AddDate(0, 0, 1)
+	recurrenceExceptions := collectRecurrenceExceptions(cal)
+
+	var events []CalendarEvent
+	for _, event := range cal.Events() {
+		if len(events) >= MaxParsedEventsCount {
+			break
+		}
+
+		windows, err := expandOccurrences(event, targetDate, startOfDay, endOfDay, loc, recurrenceExceptions)
+		if err != nil || len(windows) == 0 {
+			continue
+		}
+
+		status := "confirmed"
+		if statusProp := event.GetProperty(ics.ComponentPropertyStatus); statusProp != nil {
+			if s := strings.ToLower(strings.TrimSpace(statusProp.Value)); s != "" {
+				status = s
+			}
+		}
+
+		invitation := ClassifyInvitation(event, userEmail)
+
+		transparent := false
+		if transpProp := event.GetProperty(ics.ComponentPropertyTransp); transpProp != nil {
+			if strings.EqualFold(strings.TrimSpace(transpProp.Value), "TRANSPARENT") {
+				transparent = true
+			}
+		}
+
+		uid := getEventUID(event)
+		summary := eventSummary(event)
+		description := eventDescription(event)
+		location := eventLocation(event)
+
+		for _, win := range windows {
+			if len(events) >= MaxParsedEventsCount {
+				break
+			}
+			events = append(events, CalendarEvent{
+				UID:         uid,
+				Start:       win.Start.UTC(),
+				End:         win.End.UTC(),
+				AllDay:      win.IsAllDay,
+				Summary:     summary,
+				Description: description,
+				Location:    location,
+				Status:      status,
+				Invitation:  invitation,
+				Transparent: transparent,
+				Recurring:   win.IsRecurring,
+			})
+		}
+	}
+
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].Start.Equal(events[j].Start) {
+			return events[i].UID < events[j].UID
+		}
+		return events[i].Start.Before(events[j].Start)
+	})
+
+	return events, nil
 }
