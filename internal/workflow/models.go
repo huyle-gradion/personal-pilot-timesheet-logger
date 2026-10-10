@@ -9,6 +9,9 @@ import (
 // RemoteState captures the last observed remote shape for a mapped entry. It is
 // built exclusively from a remote API response and never carries credentials,
 // bearer tokens, iCal URLs, or raw private API error bodies.
+//
+// Task and Billable are ADDITIVE S5 fields (omitempty) so a later reconciliation
+// (S6) can detect changes to those attributes. SchemaVersion stays 1.
 type RemoteState struct {
 	RemoteID         string    `json:"remote_id"`
 	Date             string    `json:"date"`
@@ -17,6 +20,8 @@ type RemoteState struct {
 	ClassificationID string    `json:"classification_id"`
 	Description      string    `json:"description"`
 	ObservedAt       time.Time `json:"observed_at"`
+	Task             string    `json:"task,omitempty"`
+	Billable         *bool     `json:"billable,omitempty"`
 }
 
 // EvidenceReference records a non-secret provenance pointer (repo/PR/branch)
