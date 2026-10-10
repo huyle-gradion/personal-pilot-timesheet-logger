@@ -24,6 +24,8 @@ Observed locally on 2026-10-10 (orchestrator session):
 | Redesign specification/glossary/ADR | `80bb233`, committed |
 | Agent pointers/credential docs | `faec6a4`, committed |
 | S1 durable store/outcome | `d471b46`, committed (parent `faec6a4`), independently re-reviewed accepted |
+| S2 crash-safe lifecycle | `d4d6c00`, committed on `feat/s2-crash-safe-lifecycle` (parent `9144849`), independently re-reviewed accepted |
+| Orchestration docs | `d3b9378`, `2507498`, `9144849`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
 | Unrecorded tracked modification | `AGENTS.md` adds the Orchestration section; documentation only, not S1 code |
@@ -71,11 +73,26 @@ Findings F1, F2, F3, F4, F6 are the accepted set handed to `S1-FIX-1`. F5, F7, F
 | Field | Status |
 | --- | --- |
 | Slice | S2 crash-safe submission lifecycle |
-| Lifecycle | implementing (design accepted; single bounded writer dispatched) |
-| Branch / base | `feat/s2-crash-safe-lifecycle` at `2507498` (S1 `d471b46` is an ancestor) |
-| Design | @oracle design pass completed and accepted by the orchestrator; recorded below |
-| Current writer | @fixer session `ses_edc02ce48ffeDu2D5hOUm03WOU` (alias fix-2) |
-| Next gate | independent read-only review of the implemented snapshot |
+| Lifecycle | committed (local), independently accepted |
+| Commit | `d4d6c00`, parent `9144849`, branch `feat/s2-crash-safe-lifecycle`; 12 files, 2604 insertions |
+| Branch / base | `feat/s2-crash-safe-lifecycle` (S1 `d471b46` ancestor) |
+| Design | @oracle design pass accepted by the orchestrator; recorded below |
+| Current writer | none; S2-FIX-1 result committed |
+| Independent review | initial @oracle review ACCEPTED (R1-R8 Low/Info); focused re-review ACCEPTED (all R1-R5/R8 closed, R6/R7 Info carried, no new defects) |
+| Accepted snapshot | 12 files; manifest `/private/var/folders/r4/j1g3f1_57sq15v3sfz922wpw0000gq/T/opencode/s2-snapshot-fix1-manifest.txt`; md5s re-verified before commit; gofmt/build/vet/test/race green |
+| Next gate | select the next dependency-ready slice (S3 evidence contracts, or S5 MCP transport) |
+
+Carried S2 follow-ups (non-blocking): S2-R6 lock file not fsynced (harmless, O_EXCL serializes live processes); S2-R7 `SaveDayCAS` production-dead (intended S6 primitive); test doubles retain unused `UpdateDay` methods; multi-op crash where an earlier op is `uncertain` is untested (the loop breaks before a later intent).
+
+S2 review dispositions (orchestrator, independent of reviewer labels):
+- S2-R1 misleading "zero remote writes" diagnostic on non-first intent failure: accepted, fix now (diagnostic honesty).
+- S2-R2 `-break-lock` silently ignored under `-dry-run`: accepted, fix now (reject or announce).
+- S2-R3 stale lock unrecoverable via tool on hostname change / PID reuse (fail-closed): accepted, document the manual-removal limit.
+- S2-R5 `UpsertOutcome` empty-key fallback diverges from `DeriveOperationKey`: accepted, fix now (latent duplicate-row footgun).
+- S2-R8 test gaps (multi-op partial-progress crash; unidentified restart-gate; weak assertion): accepted, add tests.
+- S2-R4 dead `workflowRecorder.UpdateDay`: accepted as optional cleanup (remove if unused).
+- S2-R6 lock file not fsynced; S2-R7 `SaveDayCAS` production-dead: carried as Info with rationale (harmless; intended future primitive).
+No blocking categories present: no secret exposure, lost confirmed work, duplicate/unauthorized write, stale approval, corrupt identity, or false success reporting. Production readiness remains unclaimed.
 
 Owner-confirmed product decisions (2026-10-10):
 1. An unresolved in-flight operation BLOCKS submission and is resolved by S6; S2 adds no manual mark-applied override.
@@ -175,6 +192,17 @@ Open findings and disposition: none yet; S1 carried items (F2->S6, F5 addressed 
 Commit and publication status: uncommitted; no push.
 Vault sync status: S1 synced; S2 pending acceptance.
 Next gate and blockers: independent read-only review of the S2 implementation snapshot. No architectural blockers.
+```
+
+```text
+2026-10-10 / S2-IMPL-1 + S2-FIX-1 / implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: direct-dispatch session grant; local commit of independently accepted slice.
+Branch / HEAD / exact snapshot: feat/s2-crash-safe-lifecycle / d4d6c00 (parent 9144849, S1 d471b46 ancestor) / 12 files committed: internal/workflow/{models,merge,store,file_store,lock,file_store_test,merge_test,lock_test,session_test}.go + cmd/sync-timesheet/{main,main_test,crash_test}.go; md5s matched the accepted fix1 manifest before commit.
+Worker/reviewer report references and verification level: @fixer S2-IMPL-1 then S2-FIX-1 (ses_edc02ce48ffeDu2D5hOUm03WOU); @oracle design (ses_edc07a847ffeGqOzf8mRUaG8oW); @oracle review + focused re-review (ses_edbf50f2fffenNp0xTGjta5oci) verdict ACCEPTED both rounds, no blocking findings. Orchestrator final gofmt/build/vet/test/race green on committed snapshot.
+Open findings and disposition: S2-R1/R2/R3/R4/R5/R8 closed by S2-FIX-1; S2-R6/R7 carried Info; cosmetic test-double methods and one untested uncertain-then-later-op path recorded.
+Commit and publication status: committed locally d4d6c00; NOT pushed, no PR.
+Vault sync status: pending - project and daily note update next.
+Next gate and blockers: next dependency-ready slice (S3 evidence contracts or S5 MCP transport). Production blockers unchanged: no live/MCP verification, approval not revision-bound, no reconciliation identity, no idempotency key.
 ```
 
 ## Documentation review

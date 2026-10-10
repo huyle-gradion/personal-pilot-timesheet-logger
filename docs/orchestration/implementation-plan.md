@@ -40,7 +40,7 @@ Exit: independent findings disposition, tests for actual guarantees, accepted bo
 
 ## S2. Crash-safe submission lifecycle
 
-State: implementing on branch `feat/s2-crash-safe-lifecycle` (base `2507498`, S1 `d471b46` ancestor). Design accepted from an @oracle pass; owner confirmed three product decisions (2026-10-10): unresolved in-flight ops block and are resolved by S6 (no manual override); S2 locks submission only, deferring review/submit lock unification to S8; stale-lock recovery is manual and token-gated. Accepted design: one operation ledger with an `in_flight` intent state; deterministic `DeriveOperationKey`; explicit session lock; host+token lock with pid-liveness and manual `BreakStaleLock`; revision-checked `SaveDayCAS`.
+State: committed `d4d6c00` (parent `9144849`, S1 `d471b46` ancestor), locally only, not pushed. Design accepted from an @oracle pass; owner confirmed three product decisions (2026-10-10): unresolved in-flight ops block and are resolved by S6 (no manual override); S2 locks submission only, deferring review/submit lock unification to S8; stale-lock recovery is manual and token-gated. Independent review and focused re-review both returned ACCEPTED (findings R1-R8 closed or carried as Info). Accepted design: one operation ledger with an `in_flight` intent state; deterministic `DeriveOperationKey`; explicit session lock; host+token lock with pid-liveness and manual `BreakStaleLock`; revision-checked `SaveDayCAS`. Carried Info: lock file not fsynced, `SaveDayCAS` production-dead.
 
 Depends on S1. Authorize as a separate safety slice before any production writes.
 

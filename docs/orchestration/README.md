@@ -33,4 +33,4 @@ An implementer's self-review is useful evidence, not independent acceptance. Rev
 
 ## Next handoff
 
-S1 (durable workflow store and outcome contract) is committed at `d471b46` after independent review and focused re-review; orchestration docs are committed at `d3b9378` and `2507498`. S2 (crash-safe submission lifecycle) design was accepted from an @oracle pass and owner-confirmed; implementation is in progress on branch `feat/s2-crash-safe-lifecycle` and awaits independent review. See [state](state.md) and [implementation plan](implementation-plan.md).
+S1 (durable workflow store and outcome contract) is committed at `d471b46` after independent review and focused re-review. S2 (crash-safe submission lifecycle) is committed at `d4d6c00` on branch `feat/s2-crash-safe-lifecycle` after independent review and focused re-review (accepted). See [state](state.md) and [implementation plan](implementation-plan.md) for the next dependency-ready slice.
