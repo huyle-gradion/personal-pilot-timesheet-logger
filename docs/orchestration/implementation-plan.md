@@ -82,6 +82,8 @@ Exit: review state and confirmations persist end-to-end, not only through unit m
 
 ## S5. Direct Gradion MCP transport
 
+State: designing on branch `feat/s5-mcp-transport` (base `d341f57`, S1-S4 ancestors). Bounded @oracle design pass in progress; no implementation writer dispatched. Live reads/writes require named authority (not granted this session).
+
 Depends on S0 and a stable S1 mapping/outcome contract. Hermetic implementation first; live reads require named authority.
 
 Implement the verified MCP tool contract behind the shared core: initialize, paginated listing, stable-ID selection, classifications, creates and edits, required audit reason, bounded parsing, and uncertain outcomes. Verify current schemas instead of relying on stale names. Separate declared tools from observed behavior. No delete path.

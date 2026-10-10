@@ -118,6 +118,18 @@ S4 is complete at the code level: pure proposal model + additive `SourceRef.At` 
 
 Carried S4 follow-ups (non-blocking): S4L2-6 (a joined meeting is also presented standalone; double-count prevented by the overlap gate — S6/S8 review UX); S4L2-7 (joint block `Duration` vs union span — cosmetic); N1 (`MergeConfirmed` does not clear `Review.Empty`, so a refresh can leave `Empty=true` beside confirmed work — not a readiness bypass; clear it or document; S8 export/hardening); N2 (joint interval keeps meeting text after exclusion — cosmetic); N3 (omitting `ManualInterval.UUID` generates a random ID per call — S8 must persist a stable UUID). No production entry point invokes proposal/review yet; local 4-hour/grid/timezone policy remains unverified (S9).
 
+## S5 active slice: direct Gradion MCP transport
+
+| Field | Status |
+| --- | --- |
+| Slice | S5 direct Gradion MCP transport |
+| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
+| Branch / base | `feat/s5-mcp-transport` at `d341f57` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894`, S4 `5f373f4`+`2a06b5b` ancestors) |
+| Designer | @oracle session `ses_edb501788ffeQD2aF5HG3ypYyu` (alias ora-10) |
+| Next gate | accept the design (owner decisions only if it surfaces product trade-offs or live-read authority), then implement hermetically |
+
+S5 implements the verified MCP tool contract behind the shared core (initialize, paginated listing, stable-ID selection, classifications, creates/edits, required audit reason, bounded parsing, uncertain outcomes) and returns observed remote IDs/states/outcomes in the S1 contract. Hermetic first; live reads/writes require named authority (not granted this session). Non-goals: S6 reconciliation/approval, S7 editorial, S8 entry points, S9 integrated acceptance.
+
 S4 layer-2 dispositions (orchestrator, independent of reviewer labels):
 - S4L2-2 readiness bypass via sticky `Empty`: accepted, fix now.
 - S4L2-1 `MarkReviewedEmpty` drops prior review decisions: accepted, fix now.
