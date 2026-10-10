@@ -33,4 +33,4 @@ An implementer's self-review is useful evidence, not independent acceptance. Rev
 
 ## Next handoff
 
-S1 (durable workflow store) is committed at `d471b46`. S2 (crash-safe submission lifecycle) is committed at `d4d6c00`. S3 (evidence contracts) is committed at `28d7891` (layer 1) and `5ff9894` (layer 2). S4 (proposal model and terminal review) is committed at `5f373f4` (layer 1) and `2a06b5b` (layer 2). All four slices were independently reviewed and re-reviewed. See [state](state.md) and [implementation plan](implementation-plan.md) for the next dependency-ready slice.
+S1 (durable workflow store) is committed at `d471b46`. S2 (crash-safe submission lifecycle) is committed at `d4d6c00`. S3 (evidence contracts) is committed at `28d7891` (layer 1) and `5ff9894` (layer 2). S4 (proposal model and terminal review) is committed at `5f373f4` (layer 1) and `2a06b5b` (layer 2). S5 (direct Gradion MCP transport) is committed at `42fba53`/`b59661a`/`c943e97`. All five slices were independently reviewed and re-reviewed. See [state](state.md) and [implementation plan](implementation-plan.md) for the next dependency-ready slice.

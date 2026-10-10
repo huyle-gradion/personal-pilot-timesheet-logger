@@ -27,7 +27,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S2 crash-safe lifecycle | `d4d6c00`, committed on `feat/s2-crash-safe-lifecycle` (parent `9144849`), independently re-reviewed accepted |
 | S3 evidence contracts | layer 1 `28d7891`, layer 2 `5ff9894`, committed on `feat/s3-evidence-contracts`, independently reviewed/re-reviewed accepted |
 | S4 proposal model | layer 1 `5f373f4`, layer 2 `2a06b5b`, committed on `feat/s4-proposal-model`, independently reviewed/re-reviewed accepted |
-| S5 MCP transport | layer 1 `42fba53`, layer 2 `b59661a`, committed on `feat/s5-mcp-transport`, independently reviewed/re-reviewed accepted; layer 3 (containment) implementing |
+| S5 MCP transport | layers 1 `42fba53`, 2 `b59661a`, 3 `c943e97`, committed on `feat/s5-mcp-transport`, independently reviewed/re-reviewed accepted |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -124,13 +124,22 @@ Carried S4 follow-ups (non-blocking): S4L2-6 (a joined meeting is also presented
 | Field | Status |
 | --- | --- |
 | Slice | S5 direct Gradion MCP transport |
-| Lifecycle | layer 2 committed; layer 3 (legacy REST containment) implementing |
-| Branch / base | `feat/s5-mcp-transport` at `b59661a` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894`, S4 `5f373f4`+`2a06b5b` ancestors) |
-| Commits | layer 1 `42fba53` (6 files); layer 2 `b59661a` (8 files) |
+| Lifecycle | committed (layers 1 + 2 + 3), independently accepted |
+| Branch / base | `feat/s5-mcp-transport` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894`, S4 `5f373f4`+`2a06b5b` ancestors) |
+| Commits | layer 1 `42fba53` (6 files); layer 2 `b59661a` (8 files); layer 3 `c943e97` (7 files, −4101 net) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_edb501788ffeQD2aF5HG3ypYyu`) |
-| Independent review | layer 2 reviewed and re-reviewed accepted (F1..F5/T1..T4 closed; N1 doc-precision carried) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S5-IMPL-3 |
-| Next gate | independent review of layer 3; slice commit; vault sync |
+| Independent review | layers 1, 2, and 3 each reviewed and re-reviewed; all accepted (S5L1-1..9, F1..F5/T1..T4, F1..F3 closed; rest carried) |
+| Next gate | select the next dependency-ready slice (S6 revision-bound plans/approval/reconciliation) |
+
+S5 is complete at the code level: generic MCP transport (layer 1), Gradion domain client + additive `RemoteState` fields (layer 2), and legacy REST submission containment (layer 3). Owner decisions met (hermetic; no live reads/writes; contain the REST write path now).
+
+Carried S5 follow-ups (non-blocking): N1 `tools.go` doc-precision nit; S5L1-9 network errors reduced to a static string; two dead constants in the deprecated `internal/api` (`MaxLocalBlocksCount`, `AssertAPISyncWritersNil`); the duplicated uncertain-write helpers marked deprecated. **F4 (S6/S8 carry):** the S2 integrated restart gate is now dormant — `workflow.UnresolvedOperations` and the session/intent primitives remain unit-tested, but no production consumer enforces the restart gate because the CLI write loop was retired; S6/S8 must re-create the restart gate, uncertain/unidentified handling, and multi-op crash tests against the MCP/approval-bound path. Residual remote race (no conditional update / idempotency key) documented, not closed. No production entry point wires `internal/mcp`/`internal/gradion`; live MCP semantics unverified.
+
+S5 layer-3 dispositions (orchestrator, independent of reviewer labels):
+- F1 `tests/e2e_test.go` no longer compiles (references removed symbols + retired flags) — accepted, fix now (retire or rewrite to the contained surface; S5 is not complete until the e2e tag builds clean).
+- F2 dead `BuildSummary`/reconcile types + inaccurate `internal/api` doc: accepted, clean up.
+- F3 orphaned test comment: accepted, remove.
+- F4 (carry, S6/S8): the S2 *integrated* restart gate is now dormant — `workflow.UnresolvedOperations` and the session/intent primitives remain unit-tested, but no production consumer enforces the restart gate because the CLI write loop was retired. S6/S8 must re-create the restart gate, uncertain/unidentified handling, and multi-op crash tests against the MCP/approval-bound path. Recorded as an explicit carry, not a preserved guarantee.
 
 S5 layer-3 scope (owner-approved containment): remove the REST mutation surface (CreateEntry/PatchEntry/DeleteEntry, ActionDelete, slot-equality Reconcile) and retire the cmd/sync-timesheet write path and `-approve` so no production write path can bypass later approval gates; update tests and document the coverage change. Carry N1 (tools.go doc-precision nit).
 
