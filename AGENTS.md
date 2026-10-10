@@ -2,6 +2,12 @@
 
 ## Agent skills
 
+### Orchestration
+
+When coordinating implementation, review, fixes, commits, or vault updates, start at
+`docs/orchestration/README.md`. It defines authority, worker handoffs, review gates,
+and the staged redesign plan. A plan is not permission to implement or submit work.
+
 ### Issue tracker
 
 GitHub issues via `gh` CLI. See `docs/agents/issue-tracker.md`.
