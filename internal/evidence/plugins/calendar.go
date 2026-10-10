@@ -201,19 +201,13 @@ func (p *CalendarPlugin) Collect(ctx context.Context, cfg evidence.SourceConfig,
 	}, nil
 }
 
-// DefaultProposalFilter reports whether e is eligible as proposal input. S4 uses
-// it to exclude cancelled events and declined/unknown invitations from proposal
-// input. Those items remain in the evidence record; they are filtered only here,
-// at proposal time.
+// DefaultProposalFilter reports whether e is eligible as proposal input. It
+// delegates to the pure evidence.IsProposalInput predicate so the plugin and the
+// proposal layer share one definition. Cancelled events and declined/unknown
+// invitations remain in the evidence record; they are filtered only here, at
+// proposal time.
 func DefaultProposalFilter(e evidence.Evidence) bool {
-	if e.Status == evidence.EventStatusCancelled {
-		return false
-	}
-	switch e.Invitation {
-	case evidence.InvitationDeclined, evidence.InvitationUnknown:
-		return false
-	}
-	return true
+	return evidence.IsProposalInput(e)
 }
 
 func mapCalendarStatus(s string) string {

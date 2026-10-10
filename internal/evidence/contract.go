@@ -92,6 +92,11 @@ type SourceRef struct {
 	CommitSHA  string     `json:"commit_sha,omitempty"`
 	EventUID   string     `json:"event_uid,omitempty"`
 	SessionID  string     `json:"session_id,omitempty"`
+	// At is this ref's own non-secret observation time (for a git ref, the
+	// commit's timestamp). SourceRef is NOT an identity input, so adding At does
+	// not change any StableID. It lets the proposal layer place each folded commit
+	// at its own time instead of only the parent evidence's span.
+	At time.Time `json:"at,omitempty"`
 }
 
 // TopicHint suggests a reviewable grouping. PRNumber==0 means the caller falls

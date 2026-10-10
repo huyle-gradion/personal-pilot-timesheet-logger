@@ -293,6 +293,7 @@ func buildGitEvidence(activities []gitRepoActivity, projectMap map[string]string
 					Repository: act.RepoKey,
 					CommitSHA:  sha,
 					Branch:     act.Branch,
+					At:         c.Timestamp.UTC(),
 				})
 				if !c.Timestamp.IsZero() {
 					if start.IsZero() || c.Timestamp.Before(start) {
@@ -334,7 +335,7 @@ func buildGitEvidence(activities []gitRepoActivity, projectMap map[string]string
 				Title:        firstLine(c.Message),
 				Start:        c.Timestamp.UTC(),
 				Duration:     evidence.UnknownDuration(),
-				SourceRefs:   []evidence.SourceRef{{Kind: evidence.SourceLocalGit, Repository: act.RepoKey, CommitSHA: sha, Branch: act.Branch}},
+				SourceRefs:   []evidence.SourceRef{{Kind: evidence.SourceLocalGit, Repository: act.RepoKey, CommitSHA: sha, Branch: act.Branch, At: c.Timestamp.UTC()}},
 				TopicHint:    &evidence.TopicHint{Repository: act.RepoKey, PRNumber: 0, Branch: act.Branch},
 				ProjectHints: projectHints(projectMap, act.RepoKey),
 				ObservedAt:   observed,

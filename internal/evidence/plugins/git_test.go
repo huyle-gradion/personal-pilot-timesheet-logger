@@ -109,8 +109,25 @@ func TestGitPlugin_CommitFoldedIntoPRCountsOnce(t *testing.T) {
 		t.Errorf("expected 1 remote_pr ref + 2 local_git refs, got %d/%d", remoteRefs, localRefs)
 	}
 
+	// Each folded commit's SourceRef carries that commit's own time.
+	atBySHA := map[string]time.Time{}
+	for _, ref := range prEvidence.SourceRefs {
+		if ref.Kind == evidence.SourceLocalGit {
+			atBySHA[ref.CommitSHA] = ref.At
+		}
+	}
+	if got := atBySHA["sha1"]; !got.Equal(time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)) {
+		t.Errorf("folded sha1 At = %v, want 09:00", got)
+	}
+	if got := atBySHA["sha2"]; !got.Equal(time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC)) {
+		t.Errorf("folded sha2 At = %v, want 10:00", got)
+	}
+
 	if len(standalone) != 1 || standalone[0].SourceRefs[0].CommitSHA != "sha3" {
 		t.Fatalf("expected the unclaimed commit sha3 as the only standalone, got %+v", standalone)
+	}
+	if got := standalone[0].SourceRefs[0].At; !got.Equal(time.Date(2026, 10, 6, 16, 0, 0, 0, time.UTC)) {
+		t.Errorf("standalone sha3 At = %v, want 16:00", got)
 	}
 	if standalone[0].Duration.Known {
 		t.Error("standalone commit must carry an unknown duration")
