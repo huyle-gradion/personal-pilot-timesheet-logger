@@ -157,10 +157,15 @@ Carried S6 follow-ups (non-blocking): **F1 (S8 obligation)** — the S8 entry po
 | Field | Status |
 | --- | --- |
 | Slice | S7 optional editorial synthesis and usage |
-| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
-| Branch / base | `feat/s7-editorial-synthesis` at `4f5e1c9` (S1-S6 ancestors verified) |
-| Designer | @oracle session `ses_eda93832fffeUT2287dqL1w6Cp` (alias ora-17) |
-| Next gate | accept the design (owner decisions only if it surfaces product trade-offs), then implement hermetically |
+| Lifecycle | implementing (command-adapter editorial layer + additive workflow fields) |
+| Branch / base | `feat/s7-editorial-synthesis` at `474d9c0` (S1-S6 ancestors verified) |
+| Design | @oracle design pass accepted by the orchestrator (session `ses_eda93832fffeUT2287dqL1w6Cp`) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S7-IMPL-1 |
+| Next gate | independent review of S7; slice commit; vault sync |
+
+Owner-confirmed S7 decisions (2026-10-10): (1) the optional editorial agent is invoked via a harness-agnostic command (subprocess) adapter; the concrete live command is wired at S8, and the CLI works with no agent (deterministic fallback); (2) the soft daily editorial target is 1000 tokens (an explicit owner override of the spec's 600) and counts editorial input+output+cache tokens across retries/reruns.
+
+Engineering decisions: text-only boundary (output decodes only `Text{Title,Description}`; `Apply` touches only `ProposedTimeBlock.Description`); fail-closed whole-response rejection with a strict key-set check; display-only title, description is the persisted text; applied text flows through the existing review path so an S6 approval is invalidated by `LocalFingerprint`/`PlanHash` (no new S6 code); unknown measurement is not zero; editorial and orchestration usage are separate fields. Non-goals: S8 entry points/export/presentation, S9 acceptance, live agent adapter wiring.
 
 S7 is a text-only optional editorial layer: AI may propose titles/descriptions only (never intervals/attendance/projects/evidence/approvals), with summary reuse for unchanged evidence, a soft 600-token daily editorial target including retries, orchestration usage kept separate (unknown is not zero), budget-exhaustion fallback to deterministic/manual text, and no-agent operation. Text changes must participate in S6 invalidation. Depends on S4. Non-goals: S8 entry points/export, S9 acceptance.
 
