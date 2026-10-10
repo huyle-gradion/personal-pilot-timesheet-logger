@@ -404,6 +404,8 @@ Reported limitations to investigate, not blanket exceptions: stale locks, packag
 
 ## Readiness blockers
 
+**Live read verification (2026-10-10) found a code-level blocker (B5):** the live Gradion `list_my_entries` / `get_classifications` responses are `{resources:[{id,kind,label}]}` resource-reference envelopes that `internal/gradion` cannot parse (`GRADION_ERR_READ_SCHEMA`); `resources/read` with the raw id returns `-32602 unsupported uri scheme` and no `outputSchema` is declared. The S6 reconciliation/approval path therefore does not work against the live server as built. See `docs/gradion-mcp-verification.md` section 9. Keychain resolution and calendar invitation metadata were confirmed read-only. B6 (four-hour remote rule, governing timezone) remains unverified pending a write.
+
 Exact revision/plan approval, durable pre-write intent and crash recovery, session-level submission ownership, stable-ID reconciliation, immediate remote recheck, preferred MCP submission transport, and integrated evidence/review/export remain unaccepted. Timezone, remote limits, and live create/edit semantics are not verified. MCP exposes no conditional update/idempotency field according to the read-only verification report; this absence leaves residual remote risk.
 
 The accepted spec still contains dated initial credential failures and `implementation_status: not-started`. Later credential verification and source commits supersede those implementation-status facts, not the product requirements. Consult `docs/agents/credentials.md`, `docs/gradion-mcp-verification.md`, and this ledger for dated progress. Updating those caches must preserve the original design decision history.
@@ -579,6 +581,16 @@ Open findings and disposition: F1 four-hour split now implemented end-to-end; F3
 Commit and publication status: committed locally ca96a20; NOT pushed, no PR.
 Vault sync status: complete - project and daily note updated with the S9 commit.
 Next gate and blockers: owner release decision and any live-verification authorization. Production blockers: live MCP/agent/Keychain and remote-policy semantics unverified; residual remote write race; no production entry point contacted a live service.
+```
+
+```text
+2026-10-10 / live-verification / owner granted read-only authority -> checks run -> BLOCKER FOUND
+Owner authority reference: owner granted live read-only authority (Keychain resolution, read-only MCP checks, calendar-metadata inspection; no writes).
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 3ff1301 / tracked tree clean; a temporary in-module read-only probe was created, run, and removed (not committed).
+Evidence: docs/gradion-mcp-verification.md section 9 (sanitized; no secrets). Keychain: all three items resolve via internal/keychain. MCP: initialize/tools-list/VerifyCapabilities OK (71 tools, protocol 2025-06-18). Calendar: PARTSTAT metadata confirmed (ACCEPTED 39 / DECLINED 5 / NEEDS-ACTION 19).
+Blocker: B5 - live list_my_entries/get_classifications return {resources:[{id,kind,label}]}; the internal/gradion parser expects a bare array/known list key, so live reads fail with GRADION_ERR_READ_SCHEMA; resources/read with the raw id returns -32602 unsupported uri scheme; no outputSchema declared. This blocks S6 reconciliation against live as built and is a pilot blocker. B6: four-hour remote rule and governing timezone still unverified (need a write).
+No writes; no secrets displayed; no Keychain item modified.
+Next gate and blockers: owner decision - authorize further read-only contract discovery + a bounded parser fix, or accept the gap. Release remains blocked on B5 (and B6 for full live parity).
 ```
 
 ## Documentation review

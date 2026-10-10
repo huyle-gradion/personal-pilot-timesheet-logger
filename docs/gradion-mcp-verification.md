@@ -196,3 +196,52 @@ is not tied to an exact preview or to a specific local record revision (the
 durable mapping/revision store from ADR-005 is not implemented). Production
 submission remains **not ready**, and no remote create, edit, delete, or test
 submission has been performed.
+
+## 9. Live read-only re-verification of the redesign (2026-10-10)
+
+The owner granted live read-only authority (Keychain resolution, read-only MCP
+checks, calendar-metadata inspection; no writes). The checks were run through the
+redesign's own packages (`internal/keychain`, `internal/mcp`, `internal/gradion`,
+`internal/calendar`) using a temporary in-module probe that printed only
+sanitized aggregates (no secrets, no feed URL, no entry descriptions, no event
+titles). The probe was removed afterward; the tree is clean. No writes were made.
+
+Results:
+
+- **Keychain resolution — works.** All three items resolve through
+  `internal/keychain`: `gradion.workspace.ApiKey` (present, len 68),
+  `gh_auth_token` (present, len 40), `calendar_feed_url` (present, len 117).
+  Values were never printed.
+- **MCP session — works.** `initialize` returned `gradion-workspace` v1.0.0,
+  protocol `2025-06-18`; `tools/list` returned 71 tools; the redesign's
+  `gradion.Client.VerifyCapabilities` confirmed the required timesheet tools.
+- **MCP reads — BLOCKED by a response-shape mismatch.** `timesheet__list_my_entries`
+  and `timesheet__get_classifications` return
+  `structuredContent: {"resources":[{"id":…,"kind":…,"label":…}]}` — an MCP
+  resource-reference envelope whose items carry only `id`/`kind`/`label` (`kind`
+  was `entry`). The redesign's `internal/gradion` parser expects a bare array or a
+  known list key, so both calls fail with `GRADION_ERR_READ_SCHEMA`. A
+  `resources/read` with the raw `id` returns JSON-RPC `-32602 unsupported uri
+  scheme`, and neither tool declares an `outputSchema`. The full entry data
+  (times, description, classification) is therefore not obtained by the built
+  client. This blocks the S6 reconciliation/approval path against the live server
+  as currently implemented and is a pilot blocker.
+- **Calendar invitation metadata — works.** The configured iCal feed fetched
+  successfully (18815 bytes); `PARTSTAT` attributes were present:
+  ACCEPTED 39, DECLINED 5, NEEDS-ACTION 19 (63 total). This confirms the
+  invitation-status assumption behind S3/S4 (cancelled/declined/unknown retained
+  and filtered at proposal time).
+
+New blockers (B5, B6):
+
+- **B5 — Open, code-level (live).** The live `list_my_entries` /
+  `get_classifications` response shape (`{resources:[{id,kind,label}]}`) is not
+  parsed by `internal/gradion`; live reads fail with `GRADION_ERR_READ_SCHEMA`.
+  Resolving this requires further read-only contract discovery (how the entry
+  data is exposed) and a bounded parser change. No writes are needed to
+  investigate.
+- **B6 — Open, verification.** The four-hour remote rule and the governing
+  timezone remain unverified (they need server-observed behavior, i.e. a write).
+
+No secret was displayed or committed; no Keychain item was created, modified, or
+replaced; no remote write was performed.
