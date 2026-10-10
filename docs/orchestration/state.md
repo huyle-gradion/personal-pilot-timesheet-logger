@@ -192,7 +192,7 @@ Carried S8 follow-ups (non-blocking): `resolve` is fail-loud on an already-appli
 | Field | Status |
 | --- | --- |
 | Slice | S9 integrated acceptance and release decision |
-| Lifecycle | committed, integrated acceptance ACCEPTED (source acceptance; release is a separate owner decision) |
+| Lifecycle | closed - source-accepted; owner deferred the production pilot (2026-10-10) |
 | Branch / base | `feat/s9-integrated-acceptance` (S1-S8 ancestors verified) |
 | Commit | `ca96a20` (5 files; the harness + the four-hour split implementation) |
 | Independent review | integrated review + focused re-review; accepted (F1/F3/F4/F5/F6 closed, F2 partial with residual documented, F7 corrected) |
@@ -624,6 +624,17 @@ Open findings and disposition: B6 resolved; F4/F6/N1 residuals remain (F4 needs 
 Commit and publication status: docs committed locally; NOT pushed.
 Vault sync status: complete.
 Next gate and blockers: owner release decision. Production submission remains blocked; no live write performed.
+```
+
+```text
+2026-10-10 / closure / source-accepted; production pilot deferred by owner
+Owner authority reference: owner decision (2026-10-10): accept the redesign as source-complete with B5 fixed and B6 confirmed; keep production submission blocked; defer any pilot to a separately approved exact daily plan.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 8948056 / tracked tree clean.
+Evidence: S1-S9 each independently reviewed (and re-reviewed where findings existed); integrated acceptance harness (10 scenarios + 5 fault cases) accepted; B5 fixed (6facb5b) and live-confirmed read-only; B6 confirmed by owner/admin. See docs/gradion-mcp-verification.md and this ledger.
+Open findings and disposition: F4 (Billable asymmetry - needs a write), F6 (week-path absence-safety), N1 (stale comment), residual remote write race - all documented, non-blocking for source acceptance.
+Commit and publication status: all local; NOT pushed, no PR, no merge.
+Vault sync status: complete - project and daily notes updated with the release decision.
+Next gate and blockers: none pending; a production pilot requires a separately approved exact daily plan and live write authority. Production submission remains blocked.
 ```
 
 ## Documentation review
