@@ -89,13 +89,16 @@ Carried S2 follow-ups (non-blocking): S2-R6 lock file not fsynced (harmless, O_E
 | Field | Status |
 | --- | --- |
 | Slice | S3 evidence contracts and collector adapters |
-| Lifecycle | fixing layer 1 (review verdict: accepted as an incremental step; S3L1-1/S3L1-2 being fixed before adapters) |
-| Branch / base | `feat/s3-evidence-contracts` at `67b6ab5` (S2 `d4d6c00` and S1 `d471b46` ancestors) |
+| Lifecycle | layer 1 committed; layer 2 (adapters) implementing |
+| Branch / base | `feat/s3-evidence-contracts` at `28d7891` (S2 `d4d6c00` and S1 `d471b46` ancestors) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_edbe7dae8ffe7t2q6wrEbgh6ct`) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) re-tasked for S3-FIX-1 |
-| Independent review | @oracle layer-1 review (ses_edbd79ceaffewYj2nAFey2Oae5): accepted as incremental step; S3L1-1..9 |
-| Snapshot | 13 files; manifest `/private/var/folders/r4/j1g3f1_57sq15v3sfz922wpw0000gq/T/opencode/s3-impl1-manifest.txt` |
-| Next gate | focused re-review of layer 1 fixes; then S3-IMPL-2 adapters + JSONL parser; then slice commit |
+| Layer 1 | committed `28d7891` (13 files), independently reviewed and re-reviewed accepted |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) to implement S3-IMPL-2 |
+| Next gate | independent review of layer 2, then slice commit and vault sync |
+
+S3 layer-1 commit `28d7891` covers the evidence contract/identity/registry/config, the fixture plugin, and additive persistence. Carried: S3L1-7 literal redaction (documented limit); N1 `VerifyContracts` has no production caller (wire it into preflight in S3-IMPL-2/S8); N2 `ModeLive`/`IsContract` unexercised in production.
+
+S3-IMPL-2 requirements: calendar/git/agent collector adapters emitting the contract; the agent-session JSONL parser (owner decision 3); wrap (not rewrite) `internal/calendar` and `internal/git`; host/repo/branch identity rules; dedup with retained source refs; visibly-incomplete failed sources; wire `VerifyContracts` into preflight so an enabled source is contract-checked before use.
 
 S3 layer-1 dispositions (orchestrator, independent of reviewer labels):
 - S3L1-1 every enabled source collected twice (Medium): accepted, fix now — live collection must run once; determinism stays a contract-check concern.

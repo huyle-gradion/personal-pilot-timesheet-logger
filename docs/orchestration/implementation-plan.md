@@ -52,7 +52,7 @@ Exit: a restart cannot blindly resend an in-flight operation; persistence failur
 
 ## S3. Evidence contracts and collector adapters
 
-State: implementing on branch `feat/s3-evidence-contracts` (base `eaed591`, S1 `d471b46` and S2 `d4d6c00` ancestors). Design accepted from an @oracle pass; owner confirmed four decisions (configured non-secret source id; retain cancelled/declined evidence with status and filter at proposal; agent-session contract/parser/fixture only; keep-all raw retention). Layer 1 (contract, identity, registry, config, fixture plugin, additive persistence) is in progress; layer 2 (calendar/git/agent adapters) follows after layer 1 review.
+State: layer 1 committed at `28d7891` (evidence contract/identity/registry/config, fixture plugin, additive persistence; independently reviewed and re-reviewed accepted). Layer 2 (calendar/git/agent collector adapters and the agent-session JSONL parser) implementing on `feat/s3-evidence-contracts`. Owner confirmed four decisions (configured non-secret source id; retain cancelled/declined evidence with status and filter at proposal; agent-session contract/parser/fixture only; keep-all raw retention). Carry: wire `VerifyContracts` into preflight (contract-check before enablement); S3 is not complete until layer 2 lands.
 
 Depends on S1. Can proceed independently of S2 only in an isolated authorized worktree with non-overlapping files and a stable store contract.
 
