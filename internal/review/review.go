@@ -57,6 +57,9 @@ type ConfirmOptions struct {
 	Project    string
 	Attendance *bool
 	Now        time.Time
+	// Location is the display location used when a block must be split to the
+	// maximum entry length (nil means UTC).
+	Location *time.Location
 }
 
 // ManualInterval is a user-entered interval. AddManualInterval turns it into a
@@ -137,22 +140,34 @@ func ConfirmProposed(r *workflow.Record, block proposal.ProposedTimeBlock, opts 
 	if date == "" {
 		date = r.Date
 	}
-	upsertConfirmed(r, workflow.ConfirmedInterval{
-		ID:            hashID("conf-"+string(block.Kind), date, block.ID),
-		Date:          date,
-		StartTime:     block.Start,
-		EndTime:       block.End,
-		Project:       project,
-		Description:   block.Description,
-		Attendance:    attendance,
-		Kind:          string(block.Kind),
-		Manual:        block.Kind == proposal.BlockManual,
-		EvidenceIDs:   append([]string{}, block.EvidenceIDs...),
-		OriginalStart: block.Start,
-		OriginalEnd:   block.End,
-		GridAdjusted:  block.GridSuggested,
-		ConfirmedAt:   now,
-	})
+	// A block whose span exceeds the maximum entry length is persisted as linked,
+	// contiguous fragments (the four-hour rule), each carrying the shared
+	// SplitGroupID and a sequential PartIndex; the exact total minutes are
+	// preserved. A block within the bound persists as a single interval.
+	for _, b := range proposal.SplitBlock(block, proposal.DefaultMaxEntryMinutes, opts.Location) {
+		bDate := b.Date
+		if bDate == "" {
+			bDate = date
+		}
+		upsertConfirmed(r, workflow.ConfirmedInterval{
+			ID:            hashID("conf-"+string(b.Kind), bDate, b.ID),
+			Date:          bDate,
+			StartTime:     b.Start,
+			EndTime:       b.End,
+			Project:       project,
+			Description:   b.Description,
+			Attendance:    attendance,
+			Kind:          string(b.Kind),
+			Manual:        b.Kind == proposal.BlockManual,
+			EvidenceIDs:   append([]string{}, b.EvidenceIDs...),
+			OriginalStart: b.Start,
+			OriginalEnd:   b.End,
+			GridAdjusted:  b.GridSuggested,
+			SplitGroupID:  b.SplitGroupID,
+			PartIndex:     b.PartIndex,
+			ConfirmedAt:   now,
+		})
+	}
 	return nil
 }
 

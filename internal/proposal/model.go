@@ -128,6 +128,12 @@ type ProposedTimeBlock struct {
 	Preselected   bool              `json:"preselected"`
 	GridSuggested bool              `json:"grid_suggested"`
 	Collision     bool              `json:"collision"`
+	// SplitGroupID/PartIndex link the fragments of one block split to at most
+	// MaxEntryMinutes (four hours). They are ADDITIVE S9 fields (omitempty) and
+	// mirror the ConfirmedInterval linkage so a long interval becomes several
+	// linked, contiguous confirmed intervals with the exact total preserved.
+	SplitGroupID string `json:"split_group_id,omitempty"`
+	PartIndex    int    `json:"part_index,omitempty"`
 }
 
 // Proposal is the deterministic, unconfirmed draft for one local day.

@@ -118,20 +118,13 @@ func Build(ev []evidence.Evidence, opts ProposalOptions) (Proposal, error) {
 		}
 	}
 
-	for _, b := range meetings {
-		if b.Duration.Known && b.Duration.Minutes > maxEntry {
-			warnings = append(warnings, "exceeds_max_entry:"+b.ID)
-		}
-	}
-	for _, b := range manual {
-		if b.Duration.Known && b.Duration.Minutes > maxEntry {
-			warnings = append(warnings, "exceeds_max_entry:"+b.ID)
-		}
-	}
-
-	prop.Meetings = meetings
-	prop.Manual = manual
-	prop.Work = buildWorkBlocks(prop.Topics, gitEv, meetings, opts.ProjectMap, loc)
+	// A block longer than the maximum entry length is split into linked fragments
+	// (the four-hour rule) at assignment time, so every proposed block is at most
+	// maxEntry minutes and the exact totals are preserved. Meetings are split at
+	// midnight first (in buildMeetings), so a fragment never crosses a day.
+	prop.Meetings = splitBlocks(meetings, maxEntry, loc)
+	prop.Manual = splitBlocks(manual, maxEntry, loc)
+	prop.Work = splitBlocks(buildWorkBlocks(prop.Topics, gitEv, meetings, opts.ProjectMap, loc), maxEntry, loc)
 	sortProposal(&prop)
 	prop.Warnings = normalizeWarnings(warnings)
 	return prop, nil
@@ -531,4 +524,54 @@ func normalizeWarnings(warnings []string) []string {
 func onGrid(t time.Time, loc *time.Location) bool {
 	lt := t.In(loc)
 	return lt.Minute()%DefaultGridMinutes == 0 && lt.Second() == 0 && lt.Nanosecond() == 0
+}
+
+// SplitBlock splits a proposed block whose SPAN exceeds maxMinutes into linked,
+// contiguous, non-overlapping fragments of at most maxMinutes, preserving the
+// exact total span minutes. Fragments share a SplitGroupID with sequential
+// PartIndex values and copy every other field (identity changes to a stable
+// per-fragment ID). A block within the bound, or with an unusable span, is
+// returned unchanged as a single-element slice, so callers never branch.
+func SplitBlock(block ProposedTimeBlock, maxMinutes int, loc *time.Location) []ProposedTimeBlock {
+	if maxMinutes <= 0 {
+		maxMinutes = DefaultMaxEntryMinutes
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	if block.StartAt.IsZero() || block.EndAt.IsZero() || !block.EndAt.After(block.StartAt) {
+		return []ProposedTimeBlock{block}
+	}
+	if DurationMinutes(block.StartAt, block.EndAt) <= maxMinutes {
+		return []ProposedTimeBlock{block}
+	}
+
+	frags := SplitAtMaxDuration(block.StartAt, block.EndAt, maxMinutes, loc)
+	out := make([]ProposedTimeBlock, 0, len(frags))
+	for _, f := range frags {
+		b := block
+		b.ID = hashID("split", block.ID, strconv.Itoa(f.PartIndex))
+		b.Date = f.Date
+		b.Start = f.StartAt.In(loc).Format(defaultDisplayTimeLayout)
+		b.End = f.EndAt.In(loc).Format(defaultDisplayTimeLayout)
+		b.StartAt = f.StartAt
+		b.EndAt = f.EndAt
+		b.SplitGroupID = f.SplitGroupID
+		b.PartIndex = f.PartIndex
+		if block.Duration.Known {
+			b.Duration = evidence.KnownDuration(f.Minutes)
+		}
+		b.GridSuggested = !onGrid(f.StartAt, loc)
+		out = append(out, b)
+	}
+	return out
+}
+
+// splitBlocks applies SplitBlock to every block, concatenating the fragments.
+func splitBlocks(blocks []ProposedTimeBlock, maxMinutes int, loc *time.Location) []ProposedTimeBlock {
+	out := make([]ProposedTimeBlock, 0, len(blocks))
+	for _, b := range blocks {
+		out = append(out, SplitBlock(b, maxMinutes, loc)...)
+	}
+	return out
 }

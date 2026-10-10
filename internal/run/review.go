@@ -120,7 +120,7 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 		}
 		before := confirmedIDSet(rec)
 		if err := review.ConfirmProposed(rec, block, review.ConfirmOptions{
-			Project: c.Project, Attendance: c.Attendance, Now: r.now(),
+			Project: c.Project, Attendance: c.Attendance, Now: r.now(), Location: r.loc,
 		}); err != nil {
 			return err
 		}
