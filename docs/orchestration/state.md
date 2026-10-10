@@ -379,6 +379,17 @@ Vault sync status: complete - project and daily note updated with the S4 commits
 Next gate and blockers: next dependency-ready slice (S5 MCP transport; then S6). Production blockers unchanged; no production entry point invokes proposal/review yet.
 ```
 
+```text
+2026-10-10 / S5 / planned -> designing -> implementing (L1,L2,L3) -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: direct-dispatch session grant; local commits of independently accepted slices. Owner confirmed: hermetic implementation (no live MCP reads/writes); contain the legacy REST write path now.
+Branch / HEAD / exact snapshot: feat/s5-mcp-transport / c943e97 (layer 1 42fba53, layer 2 b59661a; S1-S4 ancestors) / 21 files across three commits (layer 3 net -4101 lines); md5s matched accepted manifests before each commit.
+Worker/reviewer report references and verification level: @oracle design (ses_edb501788ffeQD2aF5HG3ypYyu); @fixer S5-IMPL-1/S5-FIX-1/S5-IMPL-2/S5-FIX-2/S5-IMPL-3/S5-FIX-3 (ses_edbe22f3fffegJeHjAvwnOt9JA); @oracle reviews/re-reviews (ses_edb405f00ffeKRGaBa2WZ6huih, ses_edb26e5c9ffeSk3sDVtaun0N9U, ses_edaf181a0ffeyLJazmia34qvoW) accepted. Orchestrator gofmt/build/vet/test/race and e2e-tag green on committed snapshots.
+Open findings and disposition: S5L1-1..4/6..8, F1..F5/T1..T4, F1..F3 closed; N1 doc-precision, S5L1-9, two dead api constants, duplicated api helpers carried. F4 (S6/S8 carry): the S2 integrated restart gate is dormant until the approval-bound MCP path re-creates it. No secret/duplicate-write/lost-work issue.
+Commit and publication status: committed locally 42fba53, b59661a, c943e97; NOT pushed, no PR.
+Vault sync status: complete - project and daily note updated with the S5 commits.
+Next gate and blockers: next dependency-ready slice S6 (revision-bound plans, approval, reconciliation). Production blockers unchanged; live MCP semantics unverified; residual remote race documented.
+```
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
