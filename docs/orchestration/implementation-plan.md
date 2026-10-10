@@ -98,6 +98,8 @@ Exit: mocked create/edit behavior and read-only contract evidence support the ne
 
 ## S6. Revision-bound plans, approval, and reconciliation
 
+State: designing on branch `feat/s6-plans-approval-reconciliation` (base `f041bae`, S1-S5 ancestors). Bounded @oracle design pass in progress; no implementation writer dispatched.
+
 Depends on S2, S4, and S5.
 
 Build exact create/edit plans from confirmed local records, stable Remote Mappings, and observed remote state. Persist approval binding to the immutable plan content, record revision, and remote assumptions. Any included interval, text, classification, or remote change invalidates relevant approval.

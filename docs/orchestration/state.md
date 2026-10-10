@@ -135,6 +135,18 @@ S5 is complete at the code level: generic MCP transport (layer 1), Gradion domai
 
 Carried S5 follow-ups (non-blocking): N1 `tools.go` doc-precision nit; S5L1-9 network errors reduced to a static string; two dead constants in the deprecated `internal/api` (`MaxLocalBlocksCount`, `AssertAPISyncWritersNil`); the duplicated uncertain-write helpers marked deprecated. **F4 (S6/S8 carry):** the S2 integrated restart gate is now dormant — `workflow.UnresolvedOperations` and the session/intent primitives remain unit-tested, but no production consumer enforces the restart gate because the CLI write loop was retired; S6/S8 must re-create the restart gate, uncertain/unidentified handling, and multi-op crash tests against the MCP/approval-bound path. Residual remote race (no conditional update / idempotency key) documented, not closed. No production entry point wires `internal/mcp`/`internal/gradion`; live MCP semantics unverified.
 
+## S6 active slice: revision-bound plans, approval, and reconciliation
+
+| Field | Status |
+| --- | --- |
+| Slice | S6 revision-bound plans, approval, and reconciliation |
+| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
+| Branch / base | `feat/s6-plans-approval-reconciliation` at `f041bae` (S1-S5 ancestors verified) |
+| Designer | @oracle session `ses_edadd7e1dffeoojCEagYiCl8LA` (alias ora-14) |
+| Next gate | accept the design (owner decisions only if it surfaces product trade-offs or live authority), then implement hermetically |
+
+S6 owns exact create/edit plan construction, immutable plan content hashing, approval bound to plan revision + remote assumptions with invalidation, reconciliation identity by stable IDs with explicit adoption, conservative handling of uncertain operations, and partial-success handling with per-operation outcomes and stable IDs (no blind replay, no deletion, no silent replacement). It also re-creates the dormant restart gate (S5 F4 carry). Depends on S2, S4, S5. Non-goals: S7 editorial, S8 entry points, S9 acceptance.
+
 S5 layer-3 dispositions (orchestrator, independent of reviewer labels):
 - F1 `tests/e2e_test.go` no longer compiles (references removed symbols + retired flags) — accepted, fix now (retire or rewrite to the contained surface; S5 is not complete until the e2e tag builds clean).
 - F2 dead `BuildSummary`/reconcile types + inaccurate `internal/api` doc: accepted, clean up.
