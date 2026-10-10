@@ -404,7 +404,7 @@ Reported limitations to investigate, not blanket exceptions: stale locks, packag
 
 ## Readiness blockers
 
-**Live read verification (2026-10-10) found a code-level blocker (B5), now diagnosed:** the live Gradion `list_my_entries` / `get_classifications` responses are `{resources:[{id,kind,label}]}` reference envelopes that `internal/gradion` cannot parse. Read-only discovery established that structured entries are obtained from `timesheet__get_my_week` (`days[].entries[]`, full fields; id overlap with `list_my_entries` = 5/5) and that the documented `timesheet__entry` resource (`gradion://app/timesheet/entry/{id}`) returns `text/plain`. A bounded reader fix (adapt to the `get_my_week` structured contract, fail-closed schema handling) is in progress under the owner's read-only + bounded-fix authority. See `docs/gradion-mcp-verification.md` section 9. Keychain resolution and calendar invitation metadata were confirmed read-only. B6 (four-hour remote rule, governing timezone) remains unverified pending trusted documentation or a write.
+**Live read verification (2026-10-10) found a code-level blocker (B5), now FIXED and live-confirmed:** the live Gradion `list_my_entries` / `get_classifications` responses are `{resources:[{id,kind,label}]}` reference envelopes. Read-only discovery established that structured entries come from `timesheet__get_my_week` (`days[].entries[]`, full fields; id overlap with `list_my_entries` = 5/5) and that `resources/read` returns `text/plain`. `internal/gradion` was adapted to read structured entries via `get_my_week` (bounded, fail-closed). A live read-only confirmation of the fixed reader returned 5 entries (`complete=true`, all with id/start/end/date/classification present), `EntryByID` found, and 20 classifications (19 named). See `docs/gradion-mcp-verification.md` section 9. B6 (four-hour remote rule, governing timezone) remains unverified pending trusted documentation or a write.
 
 Exact revision/plan approval, durable pre-write intent and crash recovery, session-level submission ownership, stable-ID reconciliation, immediate remote recheck, preferred MCP submission transport, and integrated evidence/review/export remain unaccepted. Timezone, remote limits, and live create/edit semantics are not verified. MCP exposes no conditional update/idempotency field according to the read-only verification report; this absence leaves residual remote risk.
 
@@ -591,6 +591,28 @@ Evidence: docs/gradion-mcp-verification.md section 9 (sanitized; no secrets). Ke
 Blocker: B5 - live list_my_entries/get_classifications return {resources:[{id,kind,label}]}; the internal/gradion parser expects a bare array/known list key, so live reads fail with GRADION_ERR_READ_SCHEMA; resources/read with the raw id returns -32602 unsupported uri scheme; no outputSchema declared. This blocks S6 reconciliation against live as built and is a pilot blocker. B6: four-hour remote rule and governing timezone still unverified (need a write).
 No writes; no secrets displayed; no Keychain item modified.
 Next gate and blockers: owner decision - authorize further read-only contract discovery + a bounded parser fix, or accept the gap. Release remains blocked on B5 (and B6 for full live parity).
+```
+
+```text
+2026-10-10 / B5 / diagnosed -> bounded fix implemented -> live read-only confirmed -> independent review in progress
+Owner authority reference: owner authorized read-only discovery + a bounded B5 fix (no writes, no Keychain modification, no push/merge/publication).
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 62cbc95 / internal/gradion/{tools,parse,client,client_test,week_test}.go (uncommitted); manifest .../opencode/b5-fix1-manifest.txt.
+Evidence: docs/gradion-mcp-verification.md section 9 (verified contract). Live read-only confirmation of the fixed reader: 5 entries, complete=true, id/start/end/date/classification present on all; EntryByID found; Classifications 20 (19 named). Orchestrator-run; sanitized; no values printed.
+Open findings and disposition: fixer flagged a capability-based selection (get_my_week structured path when declared, else bounded legacy path); independent review in progress.
+Commit and publication status: uncommitted pending review; no push.
+Vault sync status: pending acceptance.
+Next gate and blockers: independent review verdict; then commit the accepted B5 fix locally and sync the vault. B6 remains open.
+```
+
+```text
+2026-10-10 / B5 / independent review ACCEPTED -> hardening round B5-FIX-2 in progress
+Owner authority reference: owner authorized read-only discovery + a bounded B5 fix (no writes, no Keychain modification, no push/merge/publication).
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 62cbc95 / internal/gradion/** (uncommitted).
+Evidence: @oracle independent review (ses_ed9d1b9dbffebq8mOeGCKKtr8a) verdict ACCEPTED - B5 resolved (reader obtains complete structured entries; every unrecognized live shape fails closed). Orchestrator live read-only confirmation: 5 entries, complete=true, all fields present; EntryByID found; Classifications 20 (19 named).
+Open findings and disposition: F1 (soft week-path entry bound), F2 (latent fail-open cursor on over-wide days), F3 (legacy {} treated as empty), F5 (dead week fields + claim wording), F7 (empty-week test) accepted, fix now (B5-FIX-2); F4 (Billable asymmetry) and F6 (no week-path stability re-check) carried (need B6/a write). No blocking finding.
+Commit and publication status: uncommitted pending the hardening re-review; no push.
+Vault sync status: pending acceptance.
+Next gate and blockers: focused re-review; then commit the accepted B5 fix locally and sync the vault. B6 remains open.
 ```
 
 ## Documentation review

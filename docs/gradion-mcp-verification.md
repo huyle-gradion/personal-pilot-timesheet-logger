@@ -232,8 +232,9 @@ Results:
   - `resources/templates/list` documents `timesheet__entry` as
     `gradion://app/timesheet/entry/{id}`, but `resources/read` returns
     `contents[0].text` with `mimeType: text/plain` (not structured JSON).
-  - `timesheet__get_classifications` returns classification references with empty
-    labels.
+  - `timesheet__get_classifications` returns classification references
+    `{"resources":[{"id","kind":"classification","label"}]}`; the `label` carries the
+    name when present (the live read-only confirmation observed 19 of 20 named).
   The fix (adapting the reader to the `get_my_week` structured contract, with
   fail-closed schema handling) is in progress under the owner's read-only +
   bounded-fix authority.
