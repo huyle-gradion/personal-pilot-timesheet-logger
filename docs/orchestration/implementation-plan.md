@@ -98,7 +98,7 @@ Exit: mocked create/edit behavior and read-only contract evidence support the ne
 
 ## S6. Revision-bound plans, approval, and reconciliation
 
-State: implementing on branch `feat/s6-plans-approval-reconciliation` (base `85ee6dd`, S1-S5 ancestors). Design accepted from an @oracle pass; owner confirmed three decisions (configured default + review override for Project→classification; explicit adoption required to resolve an uncertain create; fixed machine-readable edit audit reason). Layer 1 (additive `workflow` representation + pure `internal/submit` plan/reconcile/approval) implementing; layer 2 (execution + restart gate) follows.
+State: committed at layer 1 `3dfe814` and layer 2 `40d266d` on `feat/s6-plans-approval-reconciliation` (locally only, not pushed). Layers 1 and 2 each independently reviewed and re-reviewed (accepted). Owner confirmed three decisions (configured default + review override for Project→classification; explicit adoption required to resolve an uncertain create; fixed machine-readable edit audit reason). S6 is complete at the code level; its exit holds (no production mutation path bypasses exact approval, durable intent, validation, reconciliation, or outcome persistence). Carry: F1 (S8 must pass `ActiveApproval` and compare `ApprovalID`); NEW-1, F4, F5, `RebuildFailed` (Info); residual remote write race; no production entry point wires `Execute`.
 
 Depends on S2, S4, and S5.
 

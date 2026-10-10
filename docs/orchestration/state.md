@@ -28,7 +28,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S3 evidence contracts | layer 1 `28d7891`, layer 2 `5ff9894`, committed on `feat/s3-evidence-contracts`, independently reviewed/re-reviewed accepted |
 | S4 proposal model | layer 1 `5f373f4`, layer 2 `2a06b5b`, committed on `feat/s4-proposal-model`, independently reviewed/re-reviewed accepted |
 | S5 MCP transport | layers 1 `42fba53`, 2 `b59661a`, 3 `c943e97`, committed on `feat/s5-mcp-transport`, independently reviewed/re-reviewed accepted |
-| S6 plans/approval/reconciliation | layer 1 `3dfe814`, committed on `feat/s6-plans-approval-reconciliation`, independently reviewed/re-reviewed accepted; layer 2 (execution + restart gate) implementing |
+| S6 plans/approval/reconciliation | layers 1 `3dfe814`, 2 `40d266d`, committed on `feat/s6-plans-approval-reconciliation`, independently reviewed/re-reviewed accepted |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -141,13 +141,26 @@ Carried S5 follow-ups (non-blocking): N1 `tools.go` doc-precision nit; S5L1-9 ne
 | Field | Status |
 | --- | --- |
 | Slice | S6 revision-bound plans, approval, and reconciliation |
-| Lifecycle | layer 1 committed; layer 2 (execution + restart gate) implementing |
-| Branch / base | `feat/s6-plans-approval-reconciliation` at `3dfe814` (S1-S5 ancestors verified) |
-| Commits | layer 1 `3dfe814` (11 files) |
+| Lifecycle | committed (layers 1 + 2), independently accepted |
+| Branch / base | `feat/s6-plans-approval-reconciliation` (S1-S5 ancestors verified) |
+| Commits | layer 1 `3dfe814` (11 files); layer 2 `40d266d` (8 files) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_edadd7e1dffeoojCEagYiCl8LA`) |
-| Independent review | layer 1 reviewed and re-reviewed accepted (F1-F6 closed; NEW-1 + low residuals carried) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S6-IMPL-2 |
-| Next gate | independent review of layer 2; slice commit; vault sync |
+| Independent review | layers 1 and 2 each reviewed and re-reviewed; all accepted (F1-F6, F1-F7 closed; rest carried) |
+| Next gate | select the next dependency-ready slice (S7 editorial synthesis) |
+
+S6 is complete at the code level: additive `SubmissionPlan`/`Approval` representation + pure plan/reconcile/approval (layer 1); execution + the re-created restart gate (layer 2). S6's exit holds: no production mutation path bypasses exact approval, durable intent, validation, reconciliation, or outcome persistence, and `-approve` alone is insufficient.
+
+Carried S6 follow-ups (non-blocking): **F1 (S8 obligation)** — the S8 entry point must pass `workflow.ActiveApproval(rec,date)` and compare `ApprovalID` before `Execute` (a caller-supplied stale approval can re-validate only if the plans are operationally identical); F4 classification-only edit inference is conservative (unresolved); F5 advisory rebuild re-observes after releasing the lock (TOCTOU, no hazard); `RebuildFailed` is defensive/unreachable; NEW-1 (empty observed `Date` can force a spurious edit — S9 live verification or a defensive fix); residual remote write race (no conditional update / idempotency key) documented, not closed. No production entry point wires `Execute`; live MCP semantics unverified.
+
+S6 layer-2 dispositions (orchestrator, independent of reviewer labels):
+- F2 advisory rebuild failure returned as the run error (Low): accepted, fix (surface distinctly, not top-level error).
+- F3 rebuild block reasons dropped (Info): accepted, fix.
+- F6 no end-to-end restart-cycle test (Info): accepted, add.
+- F7 initial gate reasons unsorted (Info): accepted, fix.
+- F1 caller-supplied approval trust (Low): carried to S8 (pass `workflow.ActiveApproval(rec,date)` and compare `ApprovalID`); bounded because a stale approval can only re-validate if the plans are operationally identical.
+- F4 classification-only edit inference (Info): carried (conservative).
+- F5 advisory rebuild TOCTOU (Info): carried (advisory only, no hazard).
+The layer-2 safety addition (Execute gates on RestartGate at the start and on the rebuild) was independently confirmed correct and load-bearing (an uncertain outcome would otherwise yield a replayable plan / duplicate create).
 
 S6 layer-2 scope: `RemoteObserver`/`RemoteWriter` seams; `Execute` (single Session, re-fetch under lock, ValidateApproval, per-op durable intent → dispatch once → outcome + mapping, partial success, new plan for remaining); re-created `RestartGate`; `ResolveUnresolved` (explicit adopt/not-applied decisions only — never auto-resolve a create from absence). Carry NEW-1 (empty observed `Date` can force a spurious edit — defensive fix or live verification at S9).
 
@@ -419,6 +432,17 @@ Open findings and disposition: S5L1-1..4/6..8, F1..F5/T1..T4, F1..F3 closed; N1 
 Commit and publication status: committed locally 42fba53, b59661a, c943e97; NOT pushed, no PR.
 Vault sync status: complete - project and daily note updated with the S5 commits.
 Next gate and blockers: next dependency-ready slice S6 (revision-bound plans, approval, reconciliation). Production blockers unchanged; live MCP semantics unverified; residual remote race documented.
+```
+
+```text
+2026-10-10 / S6 / planned -> designing -> implementing (L1,L2) -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: direct-dispatch session grant; local commits of independently accepted slices. Owner confirmed three S6 decisions (configured default + review override for Project→classification; explicit adoption required to resolve an uncertain create; fixed machine-readable edit audit reason).
+Branch / HEAD / exact snapshot: feat/s6-plans-approval-reconciliation / 40d266d (layer 1 3dfe814; S1-S5 ancestors) / 19 files across two commits; md5s matched accepted manifests before each commit.
+Worker/reviewer report references and verification level: @oracle design (ses_edadd7e1dffeoojCEagYiCl8LA); @fixer S6-IMPL-1/S6-FIX-1/S6-IMPL-2/S6-FIX-2 (ses_edbe22f3fffegJeHjAvwnOt9JA); @oracle reviews/re-reviews (ses_edac0976fffem8H9n9vQ2ysCMI, ses_edaa37e94ffe9C6CgTkGN5i1CM) accepted. Orchestrator gofmt/build/vet/test/race green on committed snapshots.
+Open findings and disposition: F1-F6 (layer 1) and F1-F7 (layer 2) closed or carried; F1 approval-trust is an S8 obligation; NEW-1, F4, F5, RebuildFailed carried as Info; residual remote race documented.
+Commit and publication status: committed locally 3dfe814 and 40d266d; NOT pushed, no PR.
+Vault sync status: complete - project and daily note updated with the S6 commits.
+Next gate and blockers: next dependency-ready slice S7 (optional editorial synthesis and usage). Production blockers unchanged; no production entry point wires Execute yet.
 ```
 
 ## Documentation review
