@@ -26,6 +26,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S1 durable store/outcome | `d471b46`, committed (parent `faec6a4`), independently re-reviewed accepted |
 | S2 crash-safe lifecycle | `d4d6c00`, committed on `feat/s2-crash-safe-lifecycle` (parent `9144849`), independently re-reviewed accepted |
 | S3 evidence contracts | layer 1 `28d7891`, layer 2 `5ff9894`, committed on `feat/s3-evidence-contracts`, independently reviewed/re-reviewed accepted |
+| S4 proposal model | layer 1 `5f373f4`, committed on `feat/s4-proposal-model`, independently reviewed/re-reviewed accepted; layer 2 implementing |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -106,11 +107,23 @@ Carried S3 follow-ups (non-blocking): S3L1-7/S3L2-7 literal-redaction limit (res
 | Field | Status |
 | --- | --- |
 | Slice | S4 proposal model and terminal review |
-| Lifecycle | implementing layer 1 (additive S3 timing fix + pure proposal model); layer 2 (review/persistence) follows |
-| Branch / base | `feat/s4-proposal-model` at `b84b5fb` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894` ancestors) |
+| Lifecycle | layer 1 committed; layer 2 (review/persistence) implementing |
+| Branch / base | `feat/s4-proposal-model` at `5f373f4` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894` ancestors) |
+| Commits | layer 1 `5f373f4` (14 files) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_edb9eaf21ffeQ2PeGagGke0fFb`) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S4-IMPL-1 |
-| Next gate | independent review of layer 1, then S4-IMPL-2 review/persistence |
+| Independent review | layer 1 reviewed and re-reviewed accepted (A1/P2/P3/P5 closed; N1 doc nit) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S4-IMPL-2 |
+| Next gate | independent review of layer 2; slice commit; vault sync |
+
+S4 layer-2 scope: additive `workflow` review fields (`Record.Review`, `ConfirmedInterval` additions, `MergeReviewState`, capacity bounds, SchemaVersion 1 preserved); new `internal/review` actions + `Readiness`; close layer-1 carried P1 (materialize git groups as proposed blocks, carry ProjectHints, use BlockJoint) and P4 (overlap validation across all confirmed blocks) and the N1 doc nit. Owner decisions: manual intervals need explicit confirm; not-attended meetings excluded from work but retained as evidence; cross-midnight carryover.
+
+S4 layer-1 dispositions (orchestrator, independent of reviewer labels):
+- A1 `internal/proposal` imports `internal/evidence/plugins` (breaks the recorded pure-package decision): accepted, fix now (move the predicate to `internal/evidence`).
+- P2 covering-meeting behavior unpinned: accepted, add a test.
+- P3 `SplitAtMaxDuration` zone handling inconsistent: accepted, fix.
+- P5 empty-repository topic collapse reachable via exported `Build`: accepted, add a guard.
+- P1 (git groups→ProposedTimeBlock, `BlockJoint`, ProjectHints carry-through) and P4 (full overlap validation) assigned to S4-IMPL-2.
+- S3A1 (`time.Time` omitempty no-op) carried as a pre-existing pattern.
 
 Owner-confirmed S4 decisions (2026-10-10):
 1. Cross-midnight split keeps same-day fragments and flags the post-midnight part as carryover for the next day's own review; no auto-write into another day's record.
