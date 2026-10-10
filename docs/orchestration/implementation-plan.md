@@ -114,7 +114,7 @@ Exit: no production mutation path bypasses exact approval, durable intent, valid
 
 ## S7. Optional editorial synthesis and usage
 
-State: implementing on branch `feat/s7-editorial-synthesis` (base `474d9c0`, S1-S6 ancestors). Design accepted from an @oracle pass; owner confirmed a command-adapter editorial agent (live wiring at S8) and a soft daily target of 1000 tokens including cache tokens (owner override of the spec's 600). New `internal/editorial` (text-only boundary, request builder, fail-closed response validation, deterministic fallback, command adapter, usage/budget accounting, apply) plus additive `workflow` fields are implementing.
+State: committed at `3d4bcc8` on `feat/s7-editorial-synthesis` (locally only, not pushed). Independently reviewed and re-reviewed (accepted). Owner confirmed a command-adapter editorial agent (live wiring at S8) and a soft daily target of 1000 tokens including cache (owner override of the spec's 600). S7 is complete at the code level. Carry: S7-F4 (accumulated usage across reruns), S7-F5 (per-target invocation/batching) — S8 obligations; no production entry point wires the editor.
 
 Depends on S4; changes to text must participate in S6 invalidation.
 

@@ -29,6 +29,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S4 proposal model | layer 1 `5f373f4`, layer 2 `2a06b5b`, committed on `feat/s4-proposal-model`, independently reviewed/re-reviewed accepted |
 | S5 MCP transport | layers 1 `42fba53`, 2 `b59661a`, 3 `c943e97`, committed on `feat/s5-mcp-transport`, independently reviewed/re-reviewed accepted |
 | S6 plans/approval/reconciliation | layers 1 `3dfe814`, 2 `40d266d`, committed on `feat/s6-plans-approval-reconciliation`, independently reviewed/re-reviewed accepted |
+| S7 editorial synthesis | `3d4bcc8`, committed on `feat/s7-editorial-synthesis`, independently reviewed/re-reviewed accepted |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -157,11 +158,25 @@ Carried S6 follow-ups (non-blocking): **F1 (S8 obligation)** — the S8 entry po
 | Field | Status |
 | --- | --- |
 | Slice | S7 optional editorial synthesis and usage |
-| Lifecycle | implementing (command-adapter editorial layer + additive workflow fields) |
-| Branch / base | `feat/s7-editorial-synthesis` at `474d9c0` (S1-S6 ancestors verified) |
+| Lifecycle | committed, independently accepted |
+| Branch / base | `feat/s7-editorial-synthesis` (S1-S6 ancestors verified) |
+| Commit | `3d4bcc8` (22 files) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_eda93832fffeUT2287dqL1w6Cp`) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S7-IMPL-1 |
-| Next gate | independent review of S7; slice commit; vault sync |
+| Independent review | reviewed and re-reviewed accepted (S7-F1/F2/F3/F6 closed; S7-F4/F5 carried to S8) |
+| Next gate | select the next dependency-ready slice (S8 shared entry points and managed vault export) |
+
+S7 is complete at the code level: text-only optional editorial layer (bounded request, fail-closed validation, deterministic fallback, command adapter, usage/budget, apply) + additive `workflow` fields. S7's exit holds at the mechanism level: AI is optional, constrained (cannot set intervals/attendance/projects/evidence/approvals), cannot authorize or confirm work, and text changes participate in S6 invalidation.
+
+Carried S7 follow-ups (non-blocking): S7-F4 (usage does not accumulate across reruns; S8 must pass accumulated Known `Spent` and add runs); S7-F5 (one editor call per target; S8 may batch); `Report.Orchestration` defaults to Unknown when omitted (honest; S8 presentation). No production entry point wires the editor; live agent semantics unverified (S8/S9). Owner override recorded: soft daily target 1000 tokens incl. cache (spec said 600).
+
+S7 dispositions (orchestrator, independent of reviewer labels):
+- S7-F1 omitted `Spent` disables the soft budget on the fresh-day path (Medium): accepted, fix now (default a zero/unknown Spent to Known zero).
+- S7-F2 CommandEditor captures unbounded output before the parse-time cap (Low): accepted, fix now (bound at capture).
+- S7-F3 dead `boundedExcerpt` (Low): accepted, remove.
+- S7-F6 changed-`EvidenceIDs` reuse not explicitly tested (Info): accepted, add a test/document.
+- S7-F4 no accumulation across reruns (Info): carried to S8 (pass accumulated Known `Spent` and add runs).
+- S7-F5 one editor call per target (Info): carried to S8 (batching consideration).
+The reviewer judged the `internal/workflow/file_store.go` capacity-line deviation ACCEPTABLE (required to make `MaxEditorialCount` non-dead; additive, minimal).
 
 Owner-confirmed S7 decisions (2026-10-10): (1) the optional editorial agent is invoked via a harness-agnostic command (subprocess) adapter; the concrete live command is wired at S8, and the CLI works with no agent (deterministic fallback); (2) the soft daily editorial target is 1000 tokens (an explicit owner override of the spec's 600) and counts editorial input+output+cache tokens across retries/reruns.
 
@@ -460,6 +475,17 @@ Open findings and disposition: F1-F6 (layer 1) and F1-F7 (layer 2) closed or car
 Commit and publication status: committed locally 3dfe814 and 40d266d; NOT pushed, no PR.
 Vault sync status: complete - project and daily note updated with the S6 commits.
 Next gate and blockers: next dependency-ready slice S7 (optional editorial synthesis and usage). Production blockers unchanged; no production entry point wires Execute yet.
+```
+
+```text
+2026-10-10 / S7 / planned -> designing -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: direct-dispatch session grant; local commits of independently accepted slices. Owner confirmed: a command-adapter editorial agent (live wiring at S8); soft daily target 1000 tokens incl. cache (explicit owner override of the spec's 600).
+Branch / HEAD / exact snapshot: feat/s7-editorial-synthesis / 3d4bcc8 (S1-S6 ancestors) / 22 files; md5s matched accepted manifests before commit.
+Worker/reviewer report references and verification level: @oracle design (ses_eda93832fffeUT2287dqL1w6Cp); @fixer S7-IMPL-1/S7-FIX-1 (ses_edbe22f3fffegJeHjAvwnOt9JA); @oracle review + re-review (ses_eda7cd3d8ffeHSaJ7LS4R2DCVp) accepted. Orchestrator gofmt/build/vet/test/race green.
+Open findings and disposition: S7-F1/F2/F3/F6 closed; S7-F4/F5 carried to S8 (accumulated usage, per-target batching). No secret/duplicate-write/lost-work issue.
+Commit and publication status: committed locally 3d4bcc8; NOT pushed, no PR.
+Vault sync status: complete - project and daily note updated with the S7 commit.
+Next gate and blockers: next dependency-ready slice S8 (shared entry points and managed vault export). Production blockers unchanged; no production entry point wires the editor.
 ```
 
 ## Documentation review
