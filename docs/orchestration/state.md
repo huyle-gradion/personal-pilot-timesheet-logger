@@ -27,7 +27,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S2 crash-safe lifecycle | `d4d6c00`, committed on `feat/s2-crash-safe-lifecycle` (parent `9144849`), independently re-reviewed accepted |
 | S3 evidence contracts | layer 1 `28d7891`, layer 2 `5ff9894`, committed on `feat/s3-evidence-contracts`, independently reviewed/re-reviewed accepted |
 | S4 proposal model | layer 1 `5f373f4`, layer 2 `2a06b5b`, committed on `feat/s4-proposal-model`, independently reviewed/re-reviewed accepted |
-| S5 MCP transport | layer 1 `42fba53`, committed on `feat/s5-mcp-transport`, independently reviewed/re-reviewed accepted; layer 2 (gradion client) implementing |
+| S5 MCP transport | layer 1 `42fba53`, layer 2 `b59661a`, committed on `feat/s5-mcp-transport`, independently reviewed/re-reviewed accepted; layer 3 (containment) implementing |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -124,13 +124,23 @@ Carried S4 follow-ups (non-blocking): S4L2-6 (a joined meeting is also presented
 | Field | Status |
 | --- | --- |
 | Slice | S5 direct Gradion MCP transport |
-| Lifecycle | layer 1 committed; layer 2 (gradion client) implementing |
-| Branch / base | `feat/s5-mcp-transport` at `42fba53` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894`, S4 `5f373f4`+`2a06b5b` ancestors) |
-| Commits | layer 1 `42fba53` (6 files) |
+| Lifecycle | layer 2 committed; layer 3 (legacy REST containment) implementing |
+| Branch / base | `feat/s5-mcp-transport` at `b59661a` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894`, S4 `5f373f4`+`2a06b5b` ancestors) |
+| Commits | layer 1 `42fba53` (6 files); layer 2 `b59661a` (8 files) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_edb501788ffeQD2aF5HG3ypYyu`) |
-| Independent review | layer 1 reviewed and re-reviewed accepted (S5L1-1..4/6..8 closed; S5L1-5/S5L1-9 carried) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S5-IMPL-2 |
-| Next gate | independent review of layer 2; then layer 3 (legacy REST containment); slice commit; vault sync |
+| Independent review | layer 2 reviewed and re-reviewed accepted (F1..F5/T1..T4 closed; N1 doc-precision carried) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S5-IMPL-3 |
+| Next gate | independent review of layer 3; slice commit; vault sync |
+
+S5 layer-3 scope (owner-approved containment): remove the REST mutation surface (CreateEntry/PatchEntry/DeleteEntry, ActionDelete, slot-equality Reconcile) and retire the cmd/sync-timesheet write path and `-approve` so no production write path can bypass later approval gates; update tests and document the coverage change. Carry N1 (tools.go doc-precision nit).
+
+S5 layer-2 dispositions (orchestrator, independent of reviewer labels):
+- F1 offset-shift can mislabel `Complete` → false "not found": accepted, fix now (boundary stability re-check + soften the claim + regression test).
+- F2 dead `validateLimit`/vacuous limit claim: accepted, fix.
+- F3 capability verification not enforced: accepted, fix (verified flag + fail closed).
+- F4 `BuildOutcome` fabricates confirmed from empty id: accepted, fix (downgrade to unidentified).
+- F5 `Initialize` nil-session code: accepted, fix.
+- T1/T2/T3/T4 test gaps (exactly-once on retryable write path, read retry budget, arg-bound/limit, cross-page dedup, more classifications): accepted, add tests.
 
 S5 layer-2 scope: new `internal/gradion` (MCP client, tool constants, capability verification, offset pagination with the Complete rule, exactly-one-attempt writes, uncertainty classification incl. S5L1-5 ErrSchema-on-write → uncertain, S1 outcome builders) plus additive `RemoteState` `Task`/`Billable` for S6 invalidation fidelity. Layer 3 (next) contains the legacy REST write path.
 
