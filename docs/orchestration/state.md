@@ -123,10 +123,15 @@ Carried S4 follow-ups (non-blocking): S4L2-6 (a joined meeting is also presented
 | Field | Status |
 | --- | --- |
 | Slice | S5 direct Gradion MCP transport |
-| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
-| Branch / base | `feat/s5-mcp-transport` at `d341f57` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894`, S4 `5f373f4`+`2a06b5b` ancestors) |
-| Designer | @oracle session `ses_edb501788ffeQD2aF5HG3ypYyu` (alias ora-10) |
-| Next gate | accept the design (owner decisions only if it surfaces product trade-offs or live-read authority), then implement hermetically |
+| Lifecycle | implementing layer 1 (generic `internal/mcp` transport); layer 2 (`internal/gradion` + legacy containment) follows |
+| Branch / base | `feat/s5-mcp-transport` at `80cdad9` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894`, S4 `5f373f4`+`2a06b5b` ancestors) |
+| Design | @oracle design pass accepted by the orchestrator (session `ses_edb501788ffeQD2aF5HG3ypYyu`) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S5-IMPL-1 |
+| Next gate | independent review of layer 1, then S5-IMPL-2 (gradion client + containment) |
+
+Owner-confirmed S5 decisions (2026-10-10): implement hermetically (no live MCP reads/writes); production writes remain prohibited; contain the legacy REST submission path now (remove REST mutation methods, `ActionDelete`, slot-equality `Reconcile`, and the cmd mutation loop and `-approve` flag) so no production write path can bypass later approval gates.
+
+Engineering decisions (orchestrator): package split `internal/mcp` (generic JSON-RPC transport) + `internal/gradion` (domain client + S1 outcome builders); offset pagination with a duplicate/truncation-driven `Complete` flag (absence only from a complete listing); exactly-one-attempt writes and bounded-retry reads; JSON framing primary, SSE fail-closed; token resolved at the boundary and held in memory only; tool-name constants re-validated against `tools/list`; conservative default that a write `isError` → uncertain (no whitelist); no REST fallback; capture `task`/`billable` additively in `RemoteState` for S6 invalidation fidelity. No delete path. Residual race (no conditional update / idempotency key) documented, not closed.
 
 S5 implements the verified MCP tool contract behind the shared core (initialize, paginated listing, stable-ID selection, classifications, creates/edits, required audit reason, bounded parsing, uncertain outcomes) and returns observed remote IDs/states/outcomes in the S1 contract. Hermetic first; live reads/writes require named authority (not granted this session). Non-goals: S6 reconciliation/approval, S7 editorial, S8 entry points, S9 integrated acceptance.
 

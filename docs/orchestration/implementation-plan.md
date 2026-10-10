@@ -82,7 +82,7 @@ Exit: review state and confirmations persist end-to-end, not only through unit m
 
 ## S5. Direct Gradion MCP transport
 
-State: designing on branch `feat/s5-mcp-transport` (base `d341f57`, S1-S4 ancestors). Bounded @oracle design pass in progress; no implementation writer dispatched. Live reads/writes require named authority (not granted this session).
+State: implementing on branch `feat/s5-mcp-transport` (base `80cdad9`, S1-S4 ancestors). Design accepted from an @oracle pass; owner confirmed hermetic implementation (no live reads/writes) and containing the legacy REST write path now. Layer 1 (generic `internal/mcp` transport) implementing; layer 2 (`internal/gradion` client + S1 outcome builders + legacy containment) follows.
 
 Depends on S0 and a stable S1 mapping/outcome contract. Hermetic implementation first; live reads require named authority.
 
