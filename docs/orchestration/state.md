@@ -404,7 +404,7 @@ Reported limitations to investigate, not blanket exceptions: stale locks, packag
 
 ## Readiness blockers
 
-**Live read verification (2026-10-10) found a code-level blocker (B5), now FIXED and live-confirmed:** the live Gradion `list_my_entries` / `get_classifications` responses are `{resources:[{id,kind,label}]}` reference envelopes. Read-only discovery established that structured entries come from `timesheet__get_my_week` (`days[].entries[]`, full fields; id overlap with `list_my_entries` = 5/5) and that `resources/read` returns `text/plain`. `internal/gradion` was adapted to read structured entries via `get_my_week` (bounded, fail-closed). A live read-only confirmation of the fixed reader returned 5 entries (`complete=true`, all with id/start/end/date/classification present), `EntryByID` found, and 20 classifications (19 named). See `docs/gradion-mcp-verification.md` section 9. B6 (four-hour remote rule, governing timezone) remains unverified pending trusted documentation or a write.
+**Live read verification (2026-10-10) found a code-level blocker (B5), now FIXED, live-confirmed, and committed (`6facb5b`):** the live Gradion `list_my_entries` / `get_classifications` responses are `{resources:[{id,kind,label}]}` reference envelopes; structured entries come from `timesheet__get_my_week`. `internal/gradion` was adapted to read structured entries via `get_my_week` (bounded, fail-closed, hard entry bound, cursor that cannot skip weeks). A live read-only confirmation returned 5 entries (`complete=true`, all fields present), `EntryByID` found, and 20 classifications (19 named). See `docs/gradion-mcp-verification.md` section 9. Carried residuals: F4 (Billable nil-vs-non-nil asymmetry), F6 (week path lacks a first-page stability re-check), N1 (stale comment). B6 (four-hour remote rule, governing timezone) remains unverified pending trusted documentation or a write.
 
 Exact revision/plan approval, durable pre-write intent and crash recovery, session-level submission ownership, stable-ID reconciliation, immediate remote recheck, preferred MCP submission transport, and integrated evidence/review/export remain unaccepted. Timezone, remote limits, and live create/edit semantics are not verified. MCP exposes no conditional update/idempotency field according to the read-only verification report; this absence leaves residual remote risk.
 
@@ -605,14 +605,14 @@ Next gate and blockers: independent review verdict; then commit the accepted B5 
 ```
 
 ```text
-2026-10-10 / B5 / independent review ACCEPTED -> hardening round B5-FIX-2 in progress
+2026-10-10 / B5 / independent review ACCEPTED -> hardening round B5-FIX-2 -> focused re-review ACCEPTED -> committed
 Owner authority reference: owner authorized read-only discovery + a bounded B5 fix (no writes, no Keychain modification, no push/merge/publication).
-Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 62cbc95 / internal/gradion/** (uncommitted).
-Evidence: @oracle independent review (ses_ed9d1b9dbffebq8mOeGCKKtr8a) verdict ACCEPTED - B5 resolved (reader obtains complete structured entries; every unrecognized live shape fails closed). Orchestrator live read-only confirmation: 5 entries, complete=true, all fields present; EntryByID found; Classifications 20 (19 named).
-Open findings and disposition: F1 (soft week-path entry bound), F2 (latent fail-open cursor on over-wide days), F3 (legacy {} treated as empty), F5 (dead week fields + claim wording), F7 (empty-week test) accepted, fix now (B5-FIX-2); F4 (Billable asymmetry) and F6 (no week-path stability re-check) carried (need B6/a write). No blocking finding.
-Commit and publication status: uncommitted pending the hardening re-review; no push.
-Vault sync status: pending acceptance.
-Next gate and blockers: focused re-review; then commit the accepted B5 fix locally and sync the vault. B6 remains open.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 6facb5b (parent 69ec337) / internal/gradion/{tools,parse,client,client_test,week_test}.go; md5s matched the accepted b5-fix2 manifest before commit.
+Evidence: @oracle reviews (ses_ed9d1b9dbffebq8mOeGCKKtr8a) ACCEPTED both rounds; B5 resolved. Orchestrator live read-only confirmation: 5 entries, complete=true, all fields present; EntryByID found; Classifications 20 (19 named).
+Open findings and disposition: F1/F2/F3/F5/F7 closed; F4 (Billable asymmetry) and F6 (no week-path stability re-check) carried (need B6/a write); N1 (stale comment) carried.
+Commit and publication status: committed locally 6facb5b; NOT pushed, no PR.
+Vault sync status: complete - project and daily note updated with the B5 fix.
+Next gate and blockers: B6 (four-hour remote rule, governing timezone) via trusted documentation/admin evidence; then the owner release decision. Production submission remains blocked; no live write performed.
 ```
 
 ## Documentation review
