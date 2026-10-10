@@ -186,6 +186,18 @@ S8 is complete at the code level: the shared core `internal/run` + managed expor
 
 Carried S8 follow-ups (non-blocking): `resolve` is fail-loud on an already-applied decision (Info); duplicate decision keys count cosmetically (Info); orchestration usage measurement wiring (Info). The concrete live editorial command and live MCP/agent verification remain S9. The legacy `cmd/review-timesheet`/`internal/timesheet`/`internal/storage` remain physically but are not used by the new flow (documented legacy). No live endpoint contacted; production readiness is not claimed.
 
+## S9 active slice: integrated acceptance and release decision
+
+| Field | Status |
+| --- | --- |
+| Slice | S9 integrated acceptance and release decision |
+| Lifecycle | implementing (hermetic acceptance harness; no live access) |
+| Branch / base | `feat/s9-integrated-acceptance` at `5e10876` (S1-S8 ancestors verified) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) building the harness |
+| Next gate | independent integrated review; then owner release decision (live authority required for live checks) |
+
+S9 builds a hermetic integrated acceptance harness over the shared core (`internal/run`) covering the redesign's 10 required scenarios + fault injection (intent-persist failure, uncertain write, remote change invalidating approval, export failure without replay, concurrent writer). Live MCP/agent/Keychain verification and the concrete editorial command require separate owner authority. Exit: independent integrated review, source acceptance, and owner release decision; a production pilot requires separate approval of real work in an exact daily plan.
+
 S8 layer-2 dispositions (orchestrator, independent of reviewer labels):
 - F1 skill's documented `resolve.json` keys do not decode into `submit.Resolution` (no json tags) → the adopt decision is silently dropped (Major): accepted, fix now (add tags; CLI test with the documented shape).
 - F2 `resolve` prints an unconditional success count (Medium): accepted, fix (return/print the applied count; unmatched = error/no-op).

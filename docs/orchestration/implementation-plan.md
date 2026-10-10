@@ -138,6 +138,8 @@ Exit: both frontends share validation and approval semantics; exports are safe a
 
 ## S9. Integrated acceptance and release decision
 
+State: implementing on branch `feat/s9-integrated-acceptance` (base `5e10876`, S1-S8 ancestors). A hermetic integrated acceptance harness (the 10 required scenarios + fault injection) is in progress; live MCP/agent/Keychain checks require separate owner authority.
+
 Depends on S2 through S8, with editorial optional when explicitly disabled.
 
 Run the full requirement matrix below using hermetic scenarios and fault injection, plus authorized live read-only checks where needed. Resolve timezone and server limits from trusted documentation/admin or read evidence before any pilot. Record residual races and the unresolved-result procedure.
