@@ -106,10 +106,17 @@ Carried S3 follow-ups (non-blocking): S3L1-7/S3L2-7 literal-redaction limit (res
 | Field | Status |
 | --- | --- |
 | Slice | S4 proposal model and terminal review |
-| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
-| Branch / base | `feat/s4-proposal-model` at `90ccadd` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894` ancestors) |
-| Designer | @oracle session `ses_edb9eaf21ffeQ2PeGagGke0fFb` (alias ora-7) |
-| Next gate | accept the design (owner decisions only if it surfaces product trade-offs), then implement |
+| Lifecycle | implementing layer 1 (additive S3 timing fix + pure proposal model); layer 2 (review/persistence) follows |
+| Branch / base | `feat/s4-proposal-model` at `b84b5fb` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894` ancestors) |
+| Design | @oracle design pass accepted by the orchestrator (session `ses_edb9eaf21ffeQ2PeGagGke0fFb`) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S4-IMPL-1 |
+| Next gate | independent review of layer 1, then S4-IMPL-2 review/persistence |
+
+Owner-confirmed S4 decisions (2026-10-10):
+1. Cross-midnight split keeps same-day fragments and flags the post-midnight part as carryover for the next day's own review; no auto-write into another day's record.
+2. Manual intervals require an explicit confirm step; entry alone does not confirm work.
+3. A meeting marked not-attended is excluded from confirmed work but retained as visible calendar evidence.
+Engineering decisions (orchestrator): apply the additive S3 fix `SourceRef.At` (non-secret, not an identity input) so per-commit timing exists for the 45-minute adjacency heuristic (the spec's own example requires it); build new pure `internal/proposal` + thin `internal/review` rather than reusing `internal/timesheet.ClusterEntries`/`ResolveAll` (they expand/fabricate time); recompute proposals and persist only decisions; meetings are both adjacency barriers and overlap collisions; agent-session evidence is context-only; grid adjustment never expands silently; durations computed on absolute times; four-hour max = 240 min local/unverified with sub-grid remainders allowed. Additive `workflow` fields with SchemaVersion 1 preserved.
 
 S4 builds Topic Candidates and separated Activity Groups using the 45-minute adjacency heuristic, suggests spans without confirming duration, supports attendance bulk-confirmation, project resolution, collisions, manual intervals, and empty days, and performs midnight/four-hour splits preserving exact minutes. Depends on S3. Non-goals: S6 approval/reconciliation, S7 editorial, S8 entry points/export.
 
