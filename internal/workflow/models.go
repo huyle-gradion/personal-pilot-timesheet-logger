@@ -1,6 +1,10 @@
 package workflow
 
-import "time"
+import (
+	"time"
+
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+)
 
 // RemoteState captures the last observed remote shape for a mapped entry. It is
 // built exclusively from a remote API response and never carries credentials,
@@ -103,13 +107,20 @@ type OperationOutcome struct {
 
 // Record is the durable per-day workflow document. It is stored separately from
 // the legacy storage.TimesheetRecord and never overwrites or migrates it.
+//
+// CollectedEvidence and Collection are ADDITIVE S3 fields (omitempty). They hold
+// the raw collected evidence and the collection summary for the day. The legacy
+// Evidence []EvidenceReference field is a separate representation and is left
+// untouched.
 type Record struct {
-	SchemaVersion  int                 `json:"schema_version"`
-	Date           string              `json:"date"`
-	Revision       int                 `json:"revision"`
-	UpdatedAt      time.Time           `json:"updated_at"`
-	Evidence       []EvidenceReference `json:"evidence"`
-	Confirmed      []ConfirmedInterval `json:"confirmed"`
-	RemoteMappings []RemoteMapping     `json:"remote_mappings"`
-	Outcomes       []OperationOutcome  `json:"outcomes"`
+	SchemaVersion     int                         `json:"schema_version"`
+	Date              string                      `json:"date"`
+	Revision          int                         `json:"revision"`
+	UpdatedAt         time.Time                   `json:"updated_at"`
+	Evidence          []EvidenceReference         `json:"evidence"`
+	Confirmed         []ConfirmedInterval         `json:"confirmed"`
+	RemoteMappings    []RemoteMapping             `json:"remote_mappings"`
+	Outcomes          []OperationOutcome          `json:"outcomes"`
+	CollectedEvidence []evidence.Evidence         `json:"collected_evidence,omitempty"`
+	Collection        *evidence.CollectionSummary `json:"collection,omitempty"`
 }

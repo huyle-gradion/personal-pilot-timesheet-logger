@@ -34,15 +34,16 @@ var (
 
 // TigerStyle named bounds with explicit units.
 const (
-	SchemaVersion      int         = 1
-	MaxRecordSizeBytes int64       = 10 * 1024 * 1024 // 10 MiB limit on single workflow JSON
-	MaxEvidenceCount   int         = 500              // bounded evidence references per day
-	MaxConfirmedCount  int         = 100              // bounded confirmed intervals per day
-	MaxMappingsCount   int         = 100              // bounded remote mappings per day
-	MaxOutcomesCount   int         = 1000             // bounded operation outcomes per day
-	MaxDaysListedCount int         = 365              // bounded ListDays result
-	FilePermPrivate    os.FileMode = 0600
-	DirPermPrivate     os.FileMode = 0750
+	SchemaVersion             int         = 1
+	MaxRecordSizeBytes        int64       = 10 * 1024 * 1024 // 10 MiB limit on single workflow JSON
+	MaxEvidenceCount          int         = 500              // bounded evidence references per day
+	MaxCollectedEvidenceCount int         = 2000             // bounded collected evidence items per day
+	MaxConfirmedCount         int         = 100              // bounded confirmed intervals per day
+	MaxMappingsCount          int         = 100              // bounded remote mappings per day
+	MaxOutcomesCount          int         = 1000             // bounded operation outcomes per day
+	MaxDaysListedCount        int         = 365              // bounded ListDays result
+	FilePermPrivate           os.FileMode = 0600
+	DirPermPrivate            os.FileMode = 0750
 )
 
 // Invariant assertion identifiers.

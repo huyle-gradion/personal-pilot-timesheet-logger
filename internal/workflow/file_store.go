@@ -500,7 +500,8 @@ func checkCapacity(record Record) error {
 	if len(record.Evidence) > MaxEvidenceCount ||
 		len(record.Confirmed) > MaxConfirmedCount ||
 		len(record.RemoteMappings) > MaxMappingsCount ||
-		len(record.Outcomes) > MaxOutcomesCount {
+		len(record.Outcomes) > MaxOutcomesCount ||
+		len(record.CollectedEvidence) > MaxCollectedEvidenceCount {
 		return ErrCapacityExceeded
 	}
 	return nil
