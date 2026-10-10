@@ -26,7 +26,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S1 durable store/outcome | `d471b46`, committed (parent `faec6a4`), independently re-reviewed accepted |
 | S2 crash-safe lifecycle | `d4d6c00`, committed on `feat/s2-crash-safe-lifecycle` (parent `9144849`), independently re-reviewed accepted |
 | S3 evidence contracts | layer 1 `28d7891`, layer 2 `5ff9894`, committed on `feat/s3-evidence-contracts`, independently reviewed/re-reviewed accepted |
-| S4 proposal model | layer 1 `5f373f4`, committed on `feat/s4-proposal-model`, independently reviewed/re-reviewed accepted; layer 2 implementing |
+| S4 proposal model | layer 1 `5f373f4`, layer 2 `2a06b5b`, committed on `feat/s4-proposal-model`, independently reviewed/re-reviewed accepted |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -107,13 +107,28 @@ Carried S3 follow-ups (non-blocking): S3L1-7/S3L2-7 literal-redaction limit (res
 | Field | Status |
 | --- | --- |
 | Slice | S4 proposal model and terminal review |
-| Lifecycle | layer 1 committed; layer 2 (review/persistence) implementing |
-| Branch / base | `feat/s4-proposal-model` at `5f373f4` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894` ancestors) |
-| Commits | layer 1 `5f373f4` (14 files) |
+| Lifecycle | committed (layers 1 + 2), independently accepted |
+| Branch / base | `feat/s4-proposal-model` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894` ancestors) |
+| Commits | layer 1 `5f373f4` (14 files); layer 2 `2a06b5b` (11 files) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_edb9eaf21ffeQ2PeGagGke0fFb`) |
-| Independent review | layer 1 reviewed and re-reviewed accepted (A1/P2/P3/P5 closed; N1 doc nit) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S4-IMPL-2 |
-| Next gate | independent review of layer 2; slice commit; vault sync |
+| Independent review | layers 1 and 2 each reviewed and re-reviewed; accepted (A1/P2/P3/P5, S4L2-1..5/8/9 closed; rest carried) |
+| Next gate | select the next dependency-ready slice (S5 MCP transport) |
+
+S4 is complete at the code level: pure proposal model + additive `SourceRef.At` per-commit timing (layer 1); additive `workflow` review persistence + `internal/review` actions and readiness gate (layer 2). Owner decisions met (cross-midnight carryover, manual explicit confirm, not-attended excluded-but-retained).
+
+Carried S4 follow-ups (non-blocking): S4L2-6 (a joined meeting is also presented standalone; double-count prevented by the overlap gate — S6/S8 review UX); S4L2-7 (joint block `Duration` vs union span — cosmetic); N1 (`MergeConfirmed` does not clear `Review.Empty`, so a refresh can leave `Empty=true` beside confirmed work — not a readiness bypass; clear it or document; S8 export/hardening); N2 (joint interval keeps meeting text after exclusion — cosmetic); N3 (omitting `ManualInterval.UUID` generates a random ID per call — S8 must persist a stable UUID). No production entry point invokes proposal/review yet; local 4-hour/grid/timezone policy remains unverified (S9).
+
+S4 layer-2 dispositions (orchestrator, independent of reviewer labels):
+- S4L2-2 readiness bypass via sticky `Empty`: accepted, fix now.
+- S4L2-1 `MarkReviewedEmpty` drops prior review decisions: accepted, fix now.
+- S4L2-3 readiness does not require `Reviewed`: accepted, fix (require review for a non-empty day).
+- S4L2-4 manual evidence ID diverges from `evidence.ManualID`: accepted, fix.
+- S4L2-5 not-attended does not remove a prior confirmed meeting: accepted, fix.
+- S4L2-8 excluded evidence re-proposed and not flagged changed: accepted, fix.
+- S4L2-9 merge slice aliasing / ordering nondeterminism: accepted, fix.
+- S4L2-6 joined meeting also presented standalone (double-count only prevented by the overlap gate): carried to S6/S8 review UX.
+- S4L2-7 joint block Duration vs union span: carried (cosmetic, no consumer).
+No blocking secret/duplicate-write/lost-work issue; the persistence and merge guarantees otherwise hold with passing tests.
 
 S4 layer-2 scope: additive `workflow` review fields (`Record.Review`, `ConfirmedInterval` additions, `MergeReviewState`, capacity bounds, SchemaVersion 1 preserved); new `internal/review` actions + `Readiness`; close layer-1 carried P1 (materialize git groups as proposed blocks, carry ProjectHints, use BlockJoint) and P4 (overlap validation across all confirmed blocks) and the N1 doc nit. Owner decisions: manual intervals need explicit confirm; not-attended meetings excluded from work but retained as evidence; cross-midnight carryover.
 
@@ -300,6 +315,17 @@ Open findings and disposition: S3L1-1..6/8 and S3L2-1..4/6 closed; S3L1-7/S3L2-7
 Commit and publication status: committed locally 28d7891 and 5ff9894; NOT pushed, no PR.
 Vault sync status: complete - project note and daily note updated with the S3 commits, verification level, and remaining gaps.
 Next gate and blockers: next dependency-ready slice (S4 proposal model; or S5 MCP transport). Production blockers unchanged; no production entry point invokes collection/preflight yet.
+```
+
+```text
+2026-10-10 / S4 / planned -> designing -> implementing (L1) -> reviewing -> fixing -> re-reviewing -> accepted -> implementing (L2) -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: direct-dispatch session grant; local commits of independently accepted slices. Owner confirmed three S4 decisions (cross-midnight carryover; manual intervals need explicit confirm; not-attended meetings excluded from work but retained as evidence).
+Branch / HEAD / exact snapshot: feat/s4-proposal-model / 2a06b5b (layer 1 5f373f4; S1 d471b46, S2 d4d6c00, S3 28d7891+5ff9894 ancestors) / 25 files across two commits; md5s matched accepted manifests before each commit.
+Worker/reviewer report references and verification level: @oracle design (ses_edb9eaf21ffeQ2PeGagGke0fFb); @fixer S4-IMPL-1/S4-FIX-1/S4-IMPL-2/S4-FIX-2 (ses_edbe22f3fffegJeHjAvwnOt9JA); @oracle reviews/re-reviews (ses_edb8853bdffekCYaaBjV5CcS3H, ses_edb66f4ceffefEwiHLGPbXG2dF) accepted. Orchestrator gofmt/build/vet/test/race green on committed snapshots.
+Open findings and disposition: A1/P2/P3/P5 and S4L2-1..5/8/9 closed; S4L2-6/S4L2-7 and N1/N2/N3 carried as non-blocking follow-ups. No secret/duplicate-write/lost-work issue.
+Commit and publication status: committed locally 5f373f4 and 2a06b5b; NOT pushed, no PR.
+Vault sync status: complete - project and daily note updated with the S4 commits.
+Next gate and blockers: next dependency-ready slice (S5 MCP transport; then S6). Production blockers unchanged; no production entry point invokes proposal/review yet.
 ```
 
 ## Documentation review

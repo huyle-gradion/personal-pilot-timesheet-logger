@@ -66,7 +66,7 @@ Exit: evidence survives store reload; refresh leaves confirmed fields intact; so
 
 ## S4. Proposal model and terminal review
 
-State: implementing on branch `feat/s4-proposal-model` (base `b84b5fb`, S1/S2/S3 ancestors). Design accepted from an @oracle pass; owner confirmed three decisions (cross-midnight carryover, no auto-write; manual intervals need explicit confirm; not-attended meetings excluded from work but retained as evidence). Layer 1 (additive S3 `SourceRef.At` + pure `internal/proposal`) implementing; layer 2 (`internal/review` + additive `workflow` review fields) follows.
+State: committed at layer 1 `5f373f4` and layer 2 `2a06b5b` on `feat/s4-proposal-model` (locally only, not pushed). Layers 1 and 2 each independently reviewed and re-reviewed (accepted). Owner confirmed three decisions (cross-midnight carryover; manual intervals need explicit confirm; not-attended meetings excluded from work but retained as evidence). S4 is complete at the code level. Carry: S4L2-6/S4L2-7 and N1/N2/N3 (non-blocking); no production entry point invokes proposal/review yet; local 4-hour/grid/timezone policy unverified (S9).
 
 Depends on S3.
 
