@@ -43,6 +43,7 @@ const (
 	MaxOutcomesCount          int         = 1000             // bounded operation outcomes per day
 	MaxPlansCount             int         = 50               // bounded submission plans per day
 	MaxApprovalsCount         int         = 50               // bounded approvals per day
+	MaxEditorialCount         int         = 200              // bounded editorial suggestions per day
 	MaxDaysListedCount        int         = 365              // bounded ListDays result
 	FilePermPrivate           os.FileMode = 0600
 	DirPermPrivate            os.FileMode = 0750

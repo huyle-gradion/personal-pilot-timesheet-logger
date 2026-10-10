@@ -220,6 +220,56 @@ type Approval struct {
 	InvalidatedReason string     `json:"invalidated_reason,omitempty"`
 }
 
+// Measurement is a possibly-unknown integer measurement (ADDITIVE S7). Known==false
+// means the value is UNKNOWN and must never be read as zero: an unavailable
+// measurement is recorded honestly, never as zero.
+type Measurement struct {
+	Known bool  `json:"known"`
+	Value int64 `json:"value"`
+}
+
+// UnknownMeasurement returns a measurement whose value is not known.
+func UnknownMeasurement() Measurement { return Measurement{Known: false} }
+
+// KnownMeasurement returns a concrete measurement.
+func KnownMeasurement(value int64) Measurement { return Measurement{Known: true, Value: value} }
+
+// IsUnknown reports whether the measurement is unknown (and must not be read as
+// zero).
+func (m Measurement) IsUnknown() bool { return !m.Known }
+
+// EditorialText is an editorial title/description pair. It is TEXT ONLY and can
+// never alter intervals, attendance, projects, evidence, or approvals.
+type EditorialText struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+// EditorialSuggestion is one target's durable editorial result (ADDITIVE S7).
+// RequestHash is the request hash the text was produced for, so an unchanged
+// request can be reused with zero tokens. Editorial suggestions are TEXT ONLY and
+// deliberately do NOT feed LocalFingerprint or PlanHash.
+type EditorialSuggestion struct {
+	TargetID    string        `json:"target_id"`
+	RequestHash string        `json:"request_hash"`
+	Text        EditorialText `json:"text"`
+	Origin      string        `json:"origin"`
+	Warnings    []string      `json:"warnings,omitempty"`
+}
+
+// EditorialUsage is the durable daily usage report (ADDITIVE S7). Editorial and
+// orchestration usage are reported SEPARATELY and are never summed: an unknown
+// measurement is not zero.
+type EditorialUsage struct {
+	Date          string      `json:"date"`
+	Editorial     Measurement `json:"editorial"`
+	Orchestration Measurement `json:"orchestration"`
+	EditorialRuns int         `json:"editorial_runs"`
+	Invoked       bool        `json:"invoked"`
+	RuntimeMS     int64       `json:"runtime_ms"`
+	PeakRSSMB     float64     `json:"peak_rss_mb"`
+}
+
 // Record is the durable per-day workflow document. It is stored separately from
 // the legacy storage.TimesheetRecord and never overwrites or migrates it.
 //
@@ -231,6 +281,11 @@ type Approval struct {
 // Plans and Approvals are ADDITIVE S6 fields (omitempty). A SubmissionPlan is a
 // content-addressed plan of create/edit operations; an Approval binds a plan to
 // its content and remote assumptions. SchemaVersion stays 1.
+//
+// Editorial and Usage are ADDITIVE S7 fields (omitempty). Editorial holds TEXT
+// ONLY suggestions (never intervals/attendance/projects/evidence/approvals); Usage
+// holds the daily editorial/orchestration measurement report. SchemaVersion stays
+// 1.
 type Record struct {
 	SchemaVersion     int                         `json:"schema_version"`
 	Date              string                      `json:"date"`
@@ -245,4 +300,6 @@ type Record struct {
 	Review            *ReviewState                `json:"review,omitempty"`
 	Plans             []SubmissionPlan            `json:"plans,omitempty"`
 	Approvals         []Approval                  `json:"approvals,omitempty"`
+	Editorial         []EditorialSuggestion       `json:"editorial,omitempty"`
+	Usage             *EditorialUsage             `json:"usage,omitempty"`
 }

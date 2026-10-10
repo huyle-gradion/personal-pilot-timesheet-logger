@@ -591,3 +591,44 @@ func ActiveApproval(r *Record, date string) (Approval, bool) {
 	}
 	return best, found
 }
+
+// --- S7 editorial representation helpers ------------------------------------
+
+// UpsertEditorialSuggestion inserts or replaces an editorial suggestion keyed by
+// TargetID. Editorial suggestions are TEXT ONLY: they never feed LocalFingerprint
+// or PlanHash.
+func UpsertEditorialSuggestion(r *Record, s EditorialSuggestion) {
+	if r == nil {
+		return
+	}
+	for i := range r.Editorial {
+		if r.Editorial[i].TargetID == s.TargetID {
+			r.Editorial[i] = s
+			return
+		}
+	}
+	r.Editorial = append(r.Editorial, s)
+}
+
+// FindEditorialSuggestion returns the editorial suggestion for a target id.
+func FindEditorialSuggestion(r *Record, targetID string) (EditorialSuggestion, bool) {
+	if r == nil {
+		return EditorialSuggestion{}, false
+	}
+	for _, s := range r.Editorial {
+		if s.TargetID == targetID {
+			return s, true
+		}
+	}
+	return EditorialSuggestion{}, false
+}
+
+// SetUsageReport replaces the daily usage report. Editorial and orchestration
+// usage stay separate; the report never feeds LocalFingerprint or PlanHash.
+func SetUsageReport(r *Record, report EditorialUsage) {
+	if r == nil {
+		return
+	}
+	reportCopy := report
+	r.Usage = &reportCopy
+}
