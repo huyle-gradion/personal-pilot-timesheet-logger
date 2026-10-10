@@ -30,6 +30,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S5 MCP transport | layers 1 `42fba53`, 2 `b59661a`, 3 `c943e97`, committed on `feat/s5-mcp-transport`, independently reviewed/re-reviewed accepted |
 | S6 plans/approval/reconciliation | layers 1 `3dfe814`, 2 `40d266d`, committed on `feat/s6-plans-approval-reconciliation`, independently reviewed/re-reviewed accepted |
 | S7 editorial synthesis | `3d4bcc8`, committed on `feat/s7-editorial-synthesis`, independently reviewed/re-reviewed accepted |
+| S8 entry points/export | layer 1 `06ce95b`, committed on `feat/s8-entry-points-export`, independently reviewed/re-reviewed accepted; layer 2 (CLI/skill/deletions) implementing |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -174,11 +175,25 @@ Carried S7 follow-ups (non-blocking): S7-F4 (usage does not accumulate across re
 | Field | Status |
 | --- | --- |
 | Slice | S8 shared entry points and managed vault export |
-| Lifecycle | implementing layer 1 (core `internal/run` + `internal/export`); layer 2 (CLI/skill + deletions) follows |
-| Branch / base | `feat/s8-entry-points-export` at `f1d95c1` (S1-S7 ancestors verified) |
+| Lifecycle | layer 1 committed; layer 2 (CLI/skill/deletions) implementing |
+| Branch / base | `feat/s8-entry-points-export` at `06ce95b` (S1-S7 ancestors verified) |
+| Commits | layer 1 `06ce95b` (15 files) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_eda70735effenHla0rxFzsO0X4`) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S8-IMPL-1 |
-| Next gate | independent review of layer 1, then S8-IMPL-2 (CLI/skill/deletions) |
+| Independent review | layer 1 reviewed and re-reviewed accepted (S8L1-1..7 closed) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S8-IMPL-2 |
+| Next gate | independent review of layer 2; slice commit; vault sync |
+
+S8 layer-2 scope: new thin CLI `cmd/timesheet` delegating to `internal/run` (revision-bound `--plan` approval; no bare `-approve`; no-AI operation; per-day ranges); rewrite the skill to delegate to the CLI (harness-agnostic, no accounting); delete `cmd/sync-timesheet` + `internal/api` (owner decision); update `tests/skill_test.go` + `tests/e2e_test.go`. The concrete live editorial command is deferred to S9.
+
+S8 layer-1 dispositions (orchestrator, independent of reviewer labels):
+- S8L1-1 editorial text never applied through the core (Major, gating): accepted, fix now (fold persisted suggestions via `editorial.Apply` before confirm; run-level test).
+- S8L1-2 no all-failed status (Medium/Low): accepted, fix (add `StatusFailed`; spec requires the section to reflect failed outcomes).
+- S8L1-3 absent git credential not flagged in preflight (Low): accepted, fix.
+- S8L1-4 export atomic write lacks a directory fsync (Low): accepted, fix.
+- S8L1-5 orchestration usage never populated / accumulate would replace (Info): accepted, fix accumulate additively; measurement wiring to layer 2/S9.
+- S8L1-6 `keychainCode` mislabels git errors (Info): accepted, fix.
+- S8L1-7 test gaps (collect, remote-init failure, offline submit, resolve, usage_unknown, parity, precedence): accepted, add.
+The reviewer accepted the rest of layer 1: preflight contract/terminal-credential/remote refusal (a), record-resolved `ActiveApproval` + zero-write refusal (b), accumulated editorial usage (c), and the export properties.
 
 Owner-confirmed S8 decisions (2026-10-10): (1) the managed export uses HTML-comment markers and leaves any legacy `## Clustered timesheet` block untouched (no silent migration); (2) delete the dead `cmd/sync-timesheet` stub and the deprecated `internal/api` read surface; (3) defer the concrete live editorial command to S9 (S8 stays hermetic).
 
