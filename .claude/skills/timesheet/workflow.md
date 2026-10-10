@@ -1,144 +1,154 @@
 # Timesheet Pipeline Workflow
 
-This document defines the 7-step execution workflow for the timesheet logging skill. In adherence to ADR-0001, ADR-003, and ADR-005, the boundary between deterministic code and generative artificial intelligence is strictly delineated:
-- **`[Script]`**: Executed deterministically by compiled Go binaries or scripts with zero LLM token consumption.
-- **`[AI]`**: Minimal editorial synthesis executed by the LLM, bounded to < 600 total tokens per day.
+This document defines the exact command sequence the `timesheet` skill runs. It is
+a harness-agnostic orchestration over the `timesheet` Go binary: **every step is a
+documented invocation**, and no accounting or submission logic is reimplemented
+here.
+
+- **`[Script]`**: deterministic Go code invoked through `cmd/timesheet`.
+- **`[AI]`**: the optional, bounded editorial agent invoked *by the core* through a
+  configured command adapter. The skill never synthesizes text itself.
+
+Set `TS="go run ./cmd/timesheet"` (or the built binary) and `CFG=timesheet.json`.
+Default to today in the configured timezone; pass `--date` or `--from/--to` to
+target specific days. `--offline` never contacts the remote.
 
 ---
 
-## Directory layout and data contracts
+## Step 1: `[Script]` Preflight
 
-Ephemeral scratch data is written to `.cache/timesheet/YYYY-MM-DD/` per ADR-004:
-- `calendar.json`: Array of `SimpleEntry` objects from Google Calendar.
-- `git.json`: Array of `SimpleEntry` objects from GitHub API or local Git history.
-- `skeleton.json`: Clustered `TimeBlock` objects with unrefined titles and descriptions.
-- `refined.json`: Time blocks updated with editorial topic labels and descriptions.
-- `reviewed.json`: Time blocks after collision detection and human review.
-
-Permanent persistence is stored in Tier 2 local JSON archive:
-- `~/.timesheet/records/YYYY-MM-DD.json`: Versioned, atomic timesheet record.
-- `timesheet/YYYY-MM-DD.md`: Clean Markdown daily summary table.
-- `benchmarks/metrics.csv`: Cumulative execution duration, peak RSS memory, and token consumption metrics.
-
----
-
-## Step-by-step pipeline
-
-### Step 1: `[Script]` Ingest calendar events
-Fetch and parse Google Calendar private iCal feeds for the target date. Handles UID stability, declined invitations (`PARTSTAT=DECLINED`), cancelled tombstones, recurring event exceptions (`EXDATE`), and transparent events.
+Validate the timezone, resolve credential references (Keychain in memory), verify
+the enabled source contracts, and (when configured) initialize and verify the
+Gradion MCP capabilities. A non-NotFound Keychain failure, an incomplete contract,
+or a missing git credential is **terminal**: the run refuses and makes zero remote
+requests. There is no REST fallback.
 
 ```bash
-mkdir -p .cache/timesheet/$TARGET_DATE
-go run ./cmd/fetch-calendar -date "$TARGET_DATE" > .cache/timesheet/$TARGET_DATE/calendar.json
+$TS preflight --config "$CFG"
 ```
 
-**Output Seam**: Normalized array of `SimpleEntry` objects.
+**Output Seam**: a per-check `ok`/`FAIL` list with stable codes. Exit code `3` when
+refused.
 
 ---
 
-### Step 2: `[Script]` Collect Git activity
-Collect Git commits and pull requests across configured repositories. Uses Tier 1 GitHub REST API with automatic failover to Tier 2 local git log history upon HTTP 429, 5xx, or network timeouts. Deduplicates commits under associated PR branches.
+## Step 2: `[Script]` Collect and propose
+
+Collect evidence from the enabled sources, merge it into the day's workflow
+record, and print the deterministic proposal. Collection proceeds independently of
+review or submission. Nothing is confirmed.
 
 ```bash
-go run ./cmd/fetch-git -date "$TARGET_DATE" > .cache/timesheet/$TARGET_DATE/git.json
+$TS review --config "$CFG" --date "$DATE"
 ```
 
-**Output Seam**: Normalized array of `SimpleEntry` objects with `metadata.repo`, `metadata.branch`, and `metadata.pr_number`.
+**Output Seam**: the proposed work/meeting/manual blocks with their stable block
+ids (used by later decisions).
 
 ---
 
-### Step 3: `[Script]` Cluster time blocks
-Combine calendar and Git entries into chronological work blocks with 30-minute semantic clumping and 15-minute grid snapping. Calendar events act as fixed anchors. Consecutive Git commits within 45 minutes of the same category are merged into focused spans. Lunch hours (12:00 to 13:00) and off-hours remain unrestricted per user guidance.
+## Step 3: `[AI]` Editorial synthesis (optional)
+
+When an editorial agent is configured and enabled, `review` asks the core to
+synthesize a title and description per block. The core:
+
+- builds a bounded, non-secret request (no times, attendance, or classification),
+- validates the agent's response **fail-closed** (a whole-response rejection on any
+  unexpected field),
+- reuses cached text for an unchanged request,
+- enforces the soft daily token target (1000 tokens, counting retries and reruns),
+- falls back to deterministic text on any failure, so review is **never blocked**.
+
+The editorial text is TEXT ONLY and is applied to block descriptions by the core;
+it can never alter intervals, attendance, projects, evidence, or approvals. Disable
+it with `--no-editorial`.
+
+---
+
+## Step 4: `[Script]` Apply review decisions
+
+Apply a serializable decision set (confirm, exclude, join, trim, project, manual,
+acknowledge, mark-empty) through the same `internal/review` actions an interactive
+review uses. The decisions file may contain a `{date}` placeholder for a range.
 
 ```bash
-# Combine entries and cluster via review-timesheet non-interactive pass
-jq -s 'add' .cache/timesheet/$TARGET_DATE/calendar.json .cache/timesheet/$TARGET_DATE/git.json > .cache/timesheet/$TARGET_DATE/combined.json
-go run ./cmd/review-timesheet -date "$TARGET_DATE" -input .cache/timesheet/$TARGET_DATE/combined.json -non-interactive -auto-resolve=keep_both -confirm -output .cache/timesheet/$TARGET_DATE/skeleton.json
+$TS review --config "$CFG" --date "$DATE" --decisions decisions.json
 ```
 
-**Output Seam**: JSON payload containing `TimeBlock` array.
+Example `decisions.json`:
 
----
-
-### Step 4: `[AI]` Editorial synthesis
-Synthesize clear, professional topic titles and concise 1-2 sentence impact descriptions for each clustered block.
-
-#### Compressed AI prompt contract
-- **Input budget**: < 300 tokens (skeleton block IDs, categories, raw commit messages, PR numbers).
-- **Output budget**: < 150 tokens (compact JSON mapping).
-- **Prohibited**: Conversational filler, introductory greetings, markdown commentary, explanations, or prose outside the specified JSON schema.
-
-#### Prompt template
-```text
-System: You are an expert timesheet editor. Synthesize clustered engineering logs into high-signal topic titles and concise 1-2 sentence impact summaries. Follow Google X-Y-Z formula where applicable.
-
-Input JSON:
-{{SKELETON_SUMMARY_JSON}}
-
-Output format:
-Output ONLY a single valid JSON object mapping each block ID to its refined "title" and "description". Do not wrap in conversational text.
-Example schema:
+```json
 {
-  "git-2026-10-08-0900-1": {
-    "title": "Two-Tier Git Collector & Local Fallback",
-    "description": "Implemented local git log fallback for GitHub REST outages with zero double-counting across PR commits."
-  }
+  "confirm": [{"block_id": "<BLOCK_ID>", "project": "Proj"}],
+  "exclude": [{"evidence_id": "<EVIDENCE_ID>", "reason": "user_excluded"}],
+  "trim": [{"block_id": "<BLOCK_ID>", "new_start": "09:15", "new_end": "09:45"}],
+  "acknowledge": ["cal"]
 }
 ```
 
-Apply the refined titles and descriptions to `.cache/timesheet/$TARGET_DATE/skeleton.json` and save to `.cache/timesheet/$TARGET_DATE/refined.json`.
+**Output Seam**: the day is reviewed (or reviewed-empty) and persisted.
 
 ---
 
-### Step 5: `[Script]` Collision review and storage
-Render the ASCII timeline schedule and prompt the user to resolve any detected collisions between meetings and Git activity. Persists the finalized schedule to Tier 2 storage (`~/.timesheet/records/YYYY-MM-DD.json`) and exports markdown to Obsidian vault if configured.
+## Step 5: `[Script]` Submission preview
+
+Build the exact create/edit plan from the reviewed record and the freshly observed
+remote state, and persist it. This performs **zero remote writes** (a read-only
+re-observe is allowed).
 
 ```bash
-# Interactive mode (default)
-go run ./cmd/review-timesheet -date "$TARGET_DATE" -input .cache/timesheet/$TARGET_DATE/refined.json -sink=obsidian
-
-# Or non-interactive mode (for automated batch execution)
-go run ./cmd/review-timesheet -date "$TARGET_DATE" -input .cache/timesheet/$TARGET_DATE/refined.json -non-interactive -auto-resolve=keep_both -confirm -sink=obsidian
+$TS preview --config "$CFG" --date "$DATE"
 ```
 
-**Output Seam**: Versioned record saved in `~/.timesheet/records/$TARGET_DATE.json`.
+**Output Seam**: `plan_id: <PLANID>` and the operation count. The plan id is the
+plan's content hash.
 
 ---
 
-### Step 6: `[Script]` Gradion Timesheet API reconciliation
-Reconcile the saved daily timesheet record with the remote Gradion Timesheet API (`ts-prod.gradion.com`). Fetches existing remote entries, creates missing slots via `POST /api/entries`, updates modified descriptions via `PATCH /api/entries/{id}`, and skips identical entries. Guarantees zero duplicate creates on repeated executions. Exports local clean markdown summary to `timesheet/$TARGET_DATE.md`.
+## Step 6: `[Script]` Approval
+
+Bind an approval to the exact plan content hash. The approval is single-use: any
+local, plan, or remote change invalidates it.
 
 ```bash
-# Review preview (always safe; performs zero remote writes)
-go run ./cmd/sync-timesheet -date "$TARGET_DATE" -dry-run
-
-# Approved live reconciliation (requires explicit -approve)
-go run ./cmd/sync-timesheet -date "$TARGET_DATE" -approve
+$TS approve --config "$CFG" --date "$DATE" --plan "$PLANID"
 ```
 
-Submission is deferred until explicit approval: a non-dry-run execution without
-`-approve` mutates nothing and asks for approval. Because the remote API exposes
-no idempotency keys and no conditional updates, an **uncertain** write stops the
-run and is marked unresolved (partial) rather than retried blindly; remote state
-must be re-fetched before any retry.
-
-> **`-approve` is a temporary mutation gate, not revision-bound approval.**
-> It authorizes the mutations of the current run only. It is *not* tied to the
-> exact preview shown, nor to a specific local record revision, and there is no
-> durable mapping store yet (see ADR-005's revision-tied approval and the
-> "not-started" redesign). Any remote change between preview and execution is
-> therefore unenforced. Preview with `-dry-run` before approving, and treat
-> production submission as **not ready**.
-
-**Output Seam**: Remote entries synchronized and local `timesheet/$TARGET_DATE.md` generated.
+**Output Seam**: `approval_id: <APPROVALID>` (equal to the plan id).
 
 ---
 
-### Step 7: `[Script]` Empirical benchmark logging
-Parse the session JSONL transcript to extract LLM input/output/cache tokens, record wall-clock execution duration and peak resident set size (RSS) memory, and append the daily metric to `benchmarks/metrics.csv`. Renders a terminal ASCII bar chart tracking daily token usage against the 600-token ceiling.
+## Step 7: `[Script]` Submit and export
+
+Execute the record's **active** approval and then update the managed daily-note
+section (read-only with respect to the remote).
 
 ```bash
-go run ./cmd/benchmark -record -date "$TARGET_DATE" -transcript "$TRANSCRIPT_JSONL_PATH" -chart
+$TS submit --config "$CFG" --date "$DATE"
 ```
 
-**Output Seam**: Appended row in `benchmarks/metrics.csv` and rendered terminal ASCII chart.
+- No active approval, or a requested `--approval` that does not match it, or an
+  offline run: the submission is **blocked with zero writes** (exit code `3`).
+- Confirmed operations continue; a definitive failure is recorded and the run
+  continues; an **uncertain** write is recorded and **stops** the run (never
+  retried). Partial success re-plans only the remaining operations, so confirmed
+  work is never replayed.
+- After execution the core rewrites only the marker block in
+  `<vault>/<daily-dir>/<date>.md`, preserving everything else byte-for-byte.
+
+Reconcile an unresolved operation with an explicit decision (never a bare absence):
+
+```bash
+$TS resolve --config "$CFG" --date "$DATE" --decisions resolve.json
+```
+
+Re-render the managed note without submitting (read-only with respect to the
+remote):
+
+```bash
+$TS export --config "$CFG" --date "$DATE"
+```
+
+where `resolve.json` is an array of `{"operation_key": "...", "kind": "adopt"|"not_applied", "remote_id": "...", "local_id": "..."}`.
+
+**Output Seam**: durable per-operation outcomes and the exported daily note.

@@ -28,11 +28,16 @@ const (
 // Resolution is an explicit decision resolving one unresolved operation, keyed by
 // its stable OperationKey. RemoteID/LocalID override the operation's own fields
 // when supplied (RemoteID is required for adopt).
+//
+// The JSON tags are ADDITIVE (S8-FIX-2): the CLI/skill document a snake_case
+// resolve.json, and without them an underscored key would silently decode to an
+// empty field and drop the decision. They are the single source of truth for the
+// decision shape.
 type Resolution struct {
-	OperationKey string
-	Kind         ResolutionKind
-	RemoteID     string
-	LocalID      string
+	OperationKey string         `json:"operation_key"`
+	Kind         ResolutionKind `json:"kind"`
+	RemoteID     string         `json:"remote_id,omitempty"`
+	LocalID      string         `json:"local_id,omitempty"`
 }
 
 // RestartGate reports whether a record must NOT be replayed because it has

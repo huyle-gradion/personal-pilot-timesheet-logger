@@ -6,6 +6,7 @@ import (
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/export"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/review"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/submit"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
@@ -115,16 +116,70 @@ func (r *Runner) Export(ctx context.Context, date string) (export.Result, error)
 	return r.deps.Exporter.Export(ctx, export.BuildNote(*rec))
 }
 
-// Resolve reconciles unresolved operations from explicit decisions.
-func (r *Runner) Resolve(ctx context.Context, date string, decisions []submit.Resolution) error {
+// ResolveResult reports how an explicit decision set was applied.
+type ResolveResult struct {
+	// Decisions is the number of decisions supplied.
+	Decisions int
+	// Applied is the number of decisions that matched an unresolved operation.
+	Applied int
+	// Unmatched lists the operation keys of decisions that matched NO unresolved
+	// operation. A silently dropped decision is never acceptable: the caller must
+	// see it.
+	Unmatched []string
+}
+
+// Resolve reconciles unresolved operations from explicit decisions and reports how
+// many decisions were actually applied.
+func (r *Runner) Resolve(ctx context.Context, date string, decisions []submit.Resolution) (ResolveResult, error) {
+	rec, err := r.deps.Store.GetDay(ctx, date)
+	if err != nil {
+		return ResolveResult{}, err
+	}
+	unresolved := unresolvedKeySet(rec)
+	result := ResolveResult{Decisions: len(decisions)}
+	for _, d := range decisions {
+		if unresolved[d.OperationKey] {
+			result.Applied++
+			continue
+		}
+		result.Unmatched = append(result.Unmatched, d.OperationKey)
+	}
+
 	listing, err := r.observe(ctx, date)
 	if err != nil {
-		return err
+		return result, err
 	}
 	_, err = r.deps.Store.UpdateDay(ctx, date, func(rec *workflow.Record) error {
 		return submit.ResolveUnresolved(rec, listing, decisions, r.now())
 	})
+	return result, err
+}
+
+// Acknowledge records explicit acknowledgment of incomplete sources without
+// applying any other review decision (and without marking the day reviewed).
+func (r *Runner) Acknowledge(ctx context.Context, date string, sourceIDs []string) error {
+	if len(sourceIDs) == 0 {
+		return nil
+	}
+	_, err := r.deps.Store.UpdateDay(ctx, date, func(rec *workflow.Record) error {
+		return review.AcknowledgeSources(rec, sourceIDs)
+	})
 	return err
+}
+
+// unresolvedKeySet returns the operation keys of a record's unresolved outcomes.
+func unresolvedKeySet(rec *workflow.Record) map[string]bool {
+	out := map[string]bool{}
+	for _, o := range rec.Outcomes {
+		if o.Resolved {
+			continue
+		}
+		switch o.Status {
+		case workflow.OutcomeInFlight, workflow.OutcomeUncertain, workflow.OutcomeUnidentified:
+			out[o.OperationKey] = true
+		}
+	}
+	return out
 }
 
 // observe re-fetches the remote listing, or returns an empty complete listing when

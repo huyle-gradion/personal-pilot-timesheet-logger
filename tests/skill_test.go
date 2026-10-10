@@ -8,8 +8,11 @@ import (
 	"testing"
 )
 
+// TestClaudeSkill_PackagingAndContracts verifies the skill packaging, its
+// harness-agnostic command sequence, and that the skill delegates to the shared
+// CLI rather than reimplementing accounting/submission. It also asserts the
+// retired binaries/packages are gone.
 func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
-	// Locate repository root
 	repoRoot, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatalf("resolving repo root: %v", err)
@@ -18,14 +21,12 @@ func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
 	skillMDPath := filepath.Join(repoRoot, ".claude", "skills", "timesheet", "SKILL.md")
 	workflowMDPath := filepath.Join(repoRoot, ".claude", "skills", "timesheet", "workflow.md")
 
-	// 1. Verify SKILL.md exists
+	// 1. SKILL.md exists and starts with YAML frontmatter.
 	skillBytes, err := os.ReadFile(skillMDPath)
 	if err != nil {
 		t.Fatalf("failed to read SKILL.md at %s: %v", skillMDPath, err)
 	}
 	skillContent := string(skillBytes)
-
-	// 2. Verify YAML Frontmatter
 	if !strings.HasPrefix(skillContent, "---\n") {
 		t.Fatalf("SKILL.md must start with YAML frontmatter delimiter '---'")
 	}
@@ -34,7 +35,6 @@ func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
 		t.Fatalf("SKILL.md missing closing YAML frontmatter delimiter '---'")
 	}
 	frontmatter := skillContent[4 : 4+frontmatterEnd]
-
 	if !strings.Contains(frontmatter, "name: timesheet") {
 		t.Errorf("YAML frontmatter missing 'name: timesheet'")
 	}
@@ -42,64 +42,63 @@ func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
 		t.Errorf("YAML frontmatter missing 'description:' field")
 	}
 
-	// 3. Verify trigger phrases in SKILL.md
-	triggers := []string{"/timesheet", "log timesheet", "daily timesheet"}
-	for _, tr := range triggers {
+	// 2. Trigger phrases.
+	for _, tr := range []string{"/timesheet", "log timesheet", "daily timesheet"} {
 		if !strings.Contains(skillContent, tr) {
 			t.Errorf("SKILL.md missing required trigger phrase %q", tr)
 		}
 	}
 
-	// 4. Verify workflow.md exists
+	// 3. workflow.md exists.
 	wfBytes, err := os.ReadFile(workflowMDPath)
 	if err != nil {
 		t.Fatalf("failed to read workflow.md at %s: %v", workflowMDPath, err)
 	}
 	wfContent := string(wfBytes)
 
-	// 5. Verify explicit [Script] and [AI] step annotations
+	// 4. Every step heading carries its [Script]/[AI] marker.
 	requiredSteps := []struct {
-		stepNum   string
-		marker    string
 		nameRegex string
 	}{
-		{"Step 1", "[Script]", `(?i)Step 1:.*\[Script\]`},
-		{"Step 2", "[Script]", `(?i)Step 2:.*\[Script\]`},
-		{"Step 3", "[Script]", `(?i)Step 3:.*\[Script\]`},
-		{"Step 4", "[AI]", `(?i)Step 4:.*\[AI\]`},
-		{"Step 5", "[Script]", `(?i)Step 5:.*\[Script\]`},
-		{"Step 6", "[Script]", `(?i)Step 6:.*\[Script\]`},
-		{"Step 7", "[Script]", `(?i)Step 7:.*\[Script\]`},
+		{`(?i)Step 1:.*\[Script\]`},
+		{`(?i)Step 2:.*\[Script\]`},
+		{`(?i)Step 3:.*\[AI\]`},
+		{`(?i)Step 4:.*\[Script\]`},
+		{`(?i)Step 5:.*\[Script\]`},
+		{`(?i)Step 6:.*\[Script\]`},
+		{`(?i)Step 7:.*\[Script\]`},
 	}
-
 	for _, step := range requiredSteps {
-		re := regexp.MustCompile(step.nameRegex)
-		if !re.MatchString(wfContent) {
+		if !regexp.MustCompile(step.nameRegex).MatchString(wfContent) {
 			t.Errorf("workflow.md missing expected step heading matching %q", step.nameRegex)
 		}
 	}
 
-	// 6. Verify token constraints and prohibitions in Step 4
-	if !strings.Contains(wfContent, "300") || !strings.Contains(wfContent, "150") {
-		t.Errorf("workflow.md missing explicit token limits (< 300 input, < 150 output)")
-	}
-	if !strings.Contains(strings.ToLower(wfContent), "conversational") {
-		t.Errorf("workflow.md missing prohibition on conversational filler")
-	}
-
-	// 7. Verify all referenced Go binary paths exist in the codebase
-	expectedBinDirs := []string{
-		"cmd/fetch-calendar",
-		"cmd/fetch-git",
-		"cmd/review-timesheet",
-		"cmd/sync-timesheet",
-		"cmd/benchmark",
+	// 5. The workflow delegates to the CLI subcommands.
+	for _, cmd := range []string{"preflight", "review", "preview", "approve", "submit", "export", "resolve"} {
+		if !strings.Contains(wfContent, "timesheet "+cmd) && !strings.Contains(wfContent, "$TS "+cmd) {
+			t.Errorf("workflow.md does not invoke the %q subcommand", cmd)
+		}
 	}
 
-	for _, binDir := range expectedBinDirs {
-		fullPath := filepath.Join(repoRoot, binDir, "main.go")
-		if _, statErr := os.Stat(fullPath); statErr != nil {
-			t.Errorf("referenced binary entrypoint does not exist: %s (%v)", fullPath, statErr)
+	// 6. The stale infer-time pipeline and the bare -approve gate are gone.
+	combined := skillContent + "\n" + wfContent
+	for _, stale := range []string{"-approve", "clusterer", "skeleton.json", "refined.json", "cmd/sync-timesheet"} {
+		if strings.Contains(combined, stale) {
+			t.Errorf("skill still references the retired pipeline element %q", stale)
+		}
+	}
+
+	// 7. The new CLI entrypoint exists; the retired binary/package are gone.
+	if _, statErr := os.Stat(filepath.Join(repoRoot, "cmd", "timesheet", "main.go")); statErr != nil {
+		t.Errorf("cmd/timesheet/main.go does not exist: %v", statErr)
+	}
+	for _, gone := range []string{
+		filepath.Join("cmd", "sync-timesheet"),
+		filepath.Join("internal", "api"),
+	} {
+		if _, statErr := os.Stat(filepath.Join(repoRoot, gone)); statErr == nil {
+			t.Errorf("retired path still exists: %s", gone)
 		}
 	}
 }

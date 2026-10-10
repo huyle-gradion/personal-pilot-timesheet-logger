@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence/plugins"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/git"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 )
@@ -129,19 +130,24 @@ func allPassed(checks []Check) bool {
 	return true
 }
 
-// gitSourceEnabled reports whether any enabled source is a git source, which
-// requires a GitHub credential.
-func (r *Runner) gitSourceEnabled() bool {
-	for _, s := range r.cfg.Evidence.Sources {
+// GitSourceEnabled reports whether any enabled source needs a git credential. It
+// covers the evidence git kinds AND the registered git plugin type
+// (plugins.TypeGit), so a real config's git source is never missed.
+func GitSourceEnabled(sources []evidence.SourceConfig) bool {
+	for _, s := range sources {
 		if !s.Enabled {
 			continue
 		}
-		if s.Type == evidence.SourceLocalGit || s.Type == evidence.SourceRemotePR {
+		switch s.Type {
+		case evidence.SourceLocalGit, evidence.SourceRemotePR, plugins.TypeGit:
 			return true
 		}
 	}
 	return false
 }
+
+// gitSourceEnabled reports whether this runner's config needs a git credential.
+func (r *Runner) gitSourceEnabled() bool { return GitSourceEnabled(r.cfg.Evidence.Sources) }
 
 // gitErrorCode maps a git credential resolution error to an accurate, secret-free
 // code: a Keychain operating error keeps its own code; anything else is a plain

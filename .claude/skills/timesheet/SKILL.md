@@ -1,51 +1,63 @@
 ---
 name: timesheet
-description: Automates daily timesheet aggregation, deterministic focus-span clustering, AI editorial synthesis, interactive collision review, and idempotent Gradion API synchronization. Trigger with /timesheet, log timesheet, or daily timesheet.
+description: Review-first daily timesheet workflow over the shared deterministic Go core. Collects evidence, proposes intervals, applies review decisions, previews and approves an exact submission plan, and exports a managed daily note. Trigger with /timesheet, log timesheet, or daily timesheet.
 ---
 
 # Timesheet Skill (`timesheet`)
 
-Orchestrates the end-to-end timesheet logging pipeline for knowledge workers and software engineers. Aggregates activity streams across Google Calendar private iCal feeds and GitHub/Git commits, deterministically clusters activity into focused work blocks, performs minimal AI editorial refinement (< 600 tokens/day), provides terminal review and conflict resolution, and reconciles entries with the production Gradion Timesheet API.
+This skill is a **harness-agnostic command sequence over the `timesheet` Go
+binary**. It orchestrates; it implements **no accounting and no submission logic
+of its own**. Every deterministic decision lives in the shared core
+(`internal/run`), so the CLI and the skill exercise one implementation.
 
-## Triggers and invocations
+## Triggers
 
 Invoke this skill when the user issues any of the following triggers:
 - `/timesheet`
 - `log timesheet`
 - `daily timesheet`
 - `review timesheet`
-- `sync timesheet`
 
-### Parameter options
+## Contract (binding)
 
-- `--date <YYYY-MM-DD>`: Target date for timesheet aggregation (defaults to current date).
-- `--from <YYYY-MM-DD> --to <YYYY-MM-DD>`: Multi-day batch aggregation window.
-- `--non-interactive`: Headless review mode bypassing interactive prompts.
-- `--auto-resolve <keep_both|separate|discard>`: Automatic collision resolution strategy in non-interactive mode (default: `keep_both`).
-- `--dry-run`: Simulates API reconciliation without committing remote mutations to Gradion.
-- `--approve`: Temporary mutation gate; required to execute a non-dry-run sync. It is *not* approval tied to an exact preview or to a local record revision — see `workflow.md` Step 6. Production submission remains not ready.
-- `--sink <console|obsidian|all|none>`: Exporter destination (default: `obsidian`).
-- `--storage-dir <path>`: Custom Tier 2 persistent JSON archive directory (default: `~/.timesheet/records/`).
-
-## Pre-flight configuration check (ADR-005)
-
-Before executing the pipeline steps, verify that necessary credentials exist. Per [[ADR-005 - Review-First Timesheet Architecture]] and `docs/agents/credentials.md`, the macOS Keychain is the authoritative secret store and configuration holds references only. Each collector resolves its secret in this order (highest priority first):
-1. Explicit CLI flag (transient override for tests/CI only)
-2. macOS Keychain item, account `$USER`: `calendar_feed_url`, `gh_auth_token`, `gradion.workspace.ApiKey`
-3. Legacy environment variables / project `.env` (`GCAL_ICS_URL`, `GITHUB_TOKEN`/`GH_TOKEN`, `TIMESHEET_API_TOKEN`) — **deprecated**; do not store new secrets there
-
-The service `gradion.workspace.ApiKey` supersedes the earlier `timesheet_api_token` name.
-
-If any required secret is missing, do not proceed with blind execution. Prompt the user with explicit instructions to create the Keychain item via `security add-generic-password`.
+- **AI is optional and TEXT ONLY.** It may propose titles and descriptions. It can
+  never change intervals, attendance, projects, evidence links, or approvals. With
+  `--no-editorial` (or no editor configured) the workflow still completes using
+  deterministic text. The editorial agent is invoked through a configured command
+  adapter; the concrete live command is wired at S9.
+- **Approval is bound to an exact submission plan content hash.** There is no bare
+  approval flag. `approve --plan <PLANID>` records a durable approval, and `submit`
+  executes only the record's **active** approval. If there is no active approval,
+  or a requested `--approval` does not match it, `submit` refuses with **zero
+  remote writes**.
+- **Uncertain remote writes are never retried.** An uncertain write stops the run,
+  is recorded as unresolved, and blocks replay until an explicit `resolve`
+  decision. Remote entries are editable but never deleted.
+- **The export is marker-delimited and non-destructive.** It rewrites only the
+  block between `<!-- timesheet:begin v1 -->` and `<!-- timesheet:end -->` and
+  leaves every other byte (frontmatter, journals, legacy sections) untouched.
+- **Secrets live in the macOS Keychain.** Configuration holds `keychain:<service>`
+  references only and never a raw secret.
 
 ## Execution workflow
 
-Refer to [workflow.md](file:///.claude/skills/timesheet/workflow.md) for the exact 7-step sequence. Every step is strictly delineated as either deterministic Go code (`[Script]`) or minimal language model refinement (`[AI]`):
+Refer to [workflow.md](workflow.md) for the exact command sequence. Every step is
+either deterministic Go code (`[Script]`) or the optional, bounded editorial agent
+(`[AI]`) invoked through the core — the skill itself never synthesizes or accounts:
 
-1. **Step 1: `[Script]` Calendar Ingestion** (`cmd/fetch-calendar`)
-2. **Step 2: `[Script]` Two-Tier Git Collection** (`cmd/fetch-git`)
-3. **Step 3: `[Script]` Time Block Clustering** (`internal/timesheet/clusterer`)
-4. **Step 4: `[AI]` Editorial Synthesis** (Compressed JSON topic & description refinement)
-5. **Step 5: `[Script]` Collision Review & Storage** (`cmd/review-timesheet`)
-6. **Step 6: `[Script]` Gradion API Reconciliation** (`cmd/sync-timesheet`)
-7. **Step 7: `[Script]` Empirical Benchmark Logging** (`cmd/benchmark`)
+1. **Step 1: `[Script]` Preflight** (`timesheet preflight`)
+2. **Step 2: `[Script]` Collect and propose** (`timesheet review`)
+3. **Step 3: `[AI]` Editorial synthesis (optional)** (delegated by `timesheet review`)
+4. **Step 4: `[Script]` Apply review decisions** (`timesheet review --decisions`)
+5. **Step 5: `[Script]` Submission preview** (`timesheet preview`)
+6. **Step 6: `[Script]` Approval** (`timesheet approve --plan`)
+7. **Step 7: `[Script]` Submit and export** (`timesheet submit`)
+
+## Configuration
+
+Pass a JSON config document with `--config` (see
+`cmd/timesheet/timesheet.example.json`). It carries the evidence config (timezone
+and sources), the workflow record directory, the optional vault export settings,
+the Gradion MCP endpoint plus a `keychain:<service>` credential reference, the
+optional editorial config, and the project→classification map. Raw secrets are
+never placed in it.

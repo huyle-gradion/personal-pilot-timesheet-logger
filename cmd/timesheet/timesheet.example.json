@@ -1,0 +1,43 @@
+{
+  "evidence": {
+    "id": "default",
+    "timezone": "America/Los_Angeles",
+    "sources": [
+      {
+        "id": "cal-work",
+        "type": "calendar",
+        "enabled": true,
+        "config": {
+          "url_ref": "keychain:calendar_feed_url",
+          "timezone": "America/Los_Angeles",
+          "user_email": "you@example.com"
+        }
+      },
+      {
+        "id": "git-local",
+        "type": "git",
+        "enabled": true,
+        "config": {
+          "repos": ".",
+          "author": "you@example.com"
+        }
+      }
+    ]
+  },
+  "storage_dir": "~/.timesheet/records",
+  "vault": "~/vault",
+  "daily_dir": "02 - Daily & Logs",
+  "gradion": {
+    "endpoint": "https://mcp.gradion.example/mcp",
+    "credential_ref": "keychain:gradion.workspace.ApiKey"
+  },
+  "editorial": {
+    "enabled": false,
+    "adapter": "command",
+    "command": ["/path/to/editorial-agent"],
+    "credential_ref": "keychain:editorial"
+  },
+  "classifications": {
+    "Personal Pilot": "cls-personal-pilot"
+  }
+}

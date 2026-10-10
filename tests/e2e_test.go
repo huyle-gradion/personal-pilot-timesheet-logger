@@ -2,12 +2,11 @@
 
 // This end-to-end suite exercises the headless pipeline against hermetic mock
 // servers. The legacy REST SUBMISSION flow (create/edit/delete + plan-derived
-// markdown) was retired in S5 containment: cmd/sync-timesheet now fails closed on
-// a submission attempt and offers only a read-only preview. The submission e2e
-// tests (idempotency, markdown summary, multi-day submission) were removed with
-// the retired path and will be re-created against the approval-bound MCP path in
-// S6/S8. The tests below cover collection, review/clustering, the contained
-// sync-timesheet surface (fail-closed + read-only preview), and benchmarking.
+// markdown) was retired in S5 containment and its read surface (internal/api) and
+// stub binary (cmd/sync-timesheet) were deleted in S8; the approval-bound MCP
+// submission e2e remains deferred to S9. The tests below cover collection,
+// review/clustering, benchmarking, and the new cmd/timesheet surface (preflight,
+// review, export, preview, approve, and a fail-closed/read-only submit).
 package tests
 
 import (
@@ -25,14 +24,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/api"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/benchmark"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
 var (
@@ -40,7 +39,7 @@ var (
 	binFetchCalendar   string
 	binFetchGit        string
 	binReviewTimesheet string
-	binSyncTimesheet   string
+	binTimesheet       string
 	binBenchmark       string
 )
 
@@ -67,7 +66,7 @@ func TestMain(m *testing.M) {
 		{"fetch-calendar", "./cmd/fetch-calendar", &binFetchCalendar},
 		{"fetch-git", "./cmd/fetch-git", &binFetchGit},
 		{"review-timesheet", "./cmd/review-timesheet", &binReviewTimesheet},
-		{"sync-timesheet", "./cmd/sync-timesheet", &binSyncTimesheet},
+		{"timesheet", "./cmd/timesheet", &binTimesheet},
 		{"benchmark", "./cmd/benchmark", &binBenchmark},
 	}
 
@@ -113,53 +112,19 @@ func runCmd(ctx context.Context, dir, binPath string, stdin io.Reader, args ...s
 	return stdout.String(), stderr.String(), exitCode, err
 }
 
-// readOnlyGradionServer is a read-only mock of the legacy Gradion REST surface.
-// It serves GET /api/entries only and counts any non-GET attempt so a test can
-// assert the contained CLI never writes.
-type readOnlyGradionServer struct {
-	mu        sync.Mutex
-	entries   []api.RemoteEntry
-	mutations int
-	getCount  int
-}
+// readOnlyGradionServer is gone: internal/api (the legacy REST read surface) was
+// deleted in S8. The new submission path speaks MCP and its e2e is deferred to S9;
+// the cmd/timesheet surface is exercised below with --offline (zero remote access).
 
-func newReadOnlyGradionServer(entries []api.RemoteEntry) (*httptest.Server, *readOnlyGradionServer) {
-	state := &readOnlyGradionServer{entries: entries}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		state.mu.Lock()
-		defer state.mu.Unlock()
-
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
+// valueAfterLine extracts the value following a "key:" prefix on its own line.
+func valueAfterLine(out, key string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, key) {
+			return strings.TrimSpace(strings.TrimPrefix(line, key))
 		}
-
-		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/entries") {
-			state.getCount++
-			dateQuery := r.URL.Query().Get("dateFrom")
-			filtered := make([]api.RemoteEntry, 0)
-			for _, e := range state.entries {
-				if dateQuery == "" || e.Date == dateQuery {
-					filtered = append(filtered, e)
-				}
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(api.RemoteEntriesResponse{Total: len(filtered), Entries: filtered})
-			return
-		}
-
-		// Any mutation attempt is a containment violation.
-		state.mutations++
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	})
-
-	return httptest.NewServer(handler), state
-}
-
-func (s *readOnlyGradionServer) counts() (mutations, gets int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.mutations, s.getCount
+	}
+	return ""
 }
 
 func TestE2E_FullHeadlessPipeline(t *testing.T) {
@@ -267,10 +232,6 @@ END:VCALENDAR`)
 		}
 	}))
 	defer ghServer.Close()
-
-	// 3. Read-only mock Gradion Server
-	gradionServer, gradionState := newReadOnlyGradionServer(nil)
-	defer gradionServer.Close()
 
 	// Step 1: fetch-calendar
 	calJSONPath := filepath.Join(cacheDir, "calendar.json")
@@ -381,40 +342,112 @@ END:VCALENDAR`)
 		t.Fatalf("invalid saved record: version=%d, blocks=%d", savedRecord.Version, len(savedRecord.Blocks))
 	}
 
-	// Step 5: A submission attempt FAILS CLOSED with zero remote writes (the
-	// legacy REST write path is retired; no flag re-enables it).
-	_, syncErrOut, code, _ := runCmd(ctx, "", binSyncTimesheet, nil,
-		"-date", testDate,
-		"-storage-dir", storageDir,
-		"-base-url", gradionServer.URL,
-		"-token", "test-gradion-token",
-	)
-	if code == 0 {
-		t.Fatalf("expected a non-zero exit for a retired submission attempt, got %d", code)
+	// Step 5: The new cmd/timesheet surface (offline, hermetic). Seed the workflow
+	// record with collected evidence, then preflight -> review -> export ->
+	// preview -> approve -> a fail-closed submit.
+	workflowDir := filepath.Join(baseTemp, "workflow-records")
+	t.Setenv("GITHUB_TOKEN", "e2e-git-token")
+	cfgPath := filepath.Join(baseTemp, "timesheet.json")
+	vaultDir := filepath.Join(baseTemp, "vault")
+	configDoc := map[string]any{
+		"storage_dir":     workflowDir,
+		"vault":           vaultDir,
+		"daily_dir":       "Daily",
+		"classifications": map[string]string{"Proj": "cls-1"},
 	}
-	if !strings.Contains(syncErrOut, "SYNC_CLI_REST_RETIRED") {
-		t.Fatalf("expected SYNC_CLI_REST_RETIRED in stderr, got: %s", syncErrOut)
-	}
-	if mutations, _ := gradionState.counts(); mutations != 0 {
-		t.Fatalf("retired submission must make zero remote writes, got %d mutation attempts", mutations)
+	cfgBytes, _ := json.Marshal(configDoc)
+	if err := os.WriteFile(cfgPath, cfgBytes, 0o600); err != nil {
+		t.Fatalf("writing timesheet config: %v", err)
 	}
 
-	// Step 6: The read-only preview works and performs zero mutations.
-	previewOut, previewErrOut, code, err := runCmd(ctx, "", binSyncTimesheet, nil,
-		"-date", testDate,
-		"-dry-run",
-		"-storage-dir", storageDir,
-		"-base-url", gradionServer.URL,
-		"-token", "test-gradion-token",
+	wfStore, err := workflow.NewJSONFileStore(workflowDir)
+	if err != nil {
+		t.Fatalf("workflow store: %v", err)
+	}
+	commitStart := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	if _, err := wfStore.UpdateDay(ctx, testDate, func(rec *workflow.Record) error {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, evidence.Evidence{
+			ID: "e2e-commit", Kind: evidence.SourceLocalGit, Title: "feat: calendar parser",
+			Start: commitStart, End: commitStart.Add(30 * time.Minute), Duration: evidence.UnknownDuration(),
+			SourceRefs: []evidence.SourceRef{{Kind: evidence.SourceLocalGit, Repository: "acme/repo", Branch: "feat/x", At: commitStart}},
+			ObservedAt: commitStart,
+		})
+		rec.Confirmed = append(rec.Confirmed, workflow.ConfirmedInterval{
+			ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00",
+			Project: "Proj", Description: "work", Attendance: true, ClassificationID: "cls-1",
+		})
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding workflow record: %v", err)
+	}
+
+	// Step 5a: preflight (offline; no remote).
+	preOut, preErr, code, err := runCmd(ctx, "", binTimesheet, nil,
+		"preflight", "--config", cfgPath, "--storage-dir", workflowDir, "--offline",
 	)
 	if err != nil || code != 0 {
-		t.Fatalf("read-only preview failed with code %d: %v\nstderr: %s", code, err, previewErrOut)
+		t.Fatalf("timesheet preflight failed with code %d: %v\nstderr: %s", code, err, preErr)
 	}
-	if !strings.Contains(previewOut, "Read-only preview") {
-		t.Fatalf("expected a read-only preview message, got: %s", previewOut)
+	if !strings.Contains(preOut, "timezone") || !strings.Contains(preOut, "contracts") {
+		t.Fatalf("preflight output missing checks: %s", preOut)
 	}
-	if mutations, gets := gradionState.counts(); mutations != 0 || gets == 0 {
-		t.Fatalf("preview must read without writing: mutations=%d gets=%d", mutations, gets)
+
+	// Step 5b: review (read-only proposal print).
+	revOut, revErr, code, err := runCmd(ctx, "", binTimesheet, nil,
+		"review", "--config", cfgPath, "--storage-dir", workflowDir, "--date", testDate, "--no-editorial",
+	)
+	if err != nil || code != 0 {
+		t.Fatalf("timesheet review failed with code %d: %v\nstderr: %s", code, err, revErr)
+	}
+	if !strings.Contains(revOut, "proposal") {
+		t.Fatalf("review output missing the proposal: %s", revOut)
+	}
+
+	// Step 5c: export (read-only with respect to the remote).
+	if _, expErr, code, err := runCmd(ctx, "", binTimesheet, nil,
+		"export", "--config", cfgPath, "--storage-dir", workflowDir, "--date", testDate,
+	); err != nil || code != 0 {
+		t.Fatalf("timesheet export failed with code %d: %v\nstderr: %s", code, err, expErr)
+	}
+	noteBytes, err := os.ReadFile(filepath.Join(vaultDir, "Daily", testDate+".md"))
+	if err != nil {
+		t.Fatalf("reading exported note: %v", err)
+	}
+	if !strings.Contains(string(noteBytes), "<!-- timesheet:begin v1 -->") {
+		t.Fatalf("exported note missing the managed marker:\n%s", noteBytes)
+	}
+
+	// Step 5d: preview (zero remote writes) then approve the exact plan.
+	prevOut, prevErr, code, err := runCmd(ctx, "", binTimesheet, nil,
+		"preview", "--config", cfgPath, "--storage-dir", workflowDir, "--date", testDate, "--offline",
+	)
+	if err != nil || code != 0 {
+		t.Fatalf("timesheet preview failed with code %d: %v\nstderr: %s", code, err, prevErr)
+	}
+	planID := valueAfterLine(prevOut, "plan_id:")
+	if planID == "" {
+		t.Fatalf("preview output missing plan_id: %s", prevOut)
+	}
+	apprOut, apprErr, code, err := runCmd(ctx, "", binTimesheet, nil,
+		"approve", "--config", cfgPath, "--storage-dir", workflowDir, "--date", testDate, "--plan", planID,
+	)
+	if err != nil || code != 0 {
+		t.Fatalf("timesheet approve failed with code %d: %v\nstderr: %s", code, err, apprErr)
+	}
+	if valueAfterLine(apprOut, "approval_id:") == "" {
+		t.Fatalf("approve output missing approval_id: %s", apprOut)
+	}
+
+	// Step 5e: an OFFLINE submission FAILS CLOSED with zero remote writes.
+	subOut, _, code, _ := runCmd(ctx, "", binTimesheet, nil,
+		"submit", "--config", cfgPath, "--storage-dir", workflowDir, "--date", testDate, "--offline",
+	)
+	if code == 0 {
+		t.Fatalf("an offline submission must fail closed, got exit 0: %s", subOut)
+	}
+	if !strings.Contains(subOut, "remote_unavailable") {
+		t.Fatalf("expected a fail-closed remote_unavailable message, got: %s", subOut)
 	}
 
 	// Step 7: Empirical benchmark logging

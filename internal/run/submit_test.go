@@ -179,10 +179,14 @@ func TestResolve_AdoptUnresolved(t *testing.T) {
 		ClassificationID: "cls-1", Description: "work", ObservedAt: fixedNow(),
 	}
 
-	if err := r.Resolve(ctx, date, []submit.Resolution{{
+	res, err := r.Resolve(ctx, date, []submit.Resolution{{
 		OperationKey: key, Kind: submit.ResolutionAdopt, RemoteID: "r1", LocalID: "c1",
-	}}); err != nil {
+	}})
+	if err != nil {
 		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Applied != 1 || len(res.Unmatched) != 0 {
+		t.Fatalf("want 1 applied decision, got %+v", res)
 	}
 	rec, _ := store.GetDay(ctx, date)
 	if len(rec.Outcomes) != 1 || rec.Outcomes[0].Status != workflow.OutcomeConfirmed {
