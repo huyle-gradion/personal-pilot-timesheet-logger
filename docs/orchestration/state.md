@@ -89,10 +89,19 @@ Carried S2 follow-ups (non-blocking): S2-R6 lock file not fsynced (harmless, O_E
 | Field | Status |
 | --- | --- |
 | Slice | S3 evidence contracts and collector adapters |
-| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
-| Branch / base | `feat/s3-evidence-contracts` at `7433729` (S2 `d4d6c00` and S1 `d471b46` ancestors) |
-| Designer | @oracle session `ses_edbe7dae8ffe7t2q6wrEbgh6ct` (alias ora-4) |
-| Next gate | accept the design, then dispatch a bounded implementer |
+| Lifecycle | implementing layer 1 (contract/registry/persistence); layer 2 (adapters) follows |
+| Branch / base | `feat/s3-evidence-contracts` at `eaed591` (S2 `d4d6c00` and S1 `d471b46` ancestors) |
+| Design | @oracle design pass accepted by the orchestrator (session `ses_edbe7dae8ffe7t2q6wrEbgh6ct`) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S3-IMPL-1 |
+| Next gate | independent review of S3-IMPL-1, then S3-IMPL-2 adapters |
+
+Owner-confirmed S3 decisions (2026-10-10):
+1. Source identity uses an owner-configured non-secret id (never the secret feed URL or a filesystem path).
+2. Cancelled events and declined/unknown invitations are retained as evidence with status; excluded later at proposal time (S4).
+3. Agent-session scope is contract + JSONL parser + fixture only; the live emitter is a later task.
+4. Raw evidence retention default is keep-all; prune only on explicit removal.
+
+Accepted design decisions: contract lives in new `internal/evidence` with adapters in `internal/evidence/plugins`; stable identity is `sha256` over a NUL-joined scheme-versioned tuple with a kind prefix; persistence is an additive `workflow.Record` field (no SchemaVersion bump) with a new capacity bound; registry is compile-time (no dynamic executable loading); completeness is per-source `SourceResult` plus a persisted `CollectionSummary` with `RequireAcknowledgment`; calendar/git collectors are wrapped, not rewritten. Config is stdlib JSON (no new dependency). Non-goals: S4 proposal model, S5 transport, S6 reconciliation, agent emitter, legacy CLI migration.
 
 S3 defines a new minimal Evidence contract (stable source identity, original timestamps, provenance, invitation status, project hints, unknown-duration representation) with calendar/git/PR adapters, an explicit plugin registry with contract checks and a fixture plugin, and visibly-incomplete failed sources. Legacy `SimpleEntry` is not assumed sufficient. Non-goals: S4 proposal/review model, S5 transport, S6 reconciliation identity.
 

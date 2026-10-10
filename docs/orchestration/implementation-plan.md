@@ -52,7 +52,7 @@ Exit: a restart cannot blindly resend an in-flight operation; persistence failur
 
 ## S3. Evidence contracts and collector adapters
 
-State: designing on branch `feat/s3-evidence-contracts` (base `7433729`, S1 `d471b46` and S2 `d4d6c00` ancestors). Bounded @oracle design pass in progress; no implementation writer dispatched.
+State: implementing on branch `feat/s3-evidence-contracts` (base `eaed591`, S1 `d471b46` and S2 `d4d6c00` ancestors). Design accepted from an @oracle pass; owner confirmed four decisions (configured non-secret source id; retain cancelled/declined evidence with status and filter at proposal; agent-session contract/parser/fixture only; keep-all raw retention). Layer 1 (contract, identity, registry, config, fixture plugin, additive persistence) is in progress; layer 2 (calendar/git/agent adapters) follows after layer 1 review.
 
 Depends on S1. Can proceed independently of S2 only in an isolated authorized worktree with non-overlapping files and a stable store contract.
 
