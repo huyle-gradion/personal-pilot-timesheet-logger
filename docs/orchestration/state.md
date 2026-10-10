@@ -28,6 +28,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S3 evidence contracts | layer 1 `28d7891`, layer 2 `5ff9894`, committed on `feat/s3-evidence-contracts`, independently reviewed/re-reviewed accepted |
 | S4 proposal model | layer 1 `5f373f4`, layer 2 `2a06b5b`, committed on `feat/s4-proposal-model`, independently reviewed/re-reviewed accepted |
 | S5 MCP transport | layers 1 `42fba53`, 2 `b59661a`, 3 `c943e97`, committed on `feat/s5-mcp-transport`, independently reviewed/re-reviewed accepted |
+| S6 plans/approval/reconciliation | layer 1 `3dfe814`, committed on `feat/s6-plans-approval-reconciliation`, independently reviewed/re-reviewed accepted; layer 2 (execution + restart gate) implementing |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -140,11 +141,24 @@ Carried S5 follow-ups (non-blocking): N1 `tools.go` doc-precision nit; S5L1-9 ne
 | Field | Status |
 | --- | --- |
 | Slice | S6 revision-bound plans, approval, and reconciliation |
-| Lifecycle | implementing layer 1 (representation + pure plan/reconcile/approval); layer 2 (execution + restart gate) follows |
-| Branch / base | `feat/s6-plans-approval-reconciliation` at `85ee6dd` (S1-S5 ancestors verified) |
+| Lifecycle | layer 1 committed; layer 2 (execution + restart gate) implementing |
+| Branch / base | `feat/s6-plans-approval-reconciliation` at `3dfe814` (S1-S5 ancestors verified) |
+| Commits | layer 1 `3dfe814` (11 files) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_edadd7e1dffeoojCEagYiCl8LA`) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S6-IMPL-1 |
-| Next gate | independent review of layer 1, then S6-IMPL-2 (execution + restart gate) |
+| Independent review | layer 1 reviewed and re-reviewed accepted (F1-F6 closed; NEW-1 + low residuals carried) |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S6-IMPL-2 |
+| Next gate | independent review of layer 2; slice commit; vault sync |
+
+S6 layer-2 scope: `RemoteObserver`/`RemoteWriter` seams; `Execute` (single Session, re-fetch under lock, ValidateApproval, per-op durable intent → dispatch once → outcome + mapping, partial success, new plan for remaining); re-created `RestartGate`; `ResolveUnresolved` (explicit adopt/not-applied decisions only — never auto-resolve a create from absence). Carry NEW-1 (empty observed `Date` can force a spurious edit — defensive fix or live verification at S9).
+
+S6 layer-1 dispositions (orchestrator, independent of reviewer labels):
+- F1 `BuildPlan` adoptions arg does not suppress a create → blind duplicate (Major, gating): accepted, fix now (treat adopted pairs as effective mappings).
+- F2 `editReason` embeds `Record.Revision` → hash not revision-independent (Medium): accepted, fix now.
+- F4 `RemoteContentEqual` ignores `Date` (Low): accepted, fix/document.
+- F5 `PlanHash` uses unstable sort (Low): accepted, fix.
+- T2/T3/T4/T6/T7 test gaps: accepted, add tests.
+- F3 resolver output not in LocalFingerprint (Low): carried with rationale (the approval binds the exact approved op content; a resolver change produces a different plan on the next build).
+- F6 `PlanOperation.Task`/`Billable` unpopulated (Info): carried/documented (layer 2 sources remote task/billable from `ExpectedRemote` for edits).
 
 Owner-confirmed S6 decisions (2026-10-10): (1) Project→classification uses a configured default resolver plus a review override (additive optional `ConfirmedInterval.ClassificationID`), blocked when neither resolves; (2) an uncertain create is resolved only by explicit adoption (a complete listing showing the slot absent is not proof of failure); (3) the edit audit reason is a fixed, honest machine-readable string.
 
