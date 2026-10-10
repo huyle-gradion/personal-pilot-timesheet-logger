@@ -215,17 +215,28 @@ Results:
 - **MCP session — works.** `initialize` returned `gradion-workspace` v1.0.0,
   protocol `2025-06-18`; `tools/list` returned 71 tools; the redesign's
   `gradion.Client.VerifyCapabilities` confirmed the required timesheet tools.
-- **MCP reads — BLOCKED by a response-shape mismatch.** `timesheet__list_my_entries`
+- **MCP reads — BLOCKED by a response-shape mismatch (B5), now diagnosed.** `timesheet__list_my_entries`
   and `timesheet__get_classifications` return
   `structuredContent: {"resources":[{"id":…,"kind":…,"label":…}]}` — an MCP
-  resource-reference envelope whose items carry only `id`/`kind`/`label` (`kind`
-  was `entry`). The redesign's `internal/gradion` parser expects a bare array or a
-  known list key, so both calls fail with `GRADION_ERR_READ_SCHEMA`. A
-  `resources/read` with the raw `id` returns JSON-RPC `-32602 unsupported uri
-  scheme`, and neither tool declares an `outputSchema`. The full entry data
-  (times, description, classification) is therefore not obtained by the built
-  client. This blocks the S6 reconciliation/approval path against the live server
-  as currently implemented and is a pilot blocker.
+  resource-reference envelope (`kind` was `entry` / `classification`). The
+  redesign's `internal/gradion` parser expected a bare array or a known list key,
+  so both calls failed with `GRADION_ERR_READ_SCHEMA`.
+  Follow-up read-only discovery established the retrieval contract:
+  - `timesheet__list_my_entries` returns references only (`id`/`kind`/`label`) plus
+    a `content[0].text` plain-text rendering; it does not expose a structured interval.
+  - `timesheet__get_my_week` (`weekStart`) returns fully structured entries in
+    `structuredContent.days[].entries[]` with
+    `{id, startTime, endTime, classificationId, classificationName, description,
+    durationMinutes, status, task, activityTypeLabel}`; the entry ids overlap
+    `list_my_entries` exactly (verified 5/5).
+  - `resources/templates/list` documents `timesheet__entry` as
+    `gradion://app/timesheet/entry/{id}`, but `resources/read` returns
+    `contents[0].text` with `mimeType: text/plain` (not structured JSON).
+  - `timesheet__get_classifications` returns classification references with empty
+    labels.
+  The fix (adapting the reader to the `get_my_week` structured contract, with
+  fail-closed schema handling) is in progress under the owner's read-only +
+  bounded-fix authority.
 - **Calendar invitation metadata — works.** The configured iCal feed fetched
   successfully (18815 bytes); `PARTSTAT` attributes were present:
   ACCEPTED 39, DECLINED 5, NEEDS-ACTION 19 (63 total). This confirms the
@@ -234,14 +245,19 @@ Results:
 
 New blockers (B5, B6):
 
-- **B5 — Open, code-level (live).** The live `list_my_entries` /
-  `get_classifications` response shape (`{resources:[{id,kind,label}]}`) is not
-  parsed by `internal/gradion`; live reads fail with `GRADION_ERR_READ_SCHEMA`.
-  Resolving this requires further read-only contract discovery (how the entry
-  data is exposed) and a bounded parser change. No writes are needed to
-  investigate.
+- **B5 — Diagnosed; fix in progress (live + code-level).** The live
+  `list_my_entries` / `get_classifications` responses are `{resources:[{id,kind,label}]}`
+  resource-reference envelopes that `internal/gradion` cannot parse
+  (`GRADION_ERR_READ_SCHEMA`). Read-only discovery established the retrieval
+  contract: structured entries come from `timesheet__get_my_week`
+  (`days[].entries[]`, full fields, id overlap 5/5); the documented
+  `timesheet__entry` resource (`gradion://app/timesheet/entry/{id}`) returns
+  `text/plain`, not structured JSON. The bounded fix (adapt the reader to the
+  `get_my_week` structured contract, fail-closed schema handling, bounded
+  pagination/size/timeouts) is in progress under the owner's authority.
 - **B6 — Open, verification.** The four-hour remote rule and the governing
-  timezone remain unverified (they need server-observed behavior, i.e. a write).
+  timezone remain unverified (they need server-observed behavior, i.e. a write);
+  trusted documentation/admin evidence is to be sought first.
 
 No secret was displayed or committed; no Keychain item was created, modified, or
 replaced; no remote write was performed.
