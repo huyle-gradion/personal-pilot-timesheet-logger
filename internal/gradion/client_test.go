@@ -208,9 +208,9 @@ func TestClassifications(t *testing.T) {
 		if name != ToolGetClassifications {
 			return callOutcome{}
 		}
-		rb, _ := json.Marshal(map[string]any{"classifications": []map[string]any{
-			{"id": "c1", "name": "Project One"},
-			{"classificationId": "c2", "title": "Project Two", "code": "P2"},
+		rb, _ := json.Marshal(map[string]any{"resources": []map[string]any{
+			{"id": "c1", "kind": "classification", "label": ""},
+			{"id": "c2", "kind": "classification", "label": "Project Two"},
 		}})
 		return structured(rb)
 	}

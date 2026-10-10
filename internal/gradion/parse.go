@@ -24,15 +24,6 @@ type remoteRow struct {
 	Billable         *bool  `json:"billable"`
 }
 
-// classRow is one classification row, tolerantly decoded.
-type classRow struct {
-	ID               string `json:"id"`
-	ClassificationID string `json:"classificationId"`
-	Name             string `json:"name"`
-	Title            string `json:"title"`
-	Code             string `json:"code"`
-}
-
 // toRemoteState maps a row into the S1 workflow contract.
 func (r remoteRow) toRemoteState(observed time.Time) workflow.RemoteState {
 	classificationID := r.ClassificationID
@@ -50,18 +41,6 @@ func (r remoteRow) toRemoteState(observed time.Time) workflow.RemoteState {
 		Billable:         r.Billable,
 		ObservedAt:       observed,
 	}
-}
-
-func (c classRow) toClassification() Classification {
-	id := strings.TrimSpace(c.ID)
-	if id == "" {
-		id = strings.TrimSpace(c.ClassificationID)
-	}
-	name := strings.TrimSpace(c.Name)
-	if name == "" {
-		name = strings.TrimSpace(c.Title)
-	}
-	return Classification{ID: id, Name: name, Code: strings.TrimSpace(c.Code)}
 }
 
 // payloadOf returns the JSON payload a CallResult carries: structuredContent
@@ -97,8 +76,13 @@ func parseRows(res mcp.CallResult) ([]remoteRow, error) {
 	if err := json.Unmarshal(trimmed, &obj); err != nil {
 		return nil, &Error{Code: CodeReadSchema, Message: "listing payload was not a JSON object"}
 	}
+	// A resource-reference envelope ({resources:[...]}) carries no structured
+	// entries: it is never an empty timesheet. Use get_my_week for entry data.
+	if _, ok := obj["resources"]; ok {
+		return nil, &Error{Code: CodeReadSchema, Message: "listing returned resource references, not structured entries"}
+	}
 	if len(obj) == 0 {
-		return nil, nil
+		return nil, &Error{Code: CodeReadSchema, Message: "listing payload was an empty object"}
 	}
 	for _, key := range []string{"entries", "items", "data", "results", "rows"} {
 		raw, ok := obj[key]
@@ -112,55 +96,6 @@ func parseRows(res mcp.CallResult) ([]remoteRow, error) {
 		return rows, nil
 	}
 	return nil, &Error{Code: CodeReadSchema, Message: "listing payload had no recognized entry list"}
-}
-
-// parseClassifications decodes a classifications payload.
-func parseClassifications(res mcp.CallResult) ([]Classification, error) {
-	payload := payloadOf(res)
-	trimmed := bytes.TrimSpace(payload)
-	if len(trimmed) == 0 {
-		return nil, nil
-	}
-
-	var rows []classRow
-	if trimmed[0] == '[' {
-		if err := json.Unmarshal(trimmed, &rows); err != nil {
-			return nil, &Error{Code: CodeReadSchema, Message: "classifications payload was not valid JSON"}
-		}
-	} else {
-		var obj map[string]json.RawMessage
-		if err := json.Unmarshal(trimmed, &obj); err != nil {
-			return nil, &Error{Code: CodeReadSchema, Message: "classifications payload was not a JSON object"}
-		}
-		if len(obj) == 0 {
-			return nil, nil
-		}
-		found := false
-		for _, key := range []string{"classifications", "items", "data", "results"} {
-			raw, ok := obj[key]
-			if !ok {
-				continue
-			}
-			if err := json.Unmarshal(raw, &rows); err != nil {
-				return nil, &Error{Code: CodeReadSchema, Message: "classification rows were not valid JSON"}
-			}
-			found = true
-			break
-		}
-		if !found {
-			return nil, &Error{Code: CodeReadSchema, Message: "classifications payload had no recognized list"}
-		}
-	}
-
-	out := make([]Classification, 0, len(rows))
-	for _, r := range rows {
-		c := r.toClassification()
-		if c.ID == "" && c.Name == "" {
-			continue
-		}
-		out = append(out, c)
-	}
-	return out, nil
 }
 
 // parseWriteEntry extracts the observed entry from a confirmed write result. It
@@ -211,4 +146,130 @@ func mergeObserved(row remoteRow, planned PlannedEntry, now time.Time) workflow.
 		state.Billable = planned.Billable
 	}
 	return state
+}
+
+// --- verified live week envelope (B5) ---------------------------------------
+
+// weekEntry is one entry inside a get_my_week day. It carries the FULL structured
+// interval data the live server exposes (unlike list_my_entries, which returns
+// references only). The DATE is not on the entry: it comes from the containing day.
+// The server also returns classificationName/activityTypeLabel on each entry, but
+// they are not decoded here: classification NAMES come from the get_classifications
+// `label` (see classificationsFromReferences).
+type weekEntry struct {
+	ID               string `json:"id"`
+	StartTime        string `json:"startTime"`
+	EndTime          string `json:"endTime"`
+	ClassificationID string `json:"classificationId"`
+	Description      string `json:"description"`
+	DurationMinutes  int    `json:"durationMinutes"`
+	Status           string `json:"status"`
+	Task             string `json:"task"`
+}
+
+// weekDay is one day inside a get_my_week response.
+type weekDay struct {
+	Date    string      `json:"date"`
+	Entries []weekEntry `json:"entries"`
+}
+
+// weekResponse is the structuredContent of get_my_week (verified live shape).
+type weekResponse struct {
+	Days      []weekDay `json:"days"`
+	WeekStart string    `json:"weekStart"`
+	MinDate   string    `json:"minDate"`
+	MaxDate   string    `json:"maxDate"`
+	Today     string    `json:"today"`
+}
+
+// toRemoteState maps a week entry (plus its day's date) into the S1 workflow
+// contract. Billable is UNKNOWN: the live week shape does not expose it.
+func (e weekEntry) toRemoteState(date string, observed time.Time) workflow.RemoteState {
+	return workflow.RemoteState{
+		RemoteID:         strings.TrimSpace(e.ID),
+		Date:             strings.TrimSpace(date),
+		StartTime:        strings.TrimSpace(e.StartTime),
+		EndTime:          strings.TrimSpace(e.EndTime),
+		ClassificationID: strings.TrimSpace(e.ClassificationID),
+		Description:      e.Description,
+		Task:             strings.TrimSpace(e.Task),
+		ObservedAt:       observed,
+	}
+}
+
+// parseWeek decodes a get_my_week structuredContent payload FAIL-CLOSED. The
+// verified live shape is a JSON object with a "days" list; any other shape
+// (including the reference envelope {resources:[...]}, a bare array, or an empty
+// payload) is a schema error — a failed or unrecognized retrieval is NEVER treated
+// as an empty timesheet.
+func parseWeek(res mcp.CallResult) (weekResponse, error) {
+	trimmed := bytes.TrimSpace(payloadOf(res))
+	if len(trimmed) == 0 {
+		return weekResponse{}, &Error{Code: CodeReadSchema, Message: "week payload was empty"}
+	}
+	if trimmed[0] != '{' {
+		return weekResponse{}, &Error{Code: CodeReadSchema, Message: "week payload was not a JSON object"}
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return weekResponse{}, &Error{Code: CodeReadSchema, Message: "week payload was not a JSON object"}
+	}
+	if _, ok := obj["days"]; !ok {
+		return weekResponse{}, &Error{Code: CodeReadSchema, Message: "week payload had no days list"}
+	}
+	var resp weekResponse
+	if err := json.Unmarshal(trimmed, &resp); err != nil {
+		return weekResponse{}, &Error{Code: CodeReadSchema, Message: "week days were not valid JSON"}
+	}
+	return resp, nil
+}
+
+// referenceItem is one item of the MCP resource-reference envelope.
+type referenceItem struct {
+	ID    string `json:"id"`
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+}
+
+// parseReferenceEnvelope decodes the verified {resources:[{id,kind,label}]}
+// reference envelope returned by list_my_entries and get_classifications. It
+// FAILS CLOSED on any other shape: an unrecognized retrieval is never treated as
+// an empty result.
+func parseReferenceEnvelope(res mcp.CallResult) ([]referenceItem, error) {
+	trimmed := bytes.TrimSpace(payloadOf(res))
+	if len(trimmed) == 0 {
+		return nil, &Error{Code: CodeReadSchema, Message: "reference payload was empty"}
+	}
+	if trimmed[0] != '{' {
+		return nil, &Error{Code: CodeReadSchema, Message: "reference payload was not a JSON object"}
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return nil, &Error{Code: CodeReadSchema, Message: "reference payload was not a JSON object"}
+	}
+	raw, ok := obj["resources"]
+	if !ok {
+		return nil, &Error{Code: CodeReadSchema, Message: "reference payload had no resources list"}
+	}
+	var items []referenceItem
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, &Error{Code: CodeReadSchema, Message: "reference items were not valid JSON"}
+	}
+	return items, nil
+}
+
+// classificationsFromReferences maps reference items to classifications. The live
+// confirmation showed the `label` names most classifications (19/20), so
+// label -> Name is the correct, reproducible mapping; Name is empty when the label
+// is empty.
+func classificationsFromReferences(items []referenceItem) []Classification {
+	out := make([]Classification, 0, len(items))
+	for _, it := range items {
+		id := strings.TrimSpace(it.ID)
+		if id == "" {
+			continue
+		}
+		out = append(out, Classification{ID: id, Name: strings.TrimSpace(it.Label)})
+	}
+	return out
 }

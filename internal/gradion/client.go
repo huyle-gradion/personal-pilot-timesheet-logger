@@ -21,6 +21,11 @@ type Client struct {
 	// it is true.
 	verified bool
 
+	// hasWeek records whether the server declared timesheet__get_my_week, the
+	// verified live source of FULL structured entries. When false, ListEntries uses
+	// the bounded legacy list_my_entries compatibility path.
+	hasWeek bool
+
 	// Listing bounds are fields so tests can shrink them; production defaults come
 	// from the named constants.
 	maxPages   int
@@ -64,6 +69,7 @@ func (c *Client) VerifyCapabilities(ctx context.Context) error {
 			return &Error{Code: CodeToolUnavailable, Message: "required MCP tool unavailable: " + required}
 		}
 	}
+	c.hasWeek = have[ToolGetMyWeek]
 	c.verified = true
 	return nil
 }
@@ -111,15 +117,150 @@ func isRetryableRead(err error) bool {
 	}
 }
 
-// ListEntries pages list_my_entries for [dateFrom, dateTo], deduplicating by
-// stable id. limit is the page size: 0 means the default page limit, and a value
-// above the page cap is rejected locally (zero HTTP). Complete is true only when
-// the scan terminated on a short page with no duplicates, no truncation, AND the
-// first-page stability re-check passed.
+// ListEntries obtains the structured entries for [dateFrom, dateTo].
+//
+// When the server declares timesheet__get_my_week (the verified live contract) it
+// reads the FULL structured week data; otherwise it uses the bounded legacy
+// paginated list_my_entries path. Entries are deduplicated by stable id. Complete
+// is true only when every week in the range was fetched successfully with no bound
+// hit and no duplicate ambiguity.
 func (c *Client) ListEntries(ctx context.Context, dateFrom, dateTo string, limit int) (Listing, error) {
 	if err := c.guardVerified(); err != nil {
 		return Listing{}, err
 	}
+	if c.hasWeek {
+		return c.listEntriesByWeek(ctx, dateFrom, dateTo)
+	}
+	return c.listEntriesLegacy(ctx, dateFrom, dateTo, limit)
+}
+
+// listEntriesByWeek reads full structured entries via get_my_week, iterating the
+// weeks that overlap [dateFrom, dateTo]. weekStart may be any date in the week: the
+// server resolves the week. It FAILS CLOSED on any unrecognized week shape or
+// retrieval error, and marks the listing incomplete on a bound hit or a duplicate.
+func (c *Client) listEntriesByWeek(ctx context.Context, dateFrom, dateTo string) (Listing, error) {
+	if strings.TrimSpace(dateFrom) == "" || strings.TrimSpace(dateTo) == "" {
+		return Listing{}, &Error{Code: CodeReadSchema, Message: "list range requires dateFrom and dateTo"}
+	}
+	observed := time.Now().UTC()
+	listing := Listing{ObservedAt: observed}
+	seen := make(map[string]bool)
+	cursor := dateFrom
+	boundHit := false
+
+	for weeks := 0; weeks < MaxWeeks; weeks++ {
+		if cursor > dateTo {
+			break
+		}
+		if len(listing.Entries) >= c.maxEntries {
+			boundHit = true
+			break
+		}
+		resp, err := c.fetchWeek(ctx, cursor)
+		if err != nil {
+			return Listing{}, err
+		}
+		listing.Pages++
+		for _, day := range resp.Days {
+			if day.Date < dateFrom || day.Date > dateTo {
+				continue
+			}
+			for _, e := range day.Entries {
+				id := strings.TrimSpace(e.ID)
+				if id == "" {
+					continue
+				}
+				if seen[id] {
+					listing.Duplicates++
+					continue
+				}
+				// Enforce the entry bound INSIDE the loop: a single large week must
+				// never append past maxEntries and still report Complete.
+				if len(listing.Entries) >= c.maxEntries {
+					boundHit = true
+					break
+				}
+				seen[id] = true
+				listing.Entries = append(listing.Entries, e.toRemoteState(day.Date, observed))
+			}
+			if boundHit {
+				break
+			}
+		}
+		if boundHit {
+			break
+		}
+		next := nextWeekCursor(resp, cursor)
+		if next == "" || next <= cursor {
+			break
+		}
+		cursor = next
+	}
+	if cursor <= dateTo {
+		boundHit = true
+	}
+	if boundHit {
+		listing.Truncated = 1
+	}
+	listing.Complete = !boundHit && listing.Duplicates == 0
+	return listing, nil
+}
+
+// fetchWeek performs one get_my_week call (read retry allowed).
+func (c *Client) fetchWeek(ctx context.Context, weekStart string) (weekResponse, error) {
+	res, err := c.callRead(ctx, ToolGetMyWeek, map[string]any{"weekStart": weekStart})
+	if err != nil {
+		return weekResponse{}, err
+	}
+	if res.IsError {
+		return weekResponse{}, &Error{Code: CodeReadToolError, Message: ToolGetMyWeek + " returned a tool-level error"}
+	}
+	return parseWeek(res)
+}
+
+// nextWeekCursor returns the next week's start: the day after the latest day the
+// response covered, CLAMPED to at most cursor+7 so a response that spans beyond
+// the requested week can never skip un-scanned weeks. It falls back to weekStart,
+// then cursor+7. It returns "" for an unusable date.
+func nextWeekCursor(resp weekResponse, cursor string) string {
+	limit := addDays(cursor, 7)
+	if limit == "" {
+		return ""
+	}
+	max := ""
+	for _, d := range resp.Days {
+		if d.Date > max {
+			max = d.Date
+		}
+	}
+	if max == "" {
+		max = strings.TrimSpace(resp.WeekStart)
+	}
+	if max == "" {
+		return limit
+	}
+	next := addDays(max, 1)
+	if next == "" || next > limit {
+		return limit
+	}
+	return next
+}
+
+func addDays(date string, days int) string {
+	t, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return ""
+	}
+	return t.AddDate(0, 0, days).Format("2006-01-02")
+}
+
+// listEntriesLegacy pages list_my_entries for [dateFrom, dateTo], deduplicating by
+// stable id. It is the bounded compatibility path used when the server does not
+// declare get_my_week. limit is the page size: 0 means the default page limit, and
+// a value above the page cap is rejected locally (zero HTTP). Complete is true only
+// when the scan terminated on a short page with no duplicates, no truncation, AND
+// the first-page stability re-check passed.
+func (c *Client) listEntriesLegacy(ctx context.Context, dateFrom, dateTo string, limit int) (Listing, error) {
 	pageLimit, err := c.resolveLimit(limit)
 	if err != nil {
 		return Listing{}, err
@@ -265,7 +406,10 @@ func (c *Client) EntryByID(ctx context.Context, id, from, to string) (workflow.R
 	return workflow.RemoteState{}, false, nil
 }
 
-// Classifications lists the caller's projects/activities.
+// Classifications lists the caller's projects/activities. The live
+// get_classifications returns the {resources:[{id,kind,label}]} reference envelope;
+// the `label` names most classifications (verified 19/20), so label -> Name is used
+// and Name is empty when the label is empty. An unrecognized shape fails closed.
 func (c *Client) Classifications(ctx context.Context, query string) ([]Classification, error) {
 	if err := c.guardVerified(); err != nil {
 		return nil, err
@@ -281,10 +425,11 @@ func (c *Client) Classifications(ctx context.Context, query string) ([]Classific
 	if res.IsError {
 		return nil, &Error{Code: CodeReadToolError, Message: ToolGetClassifications + " returned a tool-level error"}
 	}
-	classes, err := parseClassifications(res)
+	items, err := parseReferenceEnvelope(res)
 	if err != nil {
 		return nil, err
 	}
+	classes := classificationsFromReferences(items)
 	if len(classes) > MaxClassifications {
 		classes = classes[:MaxClassifications]
 	}

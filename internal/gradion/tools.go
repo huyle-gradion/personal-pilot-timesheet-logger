@@ -17,6 +17,7 @@ import (
 // MCP tool names (single source of truth).
 const (
 	ToolListEntries        = "timesheet__list_my_entries"
+	ToolGetMyWeek          = "timesheet__get_my_week"
 	ToolLogTime            = "timesheet__log_time"
 	ToolEditTime           = "timesheet__edit_time"
 	ToolGetClassifications = "timesheet__get_classifications"
@@ -31,6 +32,9 @@ const (
 	MaxClassifications  = 100
 	MaxListingPages     = 20
 	MaxListingEntries   = 1000
+	// MaxWeeks bounds the number of get_my_week calls used to cover a date range
+	// (roughly a year). Hitting it marks the listing incomplete.
+	MaxWeeks = 60
 )
 
 // Stable, secret-free domain error codes.
