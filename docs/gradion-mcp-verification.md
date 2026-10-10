@@ -256,9 +256,16 @@ New blockers (B5, B6):
   `text/plain`, not structured JSON. The bounded fix (adapt the reader to the
   `get_my_week` structured contract, fail-closed schema handling, bounded
   pagination/size/timeouts) is in progress under the owner's authority.
-- **B6 — Open, verification.** The four-hour remote rule and the governing
-  timezone remain unverified (they need server-observed behavior, i.e. a write);
-  trusted documentation/admin evidence is to be sought first.
+- **B6 — Open; read-only documentation exhausted.** The four-hour entry limit and
+  the governing timezone are not documented by the server. Read-only inspection of
+  the tool schemas (`timesheet__log_time`, `timesheet__edit_time`,
+  `timesheet__get_my_week`, `time-attendance__get_my_allowance`,
+  `time-attendance__get_my_timecard`) shows no declared duration limit and no
+  timezone parameter; `log_time`/`edit_time` state only that a policy-limit
+  violation is reported with the exact limit at call time. `get_my_week` snaps to
+  Monday and carries no timezone. Establishing the four-hour rule and the governing
+  timezone therefore requires either an owner/admin confirmation or server-observed
+  behavior from a single approved write (not performed).
 
 No secret was displayed or committed; no Keychain item was created, modified, or
 replaced; no remote write was performed.
