@@ -404,7 +404,7 @@ Reported limitations to investigate, not blanket exceptions: stale locks, packag
 
 ## Readiness blockers
 
-**Live read verification (2026-10-10) found a code-level blocker (B5), now FIXED, live-confirmed, and committed (`6facb5b`):** the live Gradion `list_my_entries` / `get_classifications` responses are `{resources:[{id,kind,label}]}` reference envelopes; structured entries come from `timesheet__get_my_week`. `internal/gradion` was adapted to read structured entries via `get_my_week` (bounded, fail-closed, hard entry bound, cursor that cannot skip weeks). A live read-only confirmation returned 5 entries (`complete=true`, all fields present), `EntryByID` found, and 20 classifications (19 named). See `docs/gradion-mcp-verification.md` section 9. Carried residuals: F4 (Billable nil-vs-non-nil asymmetry), F6 (week path lacks a first-page stability re-check), N1 (stale comment). B6 (four-hour remote rule, governing timezone) remains unverified pending trusted documentation or a write.
+**Live read verification (2026-10-10) found a code-level blocker (B5), now FIXED, live-confirmed, and committed (`6facb5b`):** the live Gradion `list_my_entries` / `get_classifications` responses are `{resources:[{id,kind,label}]}` reference envelopes; structured entries come from `timesheet__get_my_week`. `internal/gradion` was adapted to read structured entries via `get_my_week` (bounded, fail-closed, hard entry bound, cursor that cannot skip weeks). A live read-only confirmation returned 5 entries (`complete=true`, all fields present), `EntryByID` found, and 20 classifications (19 named). See `docs/gradion-mcp-verification.md` section 9. Carried residuals: F4 (Billable nil-vs-non-nil asymmetry), F6 (week path lacks a first-page stability re-check), N1 (stale comment). **B6 resolved by owner/admin confirmation (2026-10-10):** the Gradion per-entry maximum is 4 hours (240 minutes) and the governing timezone for entry times is Asia/Ho_Chi_Minh (owner/admin evidence, not server-observed; the server documents neither).
 
 Exact revision/plan approval, durable pre-write intent and crash recovery, session-level submission ownership, stable-ID reconciliation, immediate remote recheck, preferred MCP submission transport, and integrated evidence/review/export remain unaccepted. Timezone, remote limits, and live create/edit semantics are not verified. MCP exposes no conditional update/idempotency field according to the read-only verification report; this absence leaves residual remote risk.
 
@@ -613,6 +613,17 @@ Open findings and disposition: F1/F2/F3/F5/F7 closed; F4 (Billable asymmetry) an
 Commit and publication status: committed locally 6facb5b; NOT pushed, no PR.
 Vault sync status: complete - project and daily note updated with the B5 fix.
 Next gate and blockers: B6 (four-hour remote rule, governing timezone) via trusted documentation/admin evidence; then the owner release decision. Production submission remains blocked; no live write performed.
+```
+
+```text
+2026-10-10 / B6 / read-only documentation exhausted -> owner/admin confirmation -> resolved
+Owner authority reference: owner granted read-only verification; B6 resolved by owner/admin evidence (no write).
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 6facb5b / docs only.
+Evidence: docs/gradion-mcp-verification.md section 9. Read-only tool-schema inspection found no documented duration limit or timezone; the owner (admin) confirmed the per-entry maximum is 4 hours (240 minutes) and the governing timezone is Asia/Ho_Chi_Minh. Recorded as owner/admin evidence, not server-observed.
+Open findings and disposition: B6 resolved; F4/F6/N1 residuals remain (F4 needs a write to confirm billable echo).
+Commit and publication status: docs committed locally; NOT pushed.
+Vault sync status: complete.
+Next gate and blockers: owner release decision. Production submission remains blocked; no live write performed.
 ```
 
 ## Documentation review

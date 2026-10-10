@@ -256,16 +256,17 @@ New blockers (B5, B6):
   `text/plain`, not structured JSON. The bounded fix (adapt the reader to the
   `get_my_week` structured contract, fail-closed schema handling, bounded
   pagination/size/timeouts) is in progress under the owner's authority.
-- **B6 — Open; read-only documentation exhausted.** The four-hour entry limit and
-  the governing timezone are not documented by the server. Read-only inspection of
-  the tool schemas (`timesheet__log_time`, `timesheet__edit_time`,
-  `timesheet__get_my_week`, `time-attendance__get_my_allowance`,
-  `time-attendance__get_my_timecard`) shows no declared duration limit and no
-  timezone parameter; `log_time`/`edit_time` state only that a policy-limit
-  violation is reported with the exact limit at call time. `get_my_week` snaps to
-  Monday and carries no timezone. Establishing the four-hour rule and the governing
-  timezone therefore requires either an owner/admin confirmation or server-observed
-  behavior from a single approved write (not performed).
+- **B6 — Resolved by owner/admin confirmation (2026-10-10); not independently documented.**
+  Read-only inspection of the tool schemas (`timesheet__log_time`,
+  `timesheet__edit_time`, `timesheet__get_my_week`,
+  `time-attendance__get_my_allowance`, `time-attendance__get_my_timecard`) found no
+  declared duration limit and no timezone parameter; `log_time`/`edit_time` state
+  only that a policy-limit violation is reported with the exact limit at call time.
+  The owner (admin) confirmed the Gradion per-entry maximum is **4 hours
+  (240 minutes)** and that the governing timezone for entry times is
+  **Asia/Ho_Chi_Minh**. These are recorded as owner/admin evidence, not as
+  server-observed behavior; the local 240-minute enforcement matches the confirmed
+  limit. A future write (under a separate approved daily plan) can corroborate it.
 
 No secret was displayed or committed; no Keychain item was created, modified, or
 replaced; no remote write was performed.
