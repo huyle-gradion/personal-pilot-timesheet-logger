@@ -1,8 +1,14 @@
-// Package submit implements the S6 planning, reconciliation, and approval layer.
-// It is PURE: it plans and validates against an already-fetched observation and
-// never performs transport or execution. Remote entries are editable but never
-// removable; slot equality NEVER establishes a match; mappings are created only
-// from an explicit adoption.
+// Package submit implements the S6 submission layer: planning, reconciliation,
+// approval, and execution.
+//
+// Planning, reconciliation, and approval (plan.go, reconcile.go, approval.go) are
+// PURE: they operate on an already-fetched observation and perform no transport.
+// Execution (execute.go, observer.go, resolve.go) performs the approved writes
+// through injected RemoteObserver/RemoteWriter interfaces, takes the exclusive day
+// lock, re-validates the approval against a fresh observation, writes a durable
+// in_flight intent before every single dispatch, and never retries a write. Remote
+// entries are editable but never removable; slot equality NEVER establishes a
+// match; mappings are created only from an explicit adoption or a confirmed write.
 package submit
 
 import (
