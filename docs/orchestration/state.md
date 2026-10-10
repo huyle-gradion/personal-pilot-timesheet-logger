@@ -25,7 +25,8 @@ Observed locally on 2026-10-10 (orchestrator session):
 | Agent pointers/credential docs | `faec6a4`, committed |
 | S1 durable store/outcome | `d471b46`, committed (parent `faec6a4`), independently re-reviewed accepted |
 | S2 crash-safe lifecycle | `d4d6c00`, committed on `feat/s2-crash-safe-lifecycle` (parent `9144849`), independently re-reviewed accepted |
-| Orchestration docs | `d3b9378`, `2507498`, `9144849`, committed |
+| S3 evidence contracts | layer 1 `28d7891`, layer 2 `5ff9894`, committed on `feat/s3-evidence-contracts`, independently reviewed/re-reviewed accepted |
+| Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
 | Unrecorded tracked modification | `AGENTS.md` adds the Orchestration section; documentation only, not S1 code |
@@ -89,12 +90,27 @@ Carried S2 follow-ups (non-blocking): S2-R6 lock file not fsynced (harmless, O_E
 | Field | Status |
 | --- | --- |
 | Slice | S3 evidence contracts and collector adapters |
-| Lifecycle | layer 1 committed; layer 2 (adapters) implementing |
-| Branch / base | `feat/s3-evidence-contracts` at `28d7891` (S2 `d4d6c00` and S1 `d471b46` ancestors) |
+| Lifecycle | committed (layers 1 + 2), independently accepted |
+| Branch / base | `feat/s3-evidence-contracts` (S2 `d4d6c00` and S1 `d471b46` ancestors) |
+| Commits | layer 1 `28d7891` (13 files); layer 2 `5ff9894` (12 files) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_edbe7dae8ffe7t2q6wrEbgh6ct`) |
-| Layer 1 | committed `28d7891` (13 files), independently reviewed and re-reviewed accepted |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) to implement S3-IMPL-2 |
-| Next gate | independent review of layer 2, then slice commit and vault sync |
+| Independent review | layer 1 + layer 2 each reviewed and re-reviewed; all accepted (S3L1-1..9, S3L2-1..8 closed or carried Info) |
+| Next gate | select the next dependency-ready slice (S4 proposal model, or S5 MCP transport) |
+
+S3 is complete at the code level: evidence contract + identity + compile-time registry + config + fixture plugin + additive persistence (layer 1); calendar/git/agent adapters + agent JSONL parser + library preflight helper (layer 2). Owner decision 3 (contract + JSONL parser + fixture) is met.
+
+Carried S3 follow-ups (non-blocking): S3L1-7/S3L2-7 literal-redaction limit (resolved calendar `source` outside the backstop); S3L2-5 `PreflightContracts` production-dead (wire at S8 entry points); S3L2-8 commit-provenance branch nuance; N2 unexercised mode markers. No production entry point invokes collection/preflight yet, and live sources are unverified (S8/S9).
+
+S3 layer-2 dispositions (orchestrator, independent of reviewer labels):
+- S3L2-1 `GitHubActivitySource` footgun could route PR discovery through branch-name inference: accepted, fix now (type boundary must prevent the mis-wire).
+- S3L2-2 real `LocalGitCollectorAdapter` integration untested: accepted, add a test.
+- S3L2-3 agent JSONL parser accepts shape-invalid lines as empty events (colliding IDs): accepted, fix now (content-free rejection).
+- S3L2-4 warnings dropped on failure/contract paths: accepted, fix now (cheap).
+- S3L2-6 stale fixture package doc: accepted, fix.
+- S3L2-5 preflight production-dead: carried to S8 wiring.
+- S3L2-7 calendar resolved-URL redaction gap: carried (documented literal-redaction limit).
+- S3L2-8 commit provenance Branch nuance: carried (informational).
+Reviewer judgment: layer 1 + layer 2 satisfy the S3 exit at the mechanism level and owner decision 3 is met; no production entry point invokes collection/preflight yet (S8-owned).
 
 S3 layer-1 commit `28d7891` covers the evidence contract/identity/registry/config, the fixture plugin, and additive persistence. Carried: S3L1-7 literal redaction (documented limit); N1 `VerifyContracts` has no production caller (wire it into preflight in S3-IMPL-2/S8); N2 `ModeLive`/`IsContract` unexercised in production.
 
@@ -241,6 +257,17 @@ Open findings and disposition: S2-R1/R2/R3/R4/R5/R8 closed by S2-FIX-1; S2-R6/R7
 Commit and publication status: committed locally d4d6c00; NOT pushed, no PR.
 Vault sync status: complete - project note and daily note updated with S2 commit, verification level, and remaining gaps.
 Next gate and blockers: next dependency-ready slice (S3 evidence contracts or S5 MCP transport). Production blockers unchanged: no live/MCP verification, approval not revision-bound, no reconciliation identity, no idempotency key.
+```
+
+```text
+2026-10-10 / S3 / planned -> designing -> implementing (layers 1,2) -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: direct-dispatch session grant; local commits of independently accepted slices. Owner confirmed four S3 decisions (configured non-secret source id; retain cancelled/declined evidence with status and filter at proposal; agent contract/parser/fixture only; keep-all raw retention).
+Branch / HEAD / exact snapshot: feat/s3-evidence-contracts / 5ff9894 (layer 1 28d7891, S1 d471b46 and S2 d4d6c00 ancestors) / 25 files across two commits; md5s matched accepted manifests before each commit.
+Worker/reviewer report references and verification level: @oracle design (ses_edbe7dae8ffe7t2q6wrEbgh6ct); @fixer S3-IMPL-1/S3-FIX-1/S3-IMPL-2/S3-FIX-2 (ses_edbe22f3fffegJeHjAvwnOt9JA); @oracle reviews + re-reviews (ses_edbd79ceaffewYj2nAFey2Oae5, ses_edbb45235ffeDv2KWirtxUB8T7) all ACCEPTED. Orchestrator gofmt/build/vet/test/race green on committed snapshots.
+Open findings and disposition: S3L1-1..6/8 and S3L2-1..4/6 closed; S3L1-7/S3L2-7 literal-redaction limit, S3L2-5 preflight production-dead (S8), S3L2-8 provenance nuance, N2 markers carried as Info.
+Commit and publication status: committed locally 28d7891 and 5ff9894; NOT pushed, no PR.
+Vault sync status: complete - project and daily note updated next.
+Next gate and blockers: next dependency-ready slice (S4 proposal model; or S5 MCP transport). Production blockers unchanged; no production entry point invokes collection/preflight yet.
 ```
 
 ## Documentation review
