@@ -6,7 +6,7 @@ Status: proposed execution sequence, 2026-10-10. The product design is accepted;
 
 Credential integration and temporary mutation gates are committed at `356c680`. Documentation baseline commits are `80bb233` and `faec6a4`. These hashes were observed in the current Git history, not inferred from worker reports.
 
-The active durable-store code is uncommitted. Its reported checks and review fixes still need independent acceptance of the current content. The next action is review, not more implementation. Preserve unrelated untracked files.
+S1 (durable store) is committed at `d471b46`; S2 (crash-safe lifecycle) at `d4d6c00`. S3 (evidence contracts) is in progress on `feat/s3-evidence-contracts`: layer 1 (contract/registry/persistence) implemented and under review-driven fix, layer 2 (collector adapters) pending. Preserve unrelated untracked files.
 
 Orchestrator first-hand baseline (2026-10-10, snapshot `faec6a4`): `go build ./...` and `go vet ./...` clean; `go test -count=1 ./...` passes for `internal/workflow` and `cmd/sync-timesheet`. One pre-existing, environment-dependent failure in `internal/git` (`TestResolveAuthToken_KeychainMissFallsThrough`) is on untouched code at `356c680` and is not an S1 regression.
 

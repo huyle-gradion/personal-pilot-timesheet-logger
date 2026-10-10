@@ -89,11 +89,25 @@ Carried S2 follow-ups (non-blocking): S2-R6 lock file not fsynced (harmless, O_E
 | Field | Status |
 | --- | --- |
 | Slice | S3 evidence contracts and collector adapters |
-| Lifecycle | implementing layer 1 (contract/registry/persistence); layer 2 (adapters) follows |
-| Branch / base | `feat/s3-evidence-contracts` at `eaed591` (S2 `d4d6c00` and S1 `d471b46` ancestors) |
+| Lifecycle | fixing layer 1 (review verdict: accepted as an incremental step; S3L1-1/S3L1-2 being fixed before adapters) |
+| Branch / base | `feat/s3-evidence-contracts` at `67b6ab5` (S2 `d4d6c00` and S1 `d471b46` ancestors) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_edbe7dae8ffe7t2q6wrEbgh6ct`) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S3-IMPL-1 |
-| Next gate | independent review of S3-IMPL-1, then S3-IMPL-2 adapters |
+| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) re-tasked for S3-FIX-1 |
+| Independent review | @oracle layer-1 review (ses_edbd79ceaffewYj2nAFey2Oae5): accepted as incremental step; S3L1-1..9 |
+| Snapshot | 13 files; manifest `/private/var/folders/r4/j1g3f1_57sq15v3sfz922wpw0000gq/T/opencode/s3-impl1-manifest.txt` |
+| Next gate | focused re-review of layer 1 fixes; then S3-IMPL-2 adapters + JSONL parser; then slice commit |
+
+S3 layer-1 dispositions (orchestrator, independent of reviewer labels):
+- S3L1-1 every enabled source collected twice (Medium): accepted, fix now — live collection must run once; determinism stays a contract-check concern.
+- S3L1-2 unguarded `SourceRef.URL` could persist a secret feed URL (Low/Medium): accepted, fix now — remove the field.
+- S3L1-3 repo key drops host (Low): accepted, fix now — include normalized host.
+- S3L1-4 empty repo key not rejected (Low): accepted, fix now — reject before identity derivation.
+- S3L1-5 NUL-in-part ambiguity (Low): accepted, fix now — make the tuple unambiguous.
+- S3L1-6 constant `bounded_timeout` check + canceled-as-timeout (Low): accepted, fix now.
+- S3L1-8 test gaps (Complete=false persistence; on-disk secret assertion) (Info): accepted, add tests.
+- S3L1-7 literal redaction limit (Info): carried as a documented limit.
+- S3L1-9 file-count doc nit (Info): corrected by the orchestrator.
+- Deferral: the agent-session JSONL parser is tracked as an explicit S3-IMPL-2 exit item; owner decision 3 is met only when layer 2 lands.
 
 Owner-confirmed S3 decisions (2026-10-10):
 1. Source identity uses an owner-configured non-secret id (never the secret feed URL or a filesystem path).
