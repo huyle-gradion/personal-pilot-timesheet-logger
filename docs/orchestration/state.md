@@ -101,6 +101,18 @@ S3 is complete at the code level: evidence contract + identity + compile-time re
 
 Carried S3 follow-ups (non-blocking): S3L1-7/S3L2-7 literal-redaction limit (resolved calendar `source` outside the backstop); S3L2-5 `PreflightContracts` production-dead (wire at S8 entry points); S3L2-8 commit-provenance branch nuance; N2 unexercised mode markers. No production entry point invokes collection/preflight yet, and live sources are unverified (S8/S9).
 
+## S4 active slice: proposal model and terminal review
+
+| Field | Status |
+| --- | --- |
+| Slice | S4 proposal model and terminal review |
+| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
+| Branch / base | `feat/s4-proposal-model` at `90ccadd` (S1 `d471b46`, S2 `d4d6c00`, S3 `28d7891`+`5ff9894` ancestors) |
+| Designer | @oracle session `ses_edb9eaf21ffeQ2PeGagGke0fFb` (alias ora-7) |
+| Next gate | accept the design (owner decisions only if it surfaces product trade-offs), then implement |
+
+S4 builds Topic Candidates and separated Activity Groups using the 45-minute adjacency heuristic, suggests spans without confirming duration, supports attendance bulk-confirmation, project resolution, collisions, manual intervals, and empty days, and performs midnight/four-hour splits preserving exact minutes. Depends on S3. Non-goals: S6 approval/reconciliation, S7 editorial, S8 entry points/export.
+
 S3 layer-2 dispositions (orchestrator, independent of reviewer labels):
 - S3L2-1 `GitHubActivitySource` footgun could route PR discovery through branch-name inference: accepted, fix now (type boundary must prevent the mis-wire).
 - S3L2-2 real `LocalGitCollectorAdapter` integration untested: accepted, add a test.

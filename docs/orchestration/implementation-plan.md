@@ -66,6 +66,8 @@ Exit: evidence survives store reload; refresh leaves confirmed fields intact; so
 
 ## S4. Proposal model and terminal review
 
+State: designing on branch `feat/s4-proposal-model` (base `90ccadd`, S1/S2/S3 ancestors). Bounded @oracle design pass in progress; no implementation writer dispatched.
+
 Depends on S3.
 
 Build Topic Candidates and separate Activity Groups using the recommended 45-minute adjacency heuristic. Suggest spans without confirming duration. Meetings interrupt inferred work. Support user-provided intervals, project resolution, attendance bulk confirmation, collision resolution, and empty days.
