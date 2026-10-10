@@ -138,7 +138,7 @@ Exit: both frontends share validation and approval semantics; exports are safe a
 
 ## S9. Integrated acceptance and release decision
 
-State: implementing on branch `feat/s9-integrated-acceptance` (base `5e10876`, S1-S8 ancestors). A hermetic integrated acceptance harness (the 10 required scenarios + fault injection) is in progress; live MCP/agent/Keychain checks require separate owner authority.
+State: committed at `ca96a20` on `feat/s9-integrated-acceptance` (locally only, not pushed). Integrated review + focused re-review ACCEPTED (source acceptance). The hermetic harness covers the 10 required scenarios + 5 fault cases; the four-hour split is implemented end-to-end. Carry: F-NEW-1..4 (non-blocking); live-authority verification (real Keychain, live MCP semantics, remote four-hour rule, calendar invitation metadata) requires separate authority. Release is a separate owner decision; production readiness is not established.
 
 Depends on S2 through S8, with editorial optional when explicitly disabled.
 

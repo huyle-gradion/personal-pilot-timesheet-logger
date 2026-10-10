@@ -31,6 +31,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S6 plans/approval/reconciliation | layers 1 `3dfe814`, 2 `40d266d`, committed on `feat/s6-plans-approval-reconciliation`, independently reviewed/re-reviewed accepted |
 | S7 editorial synthesis | `3d4bcc8`, committed on `feat/s7-editorial-synthesis`, independently reviewed/re-reviewed accepted |
 | S8 entry points/export | layers 1 `06ce95b`, 2 `d65bdf0`, committed on `feat/s8-entry-points-export`, independently reviewed/re-reviewed accepted |
+| S9 integrated acceptance | `ca96a20`, committed on `feat/s9-integrated-acceptance`, integrated review accepted (source acceptance; release is a separate owner decision) |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -191,10 +192,25 @@ Carried S8 follow-ups (non-blocking): `resolve` is fail-loud on an already-appli
 | Field | Status |
 | --- | --- |
 | Slice | S9 integrated acceptance and release decision |
-| Lifecycle | implementing (hermetic acceptance harness; no live access) |
-| Branch / base | `feat/s9-integrated-acceptance` at `5e10876` (S1-S8 ancestors verified) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) building the harness |
-| Next gate | independent integrated review; then owner release decision (live authority required for live checks) |
+| Lifecycle | committed, integrated acceptance ACCEPTED (source acceptance; release is a separate owner decision) |
+| Branch / base | `feat/s9-integrated-acceptance` (S1-S8 ancestors verified) |
+| Commit | `ca96a20` (5 files; the harness + the four-hour split implementation) |
+| Independent review | integrated review + focused re-review; accepted (F1/F3/F4/F5/F6 closed, F2 partial with residual documented, F7 corrected) |
+| Next gate | owner release decision and any live-verification authorization |
+
+S9 is complete at the code/acceptance level: a hermetic integrated acceptance harness over the shared core covers the redesign's 10 required scenarios + 5 fault cases (all genuine), and the four-hour split is now implemented end-to-end (linked fragments, exact totals) after the integrated review surfaced it as missing.
+
+Carried S9 follow-ups (non-blocking): F-NEW-1 (a separate Project/Trim/Join decision on a split block's ID resolves only the last fragment); F-NEW-2 (>4h joint "counts once" Duration hint untested); F-NEW-3 (defensive split hardcodes 240); F-NEW-4 (split→plan→submit integration not asserted end-to-end); F2 residual (the durable-record/export secret clause is by-construction). Live-authority verification (real Keychain reference, live MCP list/create/edit + stable IDs/pagination/validation/write semantics, conditional update/uncertain-write reconciliation, Gradion classification fields and the four-hour REMOTE rule, calendar invitation metadata) remains unverified and requires separate authority.
+
+S9 integrated-review dispositions (orchestrator, independent of reviewer labels):
+- F1 four-hour split not wired into the production path; durable fragments unlinked (HIGH, real requirement gap): accepted, fix now (propagate linkage + wire SplitAtMaxDuration into the confirm path; end-to-end test).
+- F2 scenario 9 secret assertions vacuous (Medium): accepted, fix (route the sentinel through a carrying stage).
+- F3 scenario 5b bypasses the core (Medium): accepted, fix (exercise the real review path).
+- F4 no CLI/skill parity in the harness (Low/Medium): accepted, add/reference.
+- F5 scenario 8 malformed-output coverage (Low): accepted, add.
+- F6 misleading reload comment (Low): accepted, fix.
+- F7 header over-claim (Info): accepted, correct.
+The reviewer confirmed 9 of 10 scenarios + all 5 fault cases are genuine, hermetic, and assert durable state / call counts; and that the harness is honest about hermeticity and the literal-secret bound. It does NOT establish production readiness.
 
 S9 builds a hermetic integrated acceptance harness over the shared core (`internal/run`) covering the redesign's 10 required scenarios + fault injection (intent-persist failure, uncertain write, remote change invalidating approval, export failure without replay, concurrent writer). Live MCP/agent/Keychain verification and the concrete editorial command require separate owner authority. Exit: independent integrated review, source acceptance, and owner release decision; a production pilot requires separate approval of real work in an exact daily plan.
 
@@ -552,6 +568,17 @@ Open findings and disposition: S8L1-1..7 and F1..F5 closed; N1/N2 Info carried; 
 Commit and publication status: committed locally 06ce95b and d65bdf0; NOT pushed, no PR.
 Vault sync status: complete - project and daily note updated with the S8 commits.
 Next gate and blockers: S9 integrated acceptance (hermetic scenario matrix + fault injection, authorized live read-only checks where needed). Production blockers unchanged; live MCP/agent semantics unverified.
+```
+
+```text
+2026-10-10 / S9 / planned -> implementing (harness) -> reviewing -> fixing -> re-reviewing -> integrated acceptance ACCEPTED -> committed
+Owner authority reference: direct-dispatch session grant; local commits of independently accepted slices. No live authority granted.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / ca96a20 (S1-S8 ancestors) / 5 files; md5s matched the accepted manifest before commit.
+Worker/reviewer report references and verification level: @fixer S9-IMPL-1/S9-FIX-1 (ses_edbe22f3fffegJeHjAvwnOt9JA); @oracle integrated review + re-review (ses_eda1d532affeiYVFk5o5iho9NN) ACCEPTED. Orchestrator gofmt/build/vet/test/race and e2e-tag green.
+Open findings and disposition: F1 four-hour split now implemented end-to-end; F3/F4/F5/F6/F7 closed; F2 partial (residual documented); F-NEW-1..4 carried as non-blocking follow-ups. Live-authority verification items explicitly not run.
+Commit and publication status: committed locally ca96a20; NOT pushed, no PR.
+Vault sync status: complete - project and daily note updated with the S9 commit.
+Next gate and blockers: owner release decision and any live-verification authorization. Production blockers: live MCP/agent/Keychain and remote-policy semantics unverified; residual remote write race; no production entry point contacted a live service.
 ```
 
 ## Documentation review
