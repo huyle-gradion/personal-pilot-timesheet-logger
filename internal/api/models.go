@@ -47,63 +47,8 @@ type RemoteEntriesResponse struct {
 	Entries []RemoteEntry `json:"entries"`
 }
 
-// CreateEntryRequest represents the payload for creating a new timesheet entry.
-type CreateEntryRequest struct {
-	Date             string `json:"date"`
-	StartTime        string `json:"startTime"`
-	EndTime          string `json:"endTime"`
-	ClassificationID string `json:"classificationId"`
-	Description      string `json:"description"`
-}
-
-// PatchEntryRequest represents the payload for modifying an existing timesheet entry.
-type PatchEntryRequest struct {
-	DTO    PatchEntryDTO `json:"dto"`
-	Reason string        `json:"reason"`
-}
-
-// PatchEntryDTO represents the inner update object for a timesheet entry.
-type PatchEntryDTO struct {
-	Description string `json:"description"`
-	Task        string `json:"task,omitempty"`
-}
-
 // Classification represents a timesheet classification category.
 type Classification struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-}
-
-// ReconciliationAction represents the planned mutation or skip decision.
-type ReconciliationAction string
-
-const (
-	ActionCreate ReconciliationAction = "create"
-	ActionUpdate ReconciliationAction = "update"
-	ActionSkip   ReconciliationAction = "skip"
-	ActionDelete ReconciliationAction = "delete"
-)
-
-// ReconciledItem represents the diff outcome for a specific time slot.
-type ReconciledItem struct {
-	Action           ReconciliationAction `json:"action"`
-	RemoteID         string               `json:"remote_id,omitempty"`
-	LocalBlockID     string               `json:"local_block_id,omitempty"`
-	Date             string               `json:"date"`
-	StartTime        string               `json:"start_time"`
-	EndTime          string               `json:"end_time"`
-	Description      string               `json:"description"`
-	ClassificationID string               `json:"classification_id"`
-	Reason           string               `json:"reason,omitempty"`
-}
-
-// SyncSummary aggregates the execution metrics for a reconciliation run.
-type SyncSummary struct {
-	Date       string           `json:"date"`
-	Created    int              `json:"created"`
-	Updated    int              `json:"updated"`
-	Skipped    int              `json:"skipped"`
-	Deleted    int              `json:"deleted"`
-	TotalHours float64          `json:"total_hours"`
-	Items      []ReconciledItem `json:"items"`
 }

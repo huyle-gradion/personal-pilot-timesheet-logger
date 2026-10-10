@@ -1,3 +1,13 @@
+// Package api is DEPRECATED. It retains only the legacy REST READ surface
+// (GetEntries, GetRecentClassifications, NewClient) plus its bounded HTTP
+// transport and typed OperatingError helpers. Its REST mutation methods
+// (CreateEntry, PatchEntry, DeleteEntry), the slot-equality Reconcile identity,
+// ActionDelete, and the reconcile-summary representation were removed as part of
+// S5 containment so that no production write path can bypass the later
+// approval-bound MCP path (S6/S8). The uncertain-write classification helpers
+// below are retained only by the generic transport and are now duplicated by
+// internal/gradion, which owns write-outcome classification; do not add mutation
+// methods or new write logic here.
 package api
 
 import (
@@ -9,11 +19,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
-
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
 )
 
 // Assert terminates the process on violated internal programmer invariants per TigerStyle.
@@ -127,6 +134,11 @@ func (e *OperatingError) Unwrap() error {
 
 // IsUncertain reports whether err describes an ambiguous non-idempotent write
 // whose remote outcome is unknown and must be reconciled before any retry.
+//
+// DEPRECATED/DUPLICATED: write-outcome classification is owned by
+// internal/gradion (over internal/mcp). This helper is retained only because the
+// generic transport below still classifies non-idempotent methods; no production
+// caller uses it.
 func IsUncertain(err error) bool {
 	var opErr *OperatingError
 	if errors.As(err, &opErr) {
@@ -241,8 +253,8 @@ func NewClient(baseURL, token string, opts ...ClientOption) (*Client, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	transport := &http.Transport{
-		MaxIdleConns:        10,
-		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConns:       10,
+		IdleConnTimeout:    30 * time.Second,
 		DisableCompression: false,
 	}
 
@@ -502,110 +514,6 @@ func (c *Client) GetEntries(ctx context.Context, date string) ([]RemoteEntry, er
 	}
 }
 
-// CreateEntry sends a POST /api/entries request to create a new remote timesheet entry.
-func (c *Client) CreateEntry(ctx context.Context, req CreateEntryRequest) (*RemoteEntry, error) {
-	Assert(ctx != nil, AssertAPINilContext)
-	Assert(c != nil, AssertAPINilClient)
-
-	if req.Date == "" || req.StartTime == "" || req.EndTime == "" || req.ClassificationID == "" {
-		return nil, &OperatingError{
-			Outcome: OutcomeTerminal,
-			Code:    "API_ERR_INVALID_PAYLOAD",
-			Message: "missing required fields in CreateEntryRequest (date, startTime, endTime, classificationId)",
-		}
-	}
-
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return nil, &OperatingError{
-			Outcome: OutcomeTerminal,
-			Code:    "API_ERR_MARSHAL_PAYLOAD",
-			Message: "failed to encode CreateEntryRequest",
-			Err:     err,
-		}
-	}
-
-	body, _, reqErr := c.executeRequest(ctx, http.MethodPost, "/api/entries", payload)
-	if reqErr != nil {
-		return nil, reqErr
-	}
-
-	var created RemoteEntry
-	if err := json.Unmarshal(body, &created); err == nil && created.ID != "" {
-		return &created, nil
-	}
-
-	// Fallback when response doesn't return the full created object
-	return &RemoteEntry{
-		Date:             req.Date,
-		StartTime:        req.StartTime,
-		EndTime:          req.EndTime,
-		ClassificationID: req.ClassificationID,
-		Description:      req.Description,
-	}, nil
-}
-
-// PatchEntry sends a PATCH /api/entries/{id} request to modify an existing timesheet entry.
-func (c *Client) PatchEntry(ctx context.Context, id string, req PatchEntryRequest) (*RemoteEntry, error) {
-	Assert(ctx != nil, AssertAPINilContext)
-	Assert(c != nil, AssertAPINilClient)
-
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return nil, &OperatingError{
-			Outcome: OutcomeTerminal,
-			Code:    "API_ERR_INVALID_ID",
-			Message: "entry id cannot be empty for PATCH",
-		}
-	}
-
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return nil, &OperatingError{
-			Outcome: OutcomeTerminal,
-			Code:    "API_ERR_MARSHAL_PAYLOAD",
-			Message: "failed to encode PatchEntryRequest",
-			Err:     err,
-		}
-	}
-
-	endpoint := "/api/entries/" + url.PathEscape(id)
-	body, _, reqErr := c.executeRequest(ctx, http.MethodPatch, endpoint, payload)
-	if reqErr != nil {
-		return nil, reqErr
-	}
-
-	var updated RemoteEntry
-	if err := json.Unmarshal(body, &updated); err == nil && updated.ID != "" {
-		return &updated, nil
-	}
-
-	return &RemoteEntry{
-		ID:          id,
-		Description: req.DTO.Description,
-		Task:        req.DTO.Task,
-	}, nil
-}
-
-// DeleteEntry sends a DELETE /api/entries/{id} request to remove a remote timesheet entry.
-func (c *Client) DeleteEntry(ctx context.Context, id string) error {
-	Assert(ctx != nil, AssertAPINilContext)
-	Assert(c != nil, AssertAPINilClient)
-
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return &OperatingError{
-			Outcome: OutcomeTerminal,
-			Code:    "API_ERR_INVALID_ID",
-			Message: "entry id cannot be empty for DELETE",
-		}
-	}
-
-	endpoint := "/api/entries/" + url.PathEscape(id)
-	_, _, err := c.executeRequest(ctx, http.MethodDelete, endpoint, nil)
-	return err
-}
-
 // GetRecentClassifications queries GET /api/classifications/recent.
 func (c *Client) GetRecentClassifications(ctx context.Context) ([]Classification, error) {
 	Assert(ctx != nil, AssertAPINilContext)
@@ -627,181 +535,4 @@ func (c *Client) GetRecentClassifications(ctx context.Context) ([]Classification
 	}
 
 	return classifications, nil
-}
-
-// normalizeTime standardizes time strings (e.g. "09:00:00" -> "09:00").
-func normalizeTime(t string) string {
-	trimmed := strings.TrimSpace(t)
-	if len(trimmed) >= 5 && strings.Count(trimmed, ":") >= 1 {
-		parts := strings.Split(trimmed, ":")
-		if len(parts) >= 2 {
-			return fmt.Sprintf("%02s:%02s", strings.TrimLeft(parts[0], " "), parts[1])
-		}
-	}
-	return trimmed
-}
-
-// formatDescription builds a clean, standardized description from a TimeBlock.
-func formatDescription(block timesheet.TimeBlock) string {
-	desc := strings.TrimSpace(block.Description)
-	if desc != "" {
-		return desc
-	}
-	return strings.TrimSpace(block.Title)
-}
-
-// Reconcile computes the deterministic diff between local finalized time blocks and remote entries.
-func Reconcile(
-	ctx context.Context,
-	localBlocks []timesheet.TimeBlock,
-	remoteEntries []RemoteEntry,
-	defaultClassificationID string,
-) ([]ReconciledItem, error) {
-	Assert(ctx != nil, AssertAPINilContext)
-
-	if len(localBlocks) > MaxLocalBlocksCount {
-		return nil, &OperatingError{
-			Outcome: OutcomeTerminal,
-			Code:    "API_ERR_CAPACITY_EXCEEDED",
-			Message: fmt.Sprintf("local blocks count %d exceeds maximum %d", len(localBlocks), MaxLocalBlocksCount),
-		}
-	}
-
-	if len(remoteEntries) > MaxRemoteEntriesCount {
-		return nil, &OperatingError{
-			Outcome: OutcomeTerminal,
-			Code:    "API_ERR_CAPACITY_EXCEEDED",
-			Message: fmt.Sprintf("remote entries count %d exceeds maximum %d", len(remoteEntries), MaxRemoteEntriesCount),
-		}
-	}
-
-	classificationID := strings.TrimSpace(defaultClassificationID)
-	if classificationID == "" {
-		classificationID = DefaultClassificationID
-	}
-
-	// Map remote entries by normalized "StartTime-EndTime"
-	remoteMap := make(map[string]RemoteEntry)
-	matchedRemoteIDs := make(map[string]bool)
-
-	for _, re := range remoteEntries {
-		key := fmt.Sprintf("%s-%s", normalizeTime(re.StartTime), normalizeTime(re.EndTime))
-		remoteMap[key] = re
-	}
-
-	var items []ReconciledItem
-
-	// 1. Evaluate each local block
-	for _, block := range localBlocks {
-		startNorm := normalizeTime(block.StartTime)
-		endNorm := normalizeTime(block.EndTime)
-		key := fmt.Sprintf("%s-%s", startNorm, endNorm)
-		targetDesc := formatDescription(block)
-
-		remote, found := remoteMap[key]
-		if found {
-			matchedRemoteIDs[remote.ID] = true
-			remoteDesc := strings.TrimSpace(remote.Description)
-
-			if remoteDesc == targetDesc {
-				// Slot is identical: idempotent skip
-				items = append(items, ReconciledItem{
-					Action:           ActionSkip,
-					RemoteID:         remote.ID,
-					LocalBlockID:     block.ID,
-					Date:             block.Date,
-					StartTime:        startNorm,
-					EndTime:          endNorm,
-					Description:      targetDesc,
-					ClassificationID: remote.ClassificationID,
-					Reason:           "Idempotent: slot already exists with identical details",
-				})
-			} else {
-				// Slot exists but description differs: patch/update
-				items = append(items, ReconciledItem{
-					Action:           ActionUpdate,
-					RemoteID:         remote.ID,
-					LocalBlockID:     block.ID,
-					Date:             block.Date,
-					StartTime:        startNorm,
-					EndTime:          endNorm,
-					Description:      targetDesc,
-					ClassificationID: remote.ClassificationID,
-					Reason:           "Description modified: automated timesheet update sync",
-				})
-			}
-		} else {
-			// Slot does not exist on remote: create
-			items = append(items, ReconciledItem{
-				Action:           ActionCreate,
-				LocalBlockID:     block.ID,
-				Date:             block.Date,
-				StartTime:        startNorm,
-				EndTime:          endNorm,
-				Description:      targetDesc,
-				ClassificationID: classificationID,
-				Reason:           "New time block to record",
-			})
-		}
-	}
-
-	// 2. Identify superceded remote entries that are not present in local blocks
-	for _, re := range remoteEntries {
-		if !matchedRemoteIDs[re.ID] {
-			items = append(items, ReconciledItem{
-				Action:           ActionSkip,
-				RemoteID:         re.ID,
-				Date:             re.Date,
-				StartTime:        normalizeTime(re.StartTime),
-				EndTime:          normalizeTime(re.EndTime),
-				Description:      re.Description,
-				ClassificationID: re.ClassificationID,
-				Reason:           "Remote entry not in local timesheet: preserved without mutation",
-			})
-		}
-	}
-
-	// 3. Chronological sorting by StartTime
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].StartTime != items[j].StartTime {
-			return items[i].StartTime < items[j].StartTime
-		}
-		return items[i].EndTime < items[j].EndTime
-	})
-
-	return items, nil
-}
-
-// BuildSummary calculates aggregate metrics from reconciled items.
-func BuildSummary(date string, items []ReconciledItem) SyncSummary {
-	var summary SyncSummary
-	summary.Date = date
-	summary.Items = items
-
-	var totalMinutes int
-
-	for _, item := range items {
-		switch item.Action {
-		case ActionCreate:
-			summary.Created++
-		case ActionUpdate:
-			summary.Updated++
-		case ActionSkip:
-			summary.Skipped++
-		case ActionDelete:
-			summary.Deleted++
-		}
-
-		st, err1 := time.Parse("15:04", item.StartTime)
-		et, err2 := time.Parse("15:04", item.EndTime)
-		if err1 == nil && err2 == nil {
-			if !et.After(st) {
-				et = et.Add(24 * time.Hour)
-			}
-			totalMinutes += int(et.Sub(st).Minutes())
-		}
-	}
-
-	summary.TotalHours = float64(totalMinutes) / 60.0
-	return summary
 }

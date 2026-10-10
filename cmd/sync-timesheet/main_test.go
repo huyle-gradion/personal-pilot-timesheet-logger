@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,7 +18,6 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
 // fakeKeychainResolver is an in-process Resolver test double; it avoids
@@ -73,14 +70,13 @@ func TestCLI_MissingToken_ExitUsage(t *testing.T) {
 }
 
 // TestCLI_KeychainTokenResolution verifies the third token source: with -token
-// empty and TIMESHEET_API_TOKEN unset, the token is read from the Keychain via
-// an injected in-process resolver.
+// empty and TIMESHEET_API_TOKEN unset, the token is read from the Keychain via an
+// injected in-process resolver and used by the read-only preview.
 func TestCLI_KeychainTokenResolution(t *testing.T) {
 	t.Cleanup(keychain.SetDefaultResolver(fakeKeychainResolver{secret: "keychain-token-abc123"}))
 	t.Setenv("TIMESHEET_API_TOKEN", "")
 
 	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
 	tempEnvDir := t.TempDir()
 	targetDate := "2026-10-08"
 	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
@@ -102,7 +98,6 @@ func TestCLI_KeychainTokenResolution(t *testing.T) {
 		"-dry-run=true",
 		"-env=" + filepath.Join(tempEnvDir, "no-such.env"),
 		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
 		"-base-url=" + server.URL,
 	}
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
@@ -140,7 +135,6 @@ func TestCLI_KeychainTerminalError_ExitErrNoRequest(t *testing.T) {
 		"-dry-run=true",
 		"-env=" + filepath.Join(t.TempDir(), "no-such.env"),
 		"-storage-dir=" + t.TempDir(),
-		"-markdown-dir=" + t.TempDir(),
 		"-base-url=" + server.URL,
 	}
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
@@ -158,174 +152,6 @@ func TestCLI_KeychainTerminalError_ExitErrNoRequest(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&requests); got != 0 {
 		t.Errorf("expected zero remote requests on terminal keychain failure, got %d", got)
-	}
-}
-
-// TestCLI_UncertainWrite_408_StopsRun proves HTTP 408 on a non-idempotent write
-// is treated as an uncertain outcome: one attempt, no retry, no subsequent
-// writes, and an unresolved (partial) result.
-func TestCLI_UncertainWrite_408_StopsRun(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
-		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Create one"},
-		{ID: "block-2", Date: targetDate, StartTime: "10:00", EndTime: "11:00", Description: "Create two"},
-	})
-
-	var postCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-		case http.MethodPost:
-			atomic.AddInt32(&postCount, 1)
-			w.WriteHeader(http.StatusRequestTimeout)
-			_, _ = w.Write([]byte("timeout"))
-		}
-	}))
-	defer server.Close()
-
-	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-approve",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitErr {
-		t.Fatalf("expected ExitErr on 408 uncertain write, got %d (err: %s)", code, errOut.String())
-	}
-	if got := atomic.LoadInt32(&postCount); got != 1 {
-		t.Errorf("expected exactly 1 POST attempt on 408, got %d", got)
-	}
-	content, err := os.ReadFile(filepath.Join(tempMarkdown, targetDate+".md"))
-	if err != nil {
-		t.Fatalf("expected markdown record: %v", err)
-	}
-	if !strings.Contains(string(content), "Partial Submission (Unresolved)") {
-		t.Errorf("expected unresolved status, got: %s", string(content))
-	}
-	if strings.Contains(string(content), "Create two") {
-		t.Errorf("never-dispatched planned item must not be rendered, got: %s", string(content))
-	}
-}
-
-// TestCLI_NonDryRunRequiresApproval verifies that a non-dry-run without
-// -approve performs zero remote mutations and returns ExitUsage.
-func TestCLI_NonDryRunRequiresApproval(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
-		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Needs create"},
-	})
-
-	var postCount, patchCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-		case http.MethodPost:
-			atomic.AddInt32(&postCount, 1)
-		case http.MethodPatch:
-			atomic.AddInt32(&patchCount, 1)
-		}
-	}))
-	defer server.Close()
-
-	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitUsage {
-		t.Fatalf("expected ExitUsage without -approve, got %d (err: %s)", code, errOut.String())
-	}
-	if atomic.LoadInt32(&postCount) != 0 || atomic.LoadInt32(&patchCount) != 0 {
-		t.Errorf("expected zero mutations without -approve, got POST=%d PATCH=%d",
-			atomic.LoadInt32(&postCount), atomic.LoadInt32(&patchCount))
-	}
-	if !strings.Contains(out.String(), "-approve") {
-		t.Errorf("expected approval instruction in output, got: %s", out.String())
-	}
-	// No markdown record should be produced for an unapproved run.
-	if _, err := os.Stat(filepath.Join(tempMarkdown, targetDate+".md")); !os.IsNotExist(err) {
-		t.Errorf("expected no markdown record for unapproved run")
-	}
-}
-
-// TestCLI_UncertainWrite_StopsAndUnresolved verifies that a non-idempotent
-// write that fails ambiguously (HTTP 500) is attempted exactly once, stops the
-// submission immediately with no further writes, and reports unresolved.
-func TestCLI_UncertainWrite_StopsAndUnresolved(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
-		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Create one"},
-		{ID: "block-2", Date: targetDate, StartTime: "10:00", EndTime: "11:00", Description: "Create two"},
-	})
-
-	var postCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-		case http.MethodPost:
-			atomic.AddInt32(&postCount, 1)
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte("server error"))
-		}
-	}))
-	defer server.Close()
-
-	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-approve",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitErr {
-		t.Fatalf("expected ExitErr on uncertain write, got %d (err: %s)", code, errOut.String())
-	}
-	if got := atomic.LoadInt32(&postCount); got != 1 {
-		t.Errorf("expected exactly 1 POST attempt (no retry, no subsequent writes), got %d", got)
-	}
-	if !strings.Contains(errOut.String(), "uncertain") || !strings.Contains(errOut.String(), "reconciled") {
-		t.Errorf("expected unresolved reconciliation message, got: %s", errOut.String())
-	}
-	content, err := os.ReadFile(filepath.Join(tempMarkdown, targetDate+".md"))
-	if err != nil {
-		t.Fatalf("expected markdown record for unresolved run: %v", err)
-	}
-	if !strings.Contains(string(content), "Partial Submission (Unresolved)") {
-		t.Errorf("expected unresolved status in markdown, got: %s", string(content))
-	}
-	// F2: only ACTUAL outcomes are rendered. The second create was never
-	// dispatched and must not appear.
-	if !strings.Contains(string(content), "| uncertain |") {
-		t.Errorf("expected the uncertain write to be recorded, got: %s", string(content))
-	}
-	if strings.Contains(string(content), "Create two") {
-		t.Errorf("never-dispatched planned item must not be rendered, got: %s", string(content))
 	}
 }
 
@@ -394,23 +220,16 @@ func TestCLI_StorageEmptyBlocks_ExitErr(t *testing.T) {
 func TestCLI_EnvFileLoading(t *testing.T) {
 	tempDir := t.TempDir()
 	envPath := filepath.Join(tempDir, ".env.test")
-	envContent := "TIMESHEET_API_TOKEN=token-from-env-file\nDEFAULT_CLASSIFICATION_ID=custom-classification-id\n"
+	envContent := "TIMESHEET_API_TOKEN=token-from-env-file\n"
 	if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
 		t.Fatalf("failed to write test env file: %v", err)
 	}
 
 	t.Setenv("TIMESHEET_API_TOKEN", "")
-	t.Setenv("DEFAULT_CLASSIFICATION_ID", "")
 
 	targetDate := "2026-10-08"
 	createTestStorageRecord(t, tempDir, targetDate, []timesheet.TimeBlock{
-		{
-			ID:          "block-1",
-			Date:        targetDate,
-			StartTime:   "09:00",
-			EndTime:     "10:00",
-			Description: "Morning standup",
-		},
+		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Morning standup"},
 	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -428,7 +247,6 @@ func TestCLI_EnvFileLoading(t *testing.T) {
 		"-dry-run=true",
 		"-env=" + envPath,
 		"-storage-dir=" + tempDir,
-		"-markdown-dir=" + tempDir,
 		"-base-url=" + server.URL,
 	}
 
@@ -436,55 +254,30 @@ func TestCLI_EnvFileLoading(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("expected ExitOK, got %d (err: %s)", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "custom-classification-id") {
-		t.Errorf("expected custom classification ID from env file in output, got: %s", out.String())
-	}
 }
 
-func TestCLI_DryRun_ZeroMutations(t *testing.T) {
+// TestCLI_DryRun_ReadOnlyPreview proves the read-only preview lists remote
+// entries and performs ZERO mutations.
+func TestCLI_DryRun_ReadOnlyPreview(t *testing.T) {
 	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
 	targetDate := "2026-10-08"
+	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
+		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Team standup"},
+		{ID: "block-2", Date: targetDate, StartTime: "10:00", EndTime: "12:00", Description: "Implementation"},
+	})
 
-	blocks := []timesheet.TimeBlock{
-		{
-			ID:          "block-1",
-			Date:        targetDate,
-			StartTime:   "09:00",
-			EndTime:     "10:00",
-			Description: "Team standup and planning",
-		},
-		{
-			ID:          "block-2",
-			Date:        targetDate,
-			StartTime:   "10:00",
-			EndTime:     "12:00",
-			Description: "Core architecture implementation",
-		},
-	}
-	createTestStorageRecord(t, tempStorage, targetDate, blocks)
-
-	var postCount, patchCount int32
+	var postCount, patchCount, deleteCount int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{
-				{
-					ID:               "remote-1",
-					Date:             targetDate,
-					StartTime:        "09:00",
-					EndTime:          "10:00",
-					ClassificationID: api.DefaultClassificationID,
-					Description:      "Team standup and planning", // Identical
-				},
-			})
+			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{{ID: "remote-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00"}})
 		case http.MethodPost:
 			atomic.AddInt32(&postCount, 1)
-			w.WriteHeader(http.StatusCreated)
 		case http.MethodPatch:
 			atomic.AddInt32(&patchCount, 1)
-			w.WriteHeader(http.StatusOK)
+		case http.MethodDelete:
+			atomic.AddInt32(&deleteCount, 1)
 		default:
 			t.Errorf("unexpected method: %s", r.Method)
 		}
@@ -496,241 +289,35 @@ func TestCLI_DryRun_ZeroMutations(t *testing.T) {
 		"-date=" + targetDate,
 		"-dry-run=true",
 		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
 		"-token=test-token",
 		"-base-url=" + server.URL,
 	}
-
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
 	if code != ExitOK {
-		t.Fatalf("expected ExitOK (0), got %d (err: %s)", code, errOut.String())
+		t.Fatalf("expected ExitOK, got %d (err: %s)", code, errOut.String())
 	}
-
-	// Verify ZERO network mutations in dry-run mode
-	if atomic.LoadInt32(&postCount) != 0 {
-		t.Errorf("expected 0 POST calls during dry-run, got %d", atomic.LoadInt32(&postCount))
+	if atomic.LoadInt32(&postCount) != 0 || atomic.LoadInt32(&patchCount) != 0 || atomic.LoadInt32(&deleteCount) != 0 {
+		t.Errorf("read-only preview must not mutate: POST=%d PATCH=%d DELETE=%d",
+			atomic.LoadInt32(&postCount), atomic.LoadInt32(&patchCount), atomic.LoadInt32(&deleteCount))
 	}
-	if atomic.LoadInt32(&patchCount) != 0 {
-		t.Errorf("expected 0 PATCH calls during dry-run, got %d", atomic.LoadInt32(&patchCount))
-	}
-
-	// Verify stdout contains plan table and dry-run summary
-	stdout := out.String()
-	if !strings.Contains(stdout, "DRY-RUN PREVIEW") {
-		t.Errorf("expected DRY-RUN PREVIEW in stdout, got: %s", stdout)
-	}
-	if !strings.Contains(stdout, "No remote modifications executed") {
-		t.Errorf("expected acknowledgement message in stdout, got: %s", stdout)
-	}
-
-	// Verify markdown file was generated
-	mdFile := filepath.Join(tempMarkdown, targetDate+".md")
-	content, err := os.ReadFile(mdFile)
-	if err != nil {
-		t.Fatalf("failed to read generated markdown: %v", err)
-	}
-	if !strings.Contains(string(content), "Dry-Run Preview") {
-		t.Errorf("expected Dry-Run status in markdown, got: %s", string(content))
+	if !strings.Contains(out.String(), "Read-only preview") {
+		t.Errorf("expected read-only preview in stdout, got: %s", out.String())
 	}
 }
 
-func TestCLI_LiveSync_MutationsAndIdempotency(t *testing.T) {
+// TestCLI_NonDryRunFailsClosed proves a submission attempt fails closed with a
+// typed, secret-free error and makes ZERO remote requests (the legacy REST write
+// path is retired; no flag re-enables it).
+func TestCLI_NonDryRunFailsClosed(t *testing.T) {
 	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
 	targetDate := "2026-10-08"
+	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
+		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Needs create"},
+	})
 
-	blocks := []timesheet.TimeBlock{
-		{
-			ID:          "block-1",
-			Date:        targetDate,
-			StartTime:   "09:00",
-			EndTime:     "10:00",
-			Description: "Sprint planning", // Matches remote-1
-		},
-		{
-			ID:          "block-2",
-			Date:        targetDate,
-			StartTime:   "10:00",
-			EndTime:     "12:00",
-			Description: "Updated feature description", // Modified vs remote-2
-		},
-		{
-			ID:          "block-3",
-			Date:        targetDate,
-			StartTime:   "13:00",
-			EndTime:     "15:00",
-			Description: "New afternoon task", // Needs POST
-		},
-	}
-	createTestStorageRecord(t, tempStorage, targetDate, blocks)
-
-	// Simulated remote database
-	remoteDB := map[string]api.RemoteEntry{
-		"remote-1": {
-			ID:               "remote-1",
-			Date:             targetDate,
-			StartTime:        "09:00",
-			EndTime:          "10:00",
-			ClassificationID: api.DefaultClassificationID,
-			Description:      "Sprint planning",
-		},
-		"remote-2": {
-			ID:               "remote-2",
-			Date:             targetDate,
-			StartTime:        "10:00",
-			EndTime:          "12:00",
-			ClassificationID: api.DefaultClassificationID,
-			Description:      "Old feature description",
-		},
-	}
-
-	var postCount, patchCount int32
+	var requests int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.Method {
-		case http.MethodGet:
-			var list []api.RemoteEntry
-			for _, v := range remoteDB {
-				list = append(list, v)
-			}
-			_ = json.NewEncoder(w).Encode(list)
-		case http.MethodPost:
-			atomic.AddInt32(&postCount, 1)
-			var req api.CreateEntryRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			newID := fmt.Sprintf("created-%d", atomic.LoadInt32(&postCount))
-			entry := api.RemoteEntry{
-				ID:               newID,
-				Date:             req.Date,
-				StartTime:        req.StartTime,
-				EndTime:          req.EndTime,
-				ClassificationID: req.ClassificationID,
-				Description:      req.Description,
-			}
-			remoteDB[newID] = entry
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(entry)
-		case http.MethodPatch:
-			atomic.AddInt32(&patchCount, 1)
-			id := filepath.Base(r.URL.Path)
-			var req api.PatchEntryRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			if existing, ok := remoteDB[id]; ok {
-				existing.Description = req.DTO.Description
-				remoteDB[id] = existing
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(existing)
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-			}
-		}
-	}))
-	defer server.Close()
-
-	// --- RUN 1: Live synchronization ---
-	var out1, errOut1 bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-approve",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-
-	code1 := run(context.Background(), args, strings.NewReader(""), &out1, &errOut1)
-	if code1 != ExitOK {
-		t.Fatalf("expected ExitOK on run 1, got %d (err: %s)", code1, errOut1.String())
-	}
-
-	if atomic.LoadInt32(&postCount) != 1 {
-		t.Errorf("expected 1 POST call on run 1, got %d", atomic.LoadInt32(&postCount))
-	}
-	if atomic.LoadInt32(&patchCount) != 1 {
-		t.Errorf("expected 1 PATCH call on run 1, got %d", atomic.LoadInt32(&patchCount))
-	}
-
-	// Verify markdown output
-	mdFile := filepath.Join(tempMarkdown, targetDate+".md")
-	content, err := os.ReadFile(mdFile)
-	if err != nil {
-		t.Fatalf("failed to read generated markdown: %v", err)
-	}
-	if !strings.Contains(string(content), "**Status**: Synchronized") {
-		t.Errorf("expected Synchronized status in markdown, got: %s", string(content))
-	}
-	// F2: successes persist the stable remote ID inside the Description cell.
-	if !strings.Contains(string(content), "[remote: created-1]") {
-		t.Errorf("expected created remote ID in markdown, got: %s", string(content))
-	}
-	if !strings.Contains(string(content), "[remote: remote-2]") {
-		t.Errorf("expected updated remote ID in markdown, got: %s", string(content))
-	}
-
-	// --- RUN 2: Re-running must produce ZERO duplicate entries (DoD 3.3 Idempotency) ---
-	var out2, errOut2 bytes.Buffer
-	code2 := run(context.Background(), args, strings.NewReader(""), &out2, &errOut2)
-	if code2 != ExitOK {
-		t.Fatalf("expected ExitOK on run 2, got %d (err: %s)", code2, errOut2.String())
-	}
-
-	// Mutations count should NOT have increased!
-	if atomic.LoadInt32(&postCount) != 1 {
-		t.Errorf("idempotency violation: expected POST count to remain 1, got %d", atomic.LoadInt32(&postCount))
-	}
-	if atomic.LoadInt32(&patchCount) != 1 {
-		t.Errorf("idempotency violation: expected PATCH count to remain 1, got %d", atomic.LoadInt32(&patchCount))
-	}
-
-	if !strings.Contains(out2.String(), "0 created, 0 updated, 3 skipped") {
-		t.Errorf("expected 0 created, 0 updated, 3 skipped on re-run, got:\n%s", out2.String())
-	}
-}
-
-func TestCLI_MutationErrors(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-
-	blocks := []timesheet.TimeBlock{
-		{
-			ID:          "block-1",
-			Date:        targetDate,
-			StartTime:   "09:00",
-			EndTime:     "10:00",
-			Description: "Task that will fail on post",
-		},
-		{
-			ID:          "block-2",
-			Date:        targetDate,
-			StartTime:   "10:00",
-			EndTime:     "11:00",
-			Description: "Task that will fail on patch",
-		},
-	}
-	createTestStorageRecord(t, tempStorage, targetDate, blocks)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{
-				{
-					ID:          "rem-2",
-					Date:        targetDate,
-					StartTime:   "10:00",
-					EndTime:     "11:00",
-					Description: "Old desc",
-				},
-			})
-		case http.MethodPost:
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte("bad request"))
-		case http.MethodPatch:
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte("not found"))
-		}
+		atomic.AddInt32(&requests, 1)
 	}))
 	defer server.Close()
 
@@ -738,34 +325,19 @@ func TestCLI_MutationErrors(t *testing.T) {
 	args := []string{
 		"-date=" + targetDate,
 		"-dry-run=false",
-		"-approve",
 		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
 		"-token=test-token",
 		"-base-url=" + server.URL,
 	}
-
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
 	if code != ExitErr {
-		t.Fatalf("expected ExitErr on terminal mutation failures, got %d", code)
+		t.Fatalf("expected ExitErr (retired REST path), got %d (err: %s)", code, errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "one or more mutations failed") {
-		t.Errorf("expected mutation failure warning, got: %s", errOut.String())
+	if !strings.Contains(errOut.String(), ErrCodeRESTRetired) || !strings.Contains(errOut.String(), ErrMsgRESTRetired) {
+		t.Errorf("expected fail-closed retired message, got: %s", errOut.String())
 	}
-
-	// Terminal failures must be reported honestly, not as Synchronized.
-	content, err := os.ReadFile(filepath.Join(tempMarkdown, targetDate+".md"))
-	if err != nil {
-		t.Fatalf("expected markdown record for failed run: %v", err)
-	}
-	if !strings.Contains(string(content), "**Status**: Partial Submission (Failed)") {
-		t.Errorf("expected Partial Submission (Failed) status, got: %s", string(content))
-	}
-	if strings.Contains(string(content), "**Status**: Synchronized") {
-		t.Errorf("terminal failures must not be reported as Synchronized, got: %s", string(content))
-	}
-	if !strings.Contains(string(content), "| failed |") {
-		t.Errorf("expected actual 'failed' outcomes in markdown, got: %s", string(content))
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Errorf("the retired path must make zero remote requests, got %d", got)
 	}
 }
 
@@ -778,91 +350,14 @@ func TestCLI_FlagParseError_ExitUsage(t *testing.T) {
 	}
 }
 
-func TestCLI_MarkdownDisabled(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-
-	blocks := []timesheet.TimeBlock{
-		{
-			ID:          "block-1",
-			Date:        targetDate,
-			StartTime:   "09:00",
-			EndTime:     "10:00",
-			Description: "Sprint planning",
-		},
-	}
-	createTestStorageRecord(t, tempStorage, targetDate, blocks)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-	}))
-	defer server.Close()
-
+// TestCLI_NoApprovalFlag proves the -approve gate is gone: passing it is a flag
+// parse error, so no flag can re-enable submission.
+func TestCLI_NoApprovalFlag(t *testing.T) {
 	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=true",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-write-markdown=false",
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-
+	args := []string{"-date=2026-10-08", "-token=test-token", "-approve"}
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitOK {
-		t.Fatalf("expected ExitOK, got %d (err: %s)", code, errOut.String())
-	}
-
-	mdFile := filepath.Join(tempMarkdown, targetDate+".md")
-	if _, err := os.Stat(mdFile); !os.IsNotExist(err) {
-		t.Errorf("expected markdown file to NOT exist when write-markdown=false")
-	}
-}
-
-func TestCLI_MarkdownWriteError_Warning(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempFileAsDir := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(tempFileAsDir, []byte("file"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	targetDate := "2026-10-08"
-
-	blocks := []timesheet.TimeBlock{
-		{
-			ID:          "block-1",
-			Date:        targetDate,
-			StartTime:   "09:00",
-			EndTime:     "10:00",
-			Description: "Sprint planning",
-		},
-	}
-	createTestStorageRecord(t, tempStorage, targetDate, blocks)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-	}))
-	defer server.Close()
-
-	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=true",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + filepath.Join(tempFileAsDir, "sub"),
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-
-	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitOK {
-		t.Fatalf("expected ExitOK even if markdown write warns, got %d", code)
-	}
-	if !strings.Contains(errOut.String(), "warning: writing markdown record") {
-		t.Errorf("expected markdown write warning, got: %s", errOut.String())
+	if code != ExitUsage {
+		t.Fatalf("expected ExitUsage for the removed -approve flag, got %d", code)
 	}
 }
 
@@ -924,484 +419,23 @@ func TestCLI_SubprocessAssertions(t *testing.T) {
 	}
 }
 
-// failingWorkflowRecorder simulates a local disk failure AFTER a remote write:
-// the session opens and pre-write intents succeed, but terminal outcome
-// persistence fails. This is the S2 successor to the S1 "persist after write"
-// failure injection.
-type failingWorkflowRecorder struct {
-	err error
-}
-
-func (f failingWorkflowRecorder) UpdateDay(context.Context, string, func(*workflow.Record) error) (*workflow.Record, error) {
-	return nil, f.err
-}
-
-func (f failingWorkflowRecorder) BeginDaySession(context.Context, string) (submissionSession, error) {
-	return failingSession{err: f.err}, nil
-}
-
-func (f failingWorkflowRecorder) BreakStaleLock(context.Context, string, string) error { return nil }
-
-func (f failingWorkflowRecorder) DayLockInfo(context.Context, string) (workflow.LockInfo, error) {
-	return workflow.LockInfo{}, nil
-}
-
-type failingSession struct {
-	err error
-}
-
-func (f failingSession) RecordIntent(context.Context, workflow.OperationOutcome) error { return nil }
-
-func (f failingSession) RecordOutcome(context.Context, workflow.OperationOutcome, *workflow.RemoteMapping) error {
-	return f.err
-}
-
-func (f failingSession) UnresolvedOperations(context.Context) ([]workflow.OperationOutcome, error) {
-	return nil, nil
-}
-
-func (f failingSession) Close() error { return nil }
-
-// TestCLI_PersistenceFailure_StopsAfterOneMutation proves that when persistence
-// fails after a remote write, exactly one remote mutation is issued, no further
-// writes are attempted, a non-zero code is returned, and recovery is reported.
-func TestCLI_PersistenceFailure_StopsAfterOneMutation(t *testing.T) {
+// TestCLI_NoTokenLeakOnFailClosed proves the token never appears in the
+// diagnostics of a fail-closed (retired) run.
+func TestCLI_NoTokenLeakOnFailClosed(t *testing.T) {
+	const token = "gradion-super-secret-token-value"
 	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
 	targetDate := "2026-10-08"
 	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
-		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Create one"},
-		{ID: "block-2", Date: targetDate, StartTime: "10:00", EndTime: "11:00", Description: "Create two"},
+		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "x"},
 	})
 
-	var postCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-		case http.MethodPost:
-			atomic.AddInt32(&postCount, 1)
-			var req api.CreateEntryRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(api.RemoteEntry{
-				ID:               "created-1",
-				Date:             req.Date,
-				StartTime:        req.StartTime,
-				EndTime:          req.EndTime,
-				ClassificationID: req.ClassificationID,
-				Description:      req.Description,
-			})
-		}
-	}))
-	defer server.Close()
-
-	original := newWorkflowRecorder
-	defer func() { newWorkflowRecorder = original }()
-	newWorkflowRecorder = func(string) (workflowRecorder, error) {
-		return failingWorkflowRecorder{err: errors.New("local disk persist failed")}, nil
-	}
-
 	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-approve",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code == ExitOK {
-		t.Fatalf("expected non-zero exit on persistence failure, got ExitOK")
-	}
-	if got := atomic.LoadInt32(&postCount); got != 1 {
-		t.Errorf("expected exactly 1 remote mutation before stopping, got %d", got)
-	}
-	if !strings.Contains(errOut.String(), ErrCodePersistenceFailed) {
-		t.Errorf("expected %s in stderr, got: %s", ErrCodePersistenceFailed, errOut.String())
-	}
-	if !strings.Contains(strings.ToLower(errOut.String()), "recovery is required") {
-		t.Errorf("expected recovery-required message, got: %s", errOut.String())
-	}
-
-	content, err := os.ReadFile(filepath.Join(tempMarkdown, targetDate+".md"))
-	if err != nil {
-		t.Fatalf("expected markdown record for persistence failure: %v", err)
-	}
-	if !strings.Contains(string(content), RecoveryRequiredStatus) {
-		t.Errorf("expected %q status in markdown, got: %s", RecoveryRequiredStatus, string(content))
-	}
-}
-
-// TestCLI_RecorderInitFailure_ExitErr proves a recorder construction failure
-// stops the run with ExitErr and zero remote mutations.
-func TestCLI_RecorderInitFailure_ExitErr(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
-		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Create one"},
-	})
-
-	var postCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			atomic.AddInt32(&postCount, 1)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-	}))
-	defer server.Close()
-
-	original := newWorkflowRecorder
-	defer func() { newWorkflowRecorder = original }()
-	newWorkflowRecorder = func(string) (workflowRecorder, error) {
-		return nil, errors.New("cannot create workflow dir")
-	}
-
-	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-approve",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
+	args := []string{"-date=" + targetDate, "-storage-dir=" + tempStorage, "-token=" + token}
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
 	if code != ExitErr {
-		t.Fatalf("expected ExitErr on recorder init failure, got %d (err: %s)", code, errOut.String())
+		t.Fatalf("expected ExitErr, got %d", code)
 	}
-	if got := atomic.LoadInt32(&postCount); got != 0 {
-		t.Errorf("expected zero remote mutations, got %d", got)
-	}
-	if !strings.Contains(errOut.String(), ErrCodeRecorderInitFailed) {
-		t.Errorf("expected %s in stderr, got: %s", ErrCodeRecorderInitFailed, errOut.String())
-	}
-}
-
-// TestCLI_LiveSync_DoesNotPersistToken proves a live sync never leaks the token
-// into the durable workflow record or into stderr.
-func TestCLI_LiveSync_DoesNotPersistToken(t *testing.T) {
-	t.Setenv("TIMESHEET_API_TOKEN", "")
-	const token = "distinctive-fake-token-XYZ-987654"
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
-		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Create one"},
-	})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.Method {
-		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-		case http.MethodPost:
-			var req api.CreateEntryRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(api.RemoteEntry{
-				ID:               "remote-token-check",
-				Date:             req.Date,
-				StartTime:        req.StartTime,
-				EndTime:          req.EndTime,
-				ClassificationID: req.ClassificationID,
-				Description:      req.Description,
-			})
-		}
-	}))
-	defer server.Close()
-
-	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-approve",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=" + token,
-		"-base-url=" + server.URL,
-	}
-	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitOK {
-		t.Fatalf("expected ExitOK on live sync, got %d (err: %s)", code, errOut.String())
-	}
-
-	recordPath := filepath.Join(tempStorage, "workflow", targetDate+".json")
-	content, err := os.ReadFile(recordPath)
-	if err != nil {
-		t.Fatalf("expected durable workflow record at %s: %v", recordPath, err)
-	}
-	if strings.Contains(string(content), token) {
-		t.Errorf("token leaked into workflow record: %s", string(content))
-	}
-	if strings.Contains(errOut.String(), token) {
-		t.Errorf("token leaked into stderr: %s", errOut.String())
-	}
-	if !strings.Contains(string(content), "remote-token-check") {
-		t.Errorf("expected confirmed mapping remote ID in workflow record, got: %s", string(content))
-	}
-}
-
-// TestCLI_EmptyLocalBlockID_PersistsOutcomeWithoutMapping proves a confirmed
-// create for a block with an empty LocalBlockID still persists a confirmed
-// outcome (with a derived key) and fabricates ZERO mappings.
-func TestCLI_EmptyLocalBlockID_PersistsOutcomeWithoutMapping(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
-		{ID: "", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "No local ID"},
-	})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.Method {
-		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-		case http.MethodPost:
-			var req api.CreateEntryRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(api.RemoteEntry{
-				ID:               "remote-no-local-id",
-				Date:             req.Date,
-				StartTime:        req.StartTime,
-				EndTime:          req.EndTime,
-				ClassificationID: req.ClassificationID,
-				Description:      req.Description,
-			})
-		}
-	}))
-	defer server.Close()
-
-	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-approve",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitOK {
-		t.Fatalf("expected ExitOK, got %d (err: %s)", code, errOut.String())
-	}
-
-	recordPath := filepath.Join(tempStorage, "workflow", targetDate+".json")
-	data, err := os.ReadFile(recordPath)
-	if err != nil {
-		t.Fatalf("expected durable workflow record: %v", err)
-	}
-	var record workflow.Record
-	if err := json.Unmarshal(data, &record); err != nil {
-		t.Fatalf("failed to decode workflow record: %v", err)
-	}
-	if len(record.Outcomes) != 1 {
-		t.Fatalf("expected 1 persisted outcome, got %d", len(record.Outcomes))
-	}
-	if record.Outcomes[0].Status != workflow.OutcomeConfirmed {
-		t.Errorf("expected confirmed outcome, got %s", record.Outcomes[0].Status)
-	}
-	if record.Outcomes[0].OperationKey == "" {
-		t.Errorf("expected a derived operation key for the empty-LocalID outcome")
-	}
-	if len(record.RemoteMappings) != 0 {
-		t.Errorf("expected zero remote mappings (no fabrication), got %+v", record.RemoteMappings)
-	}
-}
-
-// TestCLI_CreateSuccessWithoutRemoteID_UnresolvedNoFurtherWrites proves F6: a
-// create that returns 2xx without a remote entry object is recorded as an
-// unresolved "unidentified" outcome with no mapping, stops any further
-// mutations, and exits non-zero.
-func TestCLI_CreateSuccessWithoutRemoteID_UnresolvedNoFurtherWrites(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
-		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Create one"},
-		{ID: "block-2", Date: targetDate, StartTime: "10:00", EndTime: "11:00", Description: "Create two"},
-	})
-
-	var postCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-		case http.MethodPost:
-			atomic.AddInt32(&postCount, 1)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{}`)) // 2xx but no entry object -> empty remote ID
-		}
-	}))
-	defer server.Close()
-
-	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-approve",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code == ExitOK {
-		t.Fatalf("expected non-zero exit for unidentified remote write, got ExitOK")
-	}
-	if got := atomic.LoadInt32(&postCount); got != 1 {
-		t.Errorf("expected exactly 1 POST before stopping (no further mutations), got %d", got)
-	}
-	if !strings.Contains(errOut.String(), "no stable entry ID") {
-		t.Errorf("expected secret-free unidentified warning, got: %s", errOut.String())
-	}
-
-	recordPath := filepath.Join(tempStorage, "workflow", targetDate+".json")
-	data, err := os.ReadFile(recordPath)
-	if err != nil {
-		t.Fatalf("expected durable workflow record: %v", err)
-	}
-	var record workflow.Record
-	if err := json.Unmarshal(data, &record); err != nil {
-		t.Fatalf("failed to decode workflow record: %v", err)
-	}
-	foundUnidentified := false
-	for _, o := range record.Outcomes {
-		if o.Status == workflow.OutcomeUnidentified {
-			foundUnidentified = true
-			if o.Resolved {
-				t.Errorf("unidentified outcome must be unresolved, got %+v", o)
-			}
-			if o.ErrorCode != "REMOTE_ID_MISSING" {
-				t.Errorf("expected REMOTE_ID_MISSING, got %q", o.ErrorCode)
-			}
-		}
-	}
-	if !foundUnidentified {
-		t.Errorf("expected an unidentified outcome, got %+v", record.Outcomes)
-	}
-	if len(record.RemoteMappings) != 0 {
-		t.Errorf("expected zero remote mappings for unidentified write, got %+v", record.RemoteMappings)
-	}
-
-	content, err := os.ReadFile(filepath.Join(tempMarkdown, targetDate+".md"))
-	if err != nil {
-		t.Fatalf("expected markdown record: %v", err)
-	}
-	if !strings.Contains(string(content), "Partial Submission (Unresolved)") {
-		t.Errorf("expected unresolved markdown status, got: %s", string(content))
-	}
-	if !strings.Contains(string(content), "| unidentified |") {
-		t.Errorf("expected unidentified outcome row in markdown, got: %s", string(content))
-	}
-	if strings.Contains(string(content), "Create two") {
-		t.Errorf("no further mutations should be attempted/rendered, got: %s", string(content))
-	}
-}
-
-// TestCLI_CreateWithRemoteID_RecordsConfirmedAndMapping proves the identified
-// success path is unchanged: a create with a non-empty remote ID records a
-// confirmed outcome and a remote mapping.
-func TestCLI_CreateWithRemoteID_RecordsConfirmedAndMapping(t *testing.T) {
-	tempStorage := t.TempDir()
-	tempMarkdown := t.TempDir()
-	targetDate := "2026-10-08"
-	createTestStorageRecord(t, tempStorage, targetDate, []timesheet.TimeBlock{
-		{ID: "block-1", Date: targetDate, StartTime: "09:00", EndTime: "10:00", Description: "Create one"},
-	})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.Method {
-		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode([]api.RemoteEntry{})
-		case http.MethodPost:
-			var req api.CreateEntryRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(api.RemoteEntry{
-				ID:               "remote-ok",
-				Date:             req.Date,
-				StartTime:        req.StartTime,
-				EndTime:          req.EndTime,
-				ClassificationID: req.ClassificationID,
-				Description:      req.Description,
-			})
-		}
-	}))
-	defer server.Close()
-
-	var out, errOut bytes.Buffer
-	args := []string{
-		"-date=" + targetDate,
-		"-dry-run=false",
-		"-approve",
-		"-storage-dir=" + tempStorage,
-		"-markdown-dir=" + tempMarkdown,
-		"-token=test-token",
-		"-base-url=" + server.URL,
-	}
-	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitOK {
-		t.Fatalf("expected ExitOK, got %d (err: %s)", code, errOut.String())
-	}
-
-	recordPath := filepath.Join(tempStorage, "workflow", targetDate+".json")
-	data, err := os.ReadFile(recordPath)
-	if err != nil {
-		t.Fatalf("expected durable workflow record: %v", err)
-	}
-	var record workflow.Record
-	if err := json.Unmarshal(data, &record); err != nil {
-		t.Fatalf("failed to decode workflow record: %v", err)
-	}
-	confirmed := false
-	for _, o := range record.Outcomes {
-		if o.Status == workflow.OutcomeConfirmed && o.RemoteID == "remote-ok" && o.Resolved {
-			confirmed = true
-		}
-	}
-	if !confirmed {
-		t.Errorf("expected confirmed outcome with remote ID, got %+v", record.Outcomes)
-	}
-	if len(record.RemoteMappings) != 1 || record.RemoteMappings[0].RemoteID != "remote-ok" {
-		t.Errorf("expected one mapping to remote-ok, got %+v", record.RemoteMappings)
-	}
-}
-
-// TestOperatingErrorCode_StableOnly proves only the stable code is extracted from
-// a typed API error, never the raw message or body.
-func TestOperatingErrorCode_StableOnly(t *testing.T) {
-	const secret = "leaky-raw-body-secret"
-	opErr := &api.OperatingError{
-		Outcome: api.OutcomeTerminal,
-		Code:    "API_ERR_BAD_REQUEST",
-		Message: "Gradion API returned HTTP 400: " + secret,
-		Err:     errors.New(secret),
-	}
-	got := operatingErrorCode(opErr)
-	if got != "API_ERR_BAD_REQUEST" {
-		t.Errorf("expected stable code, got %q", got)
-	}
-	if strings.Contains(got, secret) {
-		t.Errorf("error code leaked raw message content: %q", got)
-	}
-
-	if got := operatingErrorCode(errors.New("plain failure")); got != "API_ERR_UNKNOWN" {
-		t.Errorf("expected API_ERR_UNKNOWN fallback, got %q", got)
-	}
-	if got := operatingErrorCode(nil); got != "API_ERR_UNKNOWN" {
-		t.Errorf("expected API_ERR_UNKNOWN for nil, got %q", got)
+	if strings.Contains(out.String(), token) || strings.Contains(errOut.String(), token) {
+		t.Errorf("token leaked into diagnostics: out=%q err=%q", out.String(), errOut.String())
 	}
 }

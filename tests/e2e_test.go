@@ -1,5 +1,13 @@
 //go:build e2e
 
+// This end-to-end suite exercises the headless pipeline against hermetic mock
+// servers. The legacy REST SUBMISSION flow (create/edit/delete + plan-derived
+// markdown) was retired in S5 containment: cmd/sync-timesheet now fails closed on
+// a submission attempt and offers only a read-only preview. The submission e2e
+// tests (idempotency, markdown summary, multi-day submission) were removed with
+// the retired path and will be re-created against the approval-bound MCP path in
+// S6/S8. The tests below cover collection, review/clustering, the contained
+// sync-timesheet surface (fail-closed + read-only preview), and benchmarking.
 package tests
 
 import (
@@ -105,32 +113,28 @@ func runCmd(ctx context.Context, dir, binPath string, stdin io.Reader, args ...s
 	return stdout.String(), stderr.String(), exitCode, err
 }
 
-type mockGradionServerState struct {
-	mu         sync.Mutex
-	entries    map[string]api.RemoteEntry
-	postCount  int
-	patchCount int
-	getCount   int
-	idCounter  int
+// readOnlyGradionServer is a read-only mock of the legacy Gradion REST surface.
+// It serves GET /api/entries only and counts any non-GET attempt so a test can
+// assert the contained CLI never writes.
+type readOnlyGradionServer struct {
+	mu        sync.Mutex
+	entries   []api.RemoteEntry
+	mutations int
+	getCount  int
 }
 
-func newMockGradionServer() (*httptest.Server, *mockGradionServerState) {
-	state := &mockGradionServerState{
-		entries: make(map[string]api.RemoteEntry),
-	}
-
+func newReadOnlyGradionServer(entries []api.RemoteEntry) (*httptest.Server, *readOnlyGradionServer) {
+	state := &readOnlyGradionServer{entries: entries}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 
-		switch {
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/entries"):
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/entries") {
 			state.getCount++
 			dateQuery := r.URL.Query().Get("dateFrom")
 			filtered := make([]api.RemoteEntry, 0)
@@ -139,62 +143,23 @@ func newMockGradionServer() (*httptest.Server, *mockGradionServerState) {
 					filtered = append(filtered, e)
 				}
 			}
-			resp := api.RemoteEntriesResponse{
-				Total:   len(filtered),
-				Entries: filtered,
-			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-
-		case r.Method == http.MethodPost && r.URL.Path == "/api/entries":
-			state.postCount++
-			var req api.CreateEntryRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			state.idCounter++
-			entryID := fmt.Sprintf("remote-entry-%d", state.idCounter)
-			remote := api.RemoteEntry{
-				ID:               entryID,
-				Date:             req.Date,
-				StartTime:        req.StartTime,
-				EndTime:          req.EndTime,
-				ClassificationID: req.ClassificationID,
-				Description:      req.Description,
-			}
-			state.entries[entryID] = remote
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(remote)
-
-		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/entries/"):
-			state.patchCount++
-			id := strings.TrimPrefix(r.URL.Path, "/api/entries/")
-			entry, exists := state.entries[id]
-			if !exists {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			var patchReq api.PatchEntryRequest
-			if err := json.NewDecoder(r.Body).Decode(&patchReq); err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			if patchReq.DTO.Description != "" {
-				entry.Description = patchReq.DTO.Description
-			}
-			state.entries[id] = entry
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(entry)
-
-		default:
-			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(api.RemoteEntriesResponse{Total: len(filtered), Entries: filtered})
+			return
 		}
+
+		// Any mutation attempt is a containment violation.
+		state.mutations++
+		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
 
-	server := httptest.NewServer(handler)
-	return server, state
+	return httptest.NewServer(handler), state
+}
+
+func (s *readOnlyGradionServer) counts() (mutations, gets int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mutations, s.getCount
 }
 
 func TestE2E_FullHeadlessPipeline(t *testing.T) {
@@ -206,7 +171,6 @@ func TestE2E_FullHeadlessPipeline(t *testing.T) {
 
 	cacheDir := filepath.Join(baseTemp, ".cache", "timesheet", testDate)
 	storageDir := filepath.Join(baseTemp, "storage")
-	markdownDir := filepath.Join(baseTemp, "timesheet")
 	benchmarksDir := filepath.Join(baseTemp, "benchmarks")
 
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
@@ -304,8 +268,8 @@ END:VCALENDAR`)
 	}))
 	defer ghServer.Close()
 
-	// 3. Mock Gradion Server
-	gradionServer, gradionState := newMockGradionServer()
+	// 3. Read-only mock Gradion Server
+	gradionServer, gradionState := newReadOnlyGradionServer(nil)
 	defer gradionServer.Close()
 
 	// Step 1: fetch-calendar
@@ -391,22 +355,10 @@ END:VCALENDAR`)
 		t.Fatalf("expected clustered blocks in skeleton.json, got 0")
 	}
 
-	// Step 4: Editorial synthesis simulation
-	refinedPath := filepath.Join(cacheDir, "refined.json")
-	refinedRecord := skeletonRecord
-	for i := range refinedRecord.Blocks {
-		refinedRecord.Blocks[i].Title = fmt.Sprintf("Refined: %s", refinedRecord.Blocks[i].Title)
-		refinedRecord.Blocks[i].Description = fmt.Sprintf("Refined description for %s. PRs: #1", refinedRecord.Blocks[i].Title)
-	}
-	refinedBytes, _ := json.MarshalIndent(refinedRecord, "", "  ")
-	if err := os.WriteFile(refinedPath, refinedBytes, 0644); err != nil {
-		t.Fatalf("writing refined.json: %v", err)
-	}
-
-	// Step 5: Collision review and Tier 2 storage persistence
+	// Step 4: Collision review and Tier 2 storage persistence
 	_, revErrOut2, code, err := runCmd(ctx, "", binReviewTimesheet, nil,
 		"-date", testDate,
-		"-input", refinedPath,
+		"-input", skeletonPath,
 		"-non-interactive",
 		"-auto-resolve", "keep_both",
 		"-confirm",
@@ -429,32 +381,40 @@ END:VCALENDAR`)
 		t.Fatalf("invalid saved record: version=%d, blocks=%d", savedRecord.Version, len(savedRecord.Blocks))
 	}
 
-	// Step 6: Gradion Timesheet API reconciliation
-	_, syncErrOut, code, err := runCmd(ctx, "", binSyncTimesheet, nil,
+	// Step 5: A submission attempt FAILS CLOSED with zero remote writes (the
+	// legacy REST write path is retired; no flag re-enables it).
+	_, syncErrOut, code, _ := runCmd(ctx, "", binSyncTimesheet, nil,
 		"-date", testDate,
 		"-storage-dir", storageDir,
 		"-base-url", gradionServer.URL,
 		"-token", "test-gradion-token",
-		"-markdown-dir", markdownDir,
-		"-approve",
+	)
+	if code == 0 {
+		t.Fatalf("expected a non-zero exit for a retired submission attempt, got %d", code)
+	}
+	if !strings.Contains(syncErrOut, "SYNC_CLI_REST_RETIRED") {
+		t.Fatalf("expected SYNC_CLI_REST_RETIRED in stderr, got: %s", syncErrOut)
+	}
+	if mutations, _ := gradionState.counts(); mutations != 0 {
+		t.Fatalf("retired submission must make zero remote writes, got %d mutation attempts", mutations)
+	}
+
+	// Step 6: The read-only preview works and performs zero mutations.
+	previewOut, previewErrOut, code, err := runCmd(ctx, "", binSyncTimesheet, nil,
+		"-date", testDate,
+		"-dry-run",
+		"-storage-dir", storageDir,
+		"-base-url", gradionServer.URL,
+		"-token", "test-gradion-token",
 	)
 	if err != nil || code != 0 {
-		t.Fatalf("sync-timesheet failed with code %d: %v\nstderr: %s", code, err, syncErrOut)
+		t.Fatalf("read-only preview failed with code %d: %v\nstderr: %s", code, err, previewErrOut)
 	}
-
-	gradionState.mu.Lock()
-	if gradionState.postCount != len(savedRecord.Blocks) {
-		t.Fatalf("expected %d POST creations, got %d", len(savedRecord.Blocks), gradionState.postCount)
+	if !strings.Contains(previewOut, "Read-only preview") {
+		t.Fatalf("expected a read-only preview message, got: %s", previewOut)
 	}
-	gradionState.mu.Unlock()
-
-	mdPath := filepath.Join(markdownDir, testDate+".md")
-	mdBytes, err := os.ReadFile(mdPath)
-	if err != nil {
-		t.Fatalf("markdown file not generated at %s: %v", mdPath, err)
-	}
-	if !strings.Contains(string(mdBytes), "# Timesheet: "+testDate) {
-		t.Fatalf("markdown missing header: %s", string(mdBytes))
+	if mutations, gets := gradionState.counts(); mutations != 0 || gets == 0 {
+		t.Fatalf("preview must read without writing: mutations=%d gets=%d", mutations, gets)
 	}
 
 	// Step 7: Empirical benchmark logging
@@ -490,115 +450,6 @@ END:VCALENDAR`)
 	}
 	if metrics[0].TotalTokens != 295 || metrics[0].Date != testDate {
 		t.Fatalf("metric mismatch: %+v", metrics[0])
-	}
-}
-
-func TestE2E_Idempotency(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	testDate := "2026-10-08"
-	baseTemp := t.TempDir()
-	storageDir := filepath.Join(baseTemp, "storage")
-	markdownDir := filepath.Join(baseTemp, "timesheet")
-
-	// Pre-populate storage record with 3 blocks
-	store, err := storage.NewJSONFileStore(storageDir)
-	if err != nil {
-		t.Fatalf("creating storage store: %v", err)
-	}
-
-	record := storage.TimesheetRecord{
-		Date:       testDate,
-		TotalHours: 5.5,
-		Blocks: []timesheet.TimeBlock{
-			{
-				ID:          "block-1",
-				Date:        testDate,
-				StartTime:   "09:00",
-				EndTime:     "10:30",
-				Category:    timesheet.CategoryMeeting,
-				Title:       "Sprint Kickoff",
-				Description: "Sprint kickoff and requirements alignment",
-			},
-			{
-				ID:          "block-2",
-				Date:        testDate,
-				StartTime:   "10:30",
-				EndTime:     "12:30",
-				Category:    timesheet.CategoryDevelopment,
-				Title:       "Backend Implementation",
-				Description: "Core timesheet aggregator development",
-			},
-			{
-				ID:          "block-3",
-				Date:        testDate,
-				StartTime:   "14:00",
-				EndTime:     "16:00",
-				Category:    timesheet.CategoryResearchDocs,
-				Title:       "PR Review",
-				Description: "Peer review and test auditing",
-			},
-		},
-	}
-	if err := store.SaveDay(ctx, record); err != nil {
-		t.Fatalf("saving record: %v", err)
-	}
-
-	gradionServer, gradionState := newMockGradionServer()
-	defer gradionServer.Close()
-
-	// Execution 1: First sync run
-	_, syncErrOut1, code1, err1 := runCmd(ctx, "", binSyncTimesheet, nil,
-		"-date", testDate,
-		"-storage-dir", storageDir,
-		"-base-url", gradionServer.URL,
-		"-token", "test-token",
-		"-markdown-dir", markdownDir,
-	)
-	if err1 != nil || code1 != 0 {
-		t.Fatalf("run 1 failed with code %d: %v\nstderr: %s", code1, err1, syncErrOut1)
-	}
-
-	gradionState.mu.Lock()
-	initialPosts := gradionState.postCount
-	initialPatches := gradionState.patchCount
-	initialEntriesCount := len(gradionState.entries)
-	gradionState.mu.Unlock()
-
-	if initialPosts != 3 {
-		t.Fatalf("expected 3 entries created on run 1, got %d", initialPosts)
-	}
-	if initialPatches != 0 {
-		t.Fatalf("expected 0 patches on run 1, got %d", initialPatches)
-	}
-
-	// Execution 2: Second sync run (Idempotency check)
-	_, syncErrOut2, code2, err2 := runCmd(ctx, "", binSyncTimesheet, nil,
-		"-date", testDate,
-		"-storage-dir", storageDir,
-		"-base-url", gradionServer.URL,
-		"-token", "test-token",
-		"-markdown-dir", markdownDir,
-	)
-	if err2 != nil || code2 != 0 {
-		t.Fatalf("run 2 failed with code %d: %v\nstderr: %s", code2, err2, syncErrOut2)
-	}
-
-	gradionState.mu.Lock()
-	finalPosts := gradionState.postCount
-	finalPatches := gradionState.patchCount
-	finalEntriesCount := len(gradionState.entries)
-	gradionState.mu.Unlock()
-
-	if finalPosts != initialPosts {
-		t.Errorf("idempotency violation: POST count increased from %d to %d on second run", initialPosts, finalPosts)
-	}
-	if finalPatches != initialPatches {
-		t.Errorf("idempotency violation: PATCH count increased from %d to %d on second run", initialPatches, finalPatches)
-	}
-	if finalEntriesCount != initialEntriesCount {
-		t.Errorf("idempotency violation: total remote entries changed from %d to %d", initialEntriesCount, finalEntriesCount)
 	}
 }
 
@@ -696,76 +547,6 @@ func TestE2E_GitHubOutageResilience(t *testing.T) {
 	}
 }
 
-func TestE2E_MarkdownSummary(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	testDate := "2026-10-08"
-	baseTemp := t.TempDir()
-	storageDir := filepath.Join(baseTemp, "storage")
-	markdownDir := filepath.Join(baseTemp, "timesheet")
-
-	store, err := storage.NewJSONFileStore(storageDir)
-	if err != nil {
-		t.Fatalf("creating storage: %v", err)
-	}
-
-	record := storage.TimesheetRecord{
-		Date:       testDate,
-		TotalHours: 4.0,
-		Blocks: []timesheet.TimeBlock{
-			{
-				ID:          "block-prs",
-				Date:        testDate,
-				StartTime:   "09:00",
-				EndTime:     "13:00",
-				Category:    timesheet.CategoryDevelopment,
-				Title:       "PR Feature Implementation",
-				Description: "Developed authentication pipeline and tests. PRs: #10, #11",
-			},
-		},
-	}
-	if err := store.SaveDay(ctx, record); err != nil {
-		t.Fatalf("saving record: %v", err)
-	}
-
-	gradionServer, _ := newMockGradionServer()
-	defer gradionServer.Close()
-
-	_, stderr, code, err := runCmd(ctx, "", binSyncTimesheet, nil,
-		"-date", testDate,
-		"-storage-dir", storageDir,
-		"-base-url", gradionServer.URL,
-		"-token", "test-token",
-		"-markdown-dir", markdownDir,
-		"-approve",
-	)
-	if err != nil || code != 0 {
-		t.Fatalf("sync-timesheet failed with code %d: %v\nstderr: %s", code, err, stderr)
-	}
-
-	mdFile := filepath.Join(markdownDir, testDate+".md")
-	contentBytes, err := os.ReadFile(mdFile)
-	if err != nil {
-		t.Fatalf("failed to read markdown file: %v", err)
-	}
-	content := string(contentBytes)
-
-	// Validate section 3.2 formatting requirements
-	if !strings.Contains(content, "# Timesheet: "+testDate) {
-		t.Errorf("markdown missing title header")
-	}
-	if !strings.Contains(content, "- **Status**: Synchronized") {
-		t.Errorf("markdown missing status")
-	}
-	if !strings.Contains(content, "| Start | End | Action | Classification | Description |") {
-		t.Errorf("markdown missing table header")
-	}
-	if !strings.Contains(content, "PRs: #10, #11") {
-		t.Errorf("markdown missing preserved PR references")
-	}
-}
-
 func TestE2E_BenchmarkMetrics(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -858,150 +639,4 @@ func TestE2E_BenchmarkMetrics(t *testing.T) {
 	if !strings.Contains(chartOut, "Daily LLM Token Consumption") {
 		t.Errorf("chart output missing header: %s", chartOut)
 	}
-}
-
-func TestE2E_MultiDaySimulation(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	baseTemp := t.TempDir()
-	storageDir := filepath.Join(baseTemp, "storage")
-	markdownDir := filepath.Join(baseTemp, "timesheet")
-	benchmarksDir := filepath.Join(baseTemp, "benchmarks")
-	csvPath := filepath.Join(benchmarksDir, "metrics.csv")
-
-	store, err := storage.NewJSONFileStore(storageDir)
-	if err != nil {
-		t.Fatalf("creating storage: %v", err)
-	}
-
-	gradionServer, gradionState := newMockGradionServer()
-	defer gradionServer.Close()
-
-	startDate := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	numDays := 30
-
-	for i := 0; i < numDays; i++ {
-		dateStr := startDate.AddDate(0, 0, i).Format("2006-01-02")
-
-		// 1. Save isolated record for this day
-		rec := storage.TimesheetRecord{
-			Date:       dateStr,
-			TotalHours: 8.0,
-			Blocks: []timesheet.TimeBlock{
-				{
-					ID:          fmt.Sprintf("block-m-%s", dateStr),
-					Date:        dateStr,
-					StartTime:   "09:00",
-					EndTime:     "12:00",
-					Category:    timesheet.CategoryMeeting,
-					Title:       fmt.Sprintf("Team Planning %s", dateStr),
-					Description: fmt.Sprintf("Sprint tracking for %s", dateStr),
-				},
-				{
-					ID:          fmt.Sprintf("block-d-%s", dateStr),
-					Date:        dateStr,
-					StartTime:   "13:00",
-					EndTime:     "18:00",
-					Category:    timesheet.CategoryDevelopment,
-					Title:       fmt.Sprintf("Core Feature %s", dateStr),
-					Description: fmt.Sprintf("Implemented features for %s. PRs: #%d", dateStr, i+1),
-				},
-			},
-		}
-
-		if saveErr := store.SaveDay(ctx, rec); saveErr != nil {
-			t.Fatalf("saving record for %s: %v", dateStr, saveErr)
-		}
-
-		// 2. Reconcile with mock Gradion API
-		_, syncErr, code, err := runCmd(ctx, "", binSyncTimesheet, nil,
-			"-date", dateStr,
-			"-storage-dir", storageDir,
-			"-base-url", gradionServer.URL,
-			"-token", "test-token",
-			"-markdown-dir", markdownDir,
-		)
-		if err != nil || code != 0 {
-			t.Fatalf("sync day %s failed: %v\nstderr: %s", dateStr, err, syncErr)
-		}
-
-		// 3. Record daily benchmark metric
-		transcriptPath := filepath.Join(baseTemp, fmt.Sprintf("sim-transcript-%s.jsonl", dateStr))
-		line := fmt.Sprintf(`{"usage":{"input_tokens":%d,"output_tokens":%d,"total_tokens":%d}}`+"\n",
-			200+i, 50+i, 250+(2*i))
-		if err := os.WriteFile(transcriptPath, []byte(line), 0644); err != nil {
-			t.Fatalf("writing transcript: %v", err)
-		}
-
-		_, benchErr, code, err := runCmd(ctx, "", binBenchmark, nil,
-			"-record",
-			"-date", dateStr,
-			"-transcript", transcriptPath,
-			"-csv", csvPath,
-			"-storage-dir", storageDir,
-			"-wall-clock-ms", "150",
-			"-peak-rss-mb", "12.0",
-		)
-		if err != nil || code != 0 {
-			t.Fatalf("benchmarking day %s failed: %v\nstderr: %s", dateStr, err, benchErr)
-		}
-	}
-
-	// Verification 1: Exactly 30 storage records
-	entries, err := os.ReadDir(storageDir)
-	if err != nil {
-		t.Fatalf("reading storage records: %v", err)
-	}
-	var jsonCount int
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") {
-			jsonCount++
-		}
-	}
-	if jsonCount != numDays {
-		t.Errorf("expected %d storage records, found %d", numDays, jsonCount)
-	}
-
-	// Verification 2: Exactly 30 markdown summary files
-	mdEntries, err := os.ReadDir(markdownDir)
-	if err != nil {
-		t.Fatalf("reading markdown files: %v", err)
-	}
-	if len(mdEntries) != numDays {
-		t.Errorf("expected %d markdown files, found %d", numDays, len(mdEntries))
-	}
-
-	// Verification 3: Exactly 30 benchmark metric rows
-	metrics, err := benchmark.ReadMetrics(csvPath)
-	if err != nil {
-		t.Fatalf("reading metrics csv: %v", err)
-	}
-	if len(metrics) != numDays {
-		t.Errorf("expected %d metric rows, got %d", numDays, len(metrics))
-	}
-
-	// Verification 4: Zero state leakage across date boundaries
-	for i := 0; i < numDays; i++ {
-		dateStr := startDate.AddDate(0, 0, i).Format("2006-01-02")
-		dayRec, err := store.GetDay(ctx, dateStr)
-		if err != nil {
-			t.Fatalf("retrieving day record %s: %v", dateStr, err)
-		}
-		if len(dayRec.Blocks) != 2 {
-			t.Errorf("day %s leaked state: expected 2 blocks, got %d", dateStr, len(dayRec.Blocks))
-		}
-		for _, b := range dayRec.Blocks {
-			if !strings.Contains(b.ID, dateStr) {
-				t.Errorf("day %s contains block %s belonging to another day", dateStr, b.ID)
-			}
-		}
-	}
-
-	// Verification 5: Total remote submissions
-	gradionState.mu.Lock()
-	if gradionState.postCount != numDays*2 {
-		t.Errorf("expected %d remote entries, got %d", numDays*2, gradionState.postCount)
-	}
-	gradionState.mu.Unlock()
 }
