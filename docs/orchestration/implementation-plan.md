@@ -126,7 +126,7 @@ Exit: AI is optional, constrained, and cannot authorize or confirm work.
 
 ## S8. Shared entry points and managed vault export
 
-State: implementing on branch `feat/s8-entry-points-export` (base `f1d95c1`, S1-S7 ancestors). Design accepted from an @oracle pass; owner confirmed comment-marked export (legacy block untouched), deletion of the dead `cmd/sync-timesheet` + `internal/api`, and deferring the concrete editorial command to S9. Layer 1 (shared core `internal/run` + `internal/export`) implementing; layer 2 (CLI `cmd/timesheet`, skill rewrite, deletions) follows.
+State: committed at layer 1 `06ce95b` and layer 2 `d65bdf0` on `feat/s8-entry-points-export` (locally only, not pushed). Layers 1 and 2 each independently reviewed and re-reviewed (accepted). Owner confirmed three decisions (comment-marked export with the legacy block untouched; delete the dead `cmd/sync-timesheet` + `internal/api`; defer the concrete editorial command to S9). S8 is complete at the code level; its exit holds (both frontends share validation and approval semantics; exports are safe and truthful). Carry: `resolve` fail-loud on already-applied decisions (Info); orchestration usage wiring (Info); live MCP/agent verification and the concrete editorial command remain S9.
 
 Depends on S4 and S6; editorial integration may follow S7 without blocking no-AI operation.
 

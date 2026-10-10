@@ -30,7 +30,7 @@ Observed locally on 2026-10-10 (orchestrator session):
 | S5 MCP transport | layers 1 `42fba53`, 2 `b59661a`, 3 `c943e97`, committed on `feat/s5-mcp-transport`, independently reviewed/re-reviewed accepted |
 | S6 plans/approval/reconciliation | layers 1 `3dfe814`, 2 `40d266d`, committed on `feat/s6-plans-approval-reconciliation`, independently reviewed/re-reviewed accepted |
 | S7 editorial synthesis | `3d4bcc8`, committed on `feat/s7-editorial-synthesis`, independently reviewed/re-reviewed accepted |
-| S8 entry points/export | layer 1 `06ce95b`, committed on `feat/s8-entry-points-export`, independently reviewed/re-reviewed accepted; layer 2 (CLI/skill/deletions) implementing |
+| S8 entry points/export | layers 1 `06ce95b`, 2 `d65bdf0`, committed on `feat/s8-entry-points-export`, independently reviewed/re-reviewed accepted |
 | Orchestration docs | `d3b9378`, `2507498`, `9144849`, `406fce3`, `7433729`, `67b6ab5`, `6535516`, `657e8bf`, committed |
 | S1 tracked modifications | `cmd/sync-timesheet/main.go`, `cmd/sync-timesheet/main_test.go` |
 | S1 pending new package | `internal/workflow/` (`models.go`, `store.go`, `merge.go`, `file_store.go`, `file_store_test.go`, `merge_test.go`) |
@@ -175,13 +175,24 @@ Carried S7 follow-ups (non-blocking): S7-F4 (usage does not accumulate across re
 | Field | Status |
 | --- | --- |
 | Slice | S8 shared entry points and managed vault export |
-| Lifecycle | layer 1 committed; layer 2 (CLI/skill/deletions) implementing |
-| Branch / base | `feat/s8-entry-points-export` at `06ce95b` (S1-S7 ancestors verified) |
-| Commits | layer 1 `06ce95b` (15 files) |
+| Lifecycle | committed (layers 1 + 2), independently accepted |
+| Branch / base | `feat/s8-entry-points-export` (S1-S7 ancestors verified) |
+| Commits | layer 1 `06ce95b` (15 files); layer 2 `d65bdf0` (17 files, −2097 net) |
 | Design | @oracle design pass accepted by the orchestrator (session `ses_eda70735effenHla0rxFzsO0X4`) |
-| Independent review | layer 1 reviewed and re-reviewed accepted (S8L1-1..7 closed) |
-| Current writer | @fixer `ses_edbe22f3fffegJeHjAvwnOt9JA` (alias fix-3) implementing S8-IMPL-2 |
-| Next gate | independent review of layer 2; slice commit; vault sync |
+| Independent review | layers 1 and 2 each reviewed and re-reviewed; accepted (S8L1-1..7, F1..F5 closed) |
+| Next gate | select the next dependency-ready slice (S9 integrated acceptance) |
+
+S8 is complete at the code level: the shared core `internal/run` + managed export `internal/export` (layer 1); the thin CLI `cmd/timesheet`, the skill rewrite, and the deletion of the dead `cmd/sync-timesheet` + `internal/api` (layer 2). S8's exit holds: both frontends share validation and approval semantics (the documented `resolve.json` shape parses; approval is plan-content-hash-bound; `submit` uses the record's active approval), and exports are safe and truthful (marker-scoped, idempotent, journal/YAML-preserving, statuses reviewed/submitted/partial/failed/unresolved, never replay a submission).
+
+Carried S8 follow-ups (non-blocking): `resolve` is fail-loud on an already-applied decision (Info); duplicate decision keys count cosmetically (Info); orchestration usage measurement wiring (Info). The concrete live editorial command and live MCP/agent verification remain S9. The legacy `cmd/review-timesheet`/`internal/timesheet`/`internal/storage` remain physically but are not used by the new flow (documented legacy). No live endpoint contacted; production readiness is not claimed.
+
+S8 layer-2 dispositions (orchestrator, independent of reviewer labels):
+- F1 skill's documented `resolve.json` keys do not decode into `submit.Resolution` (no json tags) → the adopt decision is silently dropped (Major): accepted, fix now (add tags; CLI test with the documented shape).
+- F2 `resolve` prints an unconditional success count (Medium): accepted, fix (return/print the applied count; unmatched = error/no-op).
+- F3 git credential resolved for every subcommand incl. read-only `export` (Low): accepted, fix (lazy).
+- F4 `--ack` ignored without `--decisions` (Low): accepted, fix.
+- F5 test gaps (documented resolve keys, Date() default, range iteration, skill resolve subcommand, CLI secret-ref guard) (Info): accepted, add.
+The reviewer confirmed the rest of layer 2 holds: thin CLI adapter, no bare `-approve`, record-resolved active approval, no-AI operation, complete deletions with no dangling references, secret refs keychain-only/in-memory, and the export properties.
 
 S8 layer-2 scope: new thin CLI `cmd/timesheet` delegating to `internal/run` (revision-bound `--plan` approval; no bare `-approve`; no-AI operation; per-day ranges); rewrite the skill to delegate to the CLI (harness-agnostic, no accounting); delete `cmd/sync-timesheet` + `internal/api` (owner decision); update `tests/skill_test.go` + `tests/e2e_test.go`. The concrete live editorial command is deferred to S9.
 
@@ -518,6 +529,17 @@ Open findings and disposition: S7-F1/F2/F3/F6 closed; S7-F4/F5 carried to S8 (ac
 Commit and publication status: committed locally 3d4bcc8; NOT pushed, no PR.
 Vault sync status: complete - project and daily note updated with the S7 commit.
 Next gate and blockers: next dependency-ready slice S8 (shared entry points and managed vault export). Production blockers unchanged; no production entry point wires the editor.
+```
+
+```text
+2026-10-10 / S8 / planned -> designing -> implementing (L1,L2) -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: direct-dispatch session grant; local commits of independently accepted slices. Owner confirmed three S8 decisions (comment-marked export, legacy block untouched; delete the dead cmd/sync-timesheet + internal/api; defer the concrete editorial command to S9).
+Branch / HEAD / exact snapshot: feat/s8-entry-points-export / d65bdf0 (layer 1 06ce95b; S1-S7 ancestors) / 32 files across two commits (layer 2 net -2097 lines); md5s matched accepted manifests before each commit.
+Worker/reviewer report references and verification level: @oracle design (ses_eda70735effenHla0rxFzsO0X4); @fixer S8-IMPL-1/S8-FIX-1/S8-IMPL-2/S8-FIX-2 (ses_edbe22f3fffegJeHjAvwnOt9JA); @oracle reviews/re-reviews (ses_eda5e6395ffex0M34vLGCR7hYR, ses_eda3f07c4ffe36JboGzdTQpIVv) accepted. Orchestrator gofmt/build/vet/test/race and e2e-tag green.
+Open findings and disposition: S8L1-1..7 and F1..F5 closed; N1/N2 Info carried; S9 owns live MCP/agent verification and the concrete editorial command. No secret/duplicate-write/lost-work issue.
+Commit and publication status: committed locally 06ce95b and d65bdf0; NOT pushed, no PR.
+Vault sync status: complete - project and daily note updated with the S8 commits.
+Next gate and blockers: S9 integrated acceptance (hermetic scenario matrix + fault injection, authorized live read-only checks where needed). Production blockers unchanged; live MCP/agent semantics unverified.
 ```
 
 ## Documentation review
