@@ -169,6 +169,18 @@ S7 is complete at the code level: text-only optional editorial layer (bounded re
 
 Carried S7 follow-ups (non-blocking): S7-F4 (usage does not accumulate across reruns; S8 must pass accumulated Known `Spent` and add runs); S7-F5 (one editor call per target; S8 may batch); `Report.Orchestration` defaults to Unknown when omitted (honest; S8 presentation). No production entry point wires the editor; live agent semantics unverified (S8/S9). Owner override recorded: soft daily target 1000 tokens incl. cache (spec said 600).
 
+## S8 active slice: shared entry points and managed vault export
+
+| Field | Status |
+| --- | --- |
+| Slice | S8 shared entry points and managed vault export |
+| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
+| Branch / base | `feat/s8-entry-points-export` at `23f3546` (S1-S7 ancestors verified) |
+| Designer | @oracle session `ses_eda70735effenHla0rxFzsO0X4` (alias ora-19) |
+| Next gate | accept the design (owner decisions only if it surfaces product trade-offs), then implement |
+
+S8 wires the shared deterministic core into the CLI and the skill (preflight -> collection -> proposal -> review -> save -> submission preview -> approval -> execute -> outcome -> export), replaces the retired REST stub and the bare `-approve`, and adds a managed daily-note export (reviewed-not-submitted / partial / unresolved / submitted) that preserves journal text and YAML and never replays a submission on export failure. It discharges the S8 obligations: wire `VerifyContracts`/`PreflightContracts`, pass `workflow.ActiveApproval` and compare `ApprovalID` before `Execute`, and supply accumulated editorial `Spent`/runs. Depends on S4 and S6; editorial integration may follow S7. Non-goals: S9 integrated acceptance.
+
 S7 dispositions (orchestrator, independent of reviewer labels):
 - S7-F1 omitted `Spent` disables the soft budget on the fresh-day path (Medium): accepted, fix now (default a zero/unknown Spent to Known zero).
 - S7-F2 CommandEditor captures unbounded output before the parse-time cap (Low): accepted, fix now (bound at capture).

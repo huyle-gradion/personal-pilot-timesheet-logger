@@ -126,6 +126,8 @@ Exit: AI is optional, constrained, and cannot authorize or confirm work.
 
 ## S8. Shared entry points and managed vault export
 
+State: designing on branch `feat/s8-entry-points-export` (base `23f3546`, S1-S7 ancestors). Bounded @oracle design pass in progress; no implementation writer dispatched.
+
 Depends on S4 and S6; editorial integration may follow S7 without blocking no-AI operation.
 
 CLI and skill call the same deterministic core. Replace old workflow instructions that infer time or treat a bare flag as exact approval. Export a managed daily-note section after local review and update it for actual submission outcomes. Preserve unrelated journal text and valid YAML. ai-database remains optional, not the primary store.
