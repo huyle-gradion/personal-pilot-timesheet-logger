@@ -114,6 +114,8 @@ Exit: no production mutation path bypasses exact approval, durable intent, valid
 
 ## S7. Optional editorial synthesis and usage
 
+State: designing on branch `feat/s7-editorial-synthesis` (base `4f5e1c9`, S1-S6 ancestors). Bounded @oracle design pass in progress; no implementation writer dispatched.
+
 Depends on S4; changes to text must participate in S6 invalidation.
 
 Implement text-only editorial input/output validation, summary reuse for unchanged evidence, and a soft 600-token daily editorial target including retries. Keep orchestration usage separate; unknown measurements are not zero. Budget exhaustion uses deterministic or manual text.

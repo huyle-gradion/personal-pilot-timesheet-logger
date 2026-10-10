@@ -152,6 +152,18 @@ S6 is complete at the code level: additive `SubmissionPlan`/`Approval` represent
 
 Carried S6 follow-ups (non-blocking): **F1 (S8 obligation)** — the S8 entry point must pass `workflow.ActiveApproval(rec,date)` and compare `ApprovalID` before `Execute` (a caller-supplied stale approval can re-validate only if the plans are operationally identical); F4 classification-only edit inference is conservative (unresolved); F5 advisory rebuild re-observes after releasing the lock (TOCTOU, no hazard); `RebuildFailed` is defensive/unreachable; NEW-1 (empty observed `Date` can force a spurious edit — S9 live verification or a defensive fix); residual remote write race (no conditional update / idempotency key) documented, not closed. No production entry point wires `Execute`; live MCP semantics unverified.
 
+## S7 active slice: optional editorial synthesis and usage
+
+| Field | Status |
+| --- | --- |
+| Slice | S7 optional editorial synthesis and usage |
+| Lifecycle | designing (bounded @oracle design pass in progress; no implementation writer dispatched) |
+| Branch / base | `feat/s7-editorial-synthesis` at `4f5e1c9` (S1-S6 ancestors verified) |
+| Designer | @oracle session `ses_eda93832fffeUT2287dqL1w6Cp` (alias ora-17) |
+| Next gate | accept the design (owner decisions only if it surfaces product trade-offs), then implement hermetically |
+
+S7 is a text-only optional editorial layer: AI may propose titles/descriptions only (never intervals/attendance/projects/evidence/approvals), with summary reuse for unchanged evidence, a soft 600-token daily editorial target including retries, orchestration usage kept separate (unknown is not zero), budget-exhaustion fallback to deterministic/manual text, and no-agent operation. Text changes must participate in S6 invalidation. Depends on S4. Non-goals: S8 entry points/export, S9 acceptance.
+
 S6 layer-2 dispositions (orchestrator, independent of reviewer labels):
 - F2 advisory rebuild failure returned as the run error (Low): accepted, fix (surface distinctly, not top-level error).
 - F3 rebuild block reasons dropped (Info): accepted, fix.
