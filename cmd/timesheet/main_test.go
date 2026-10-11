@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/editorial"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/export"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
@@ -431,6 +432,120 @@ func TestResolveSecretRef_RejectsRawSecret(t *testing.T) {
 	}
 	if tok, err := resolveSecretRef(context.Background(), ""); err != nil || tok != "" {
 		t.Fatalf("an empty reference must be a no-op, got %q %v", tok, err)
+	}
+}
+
+// S8-FOLLOWUP-1: a day without evidence must produce an empty draft, not an error.
+func TestRunCLI_ReviewEmptyDaySucceeds(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{}) // NO configured sources
+
+	code, stdout, stderr := runArgs(t, "review", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--no-editorial")
+	if code != exitOK {
+		t.Fatalf("review on an empty day must succeed, got %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "proposal (reviewed=0 blocks") {
+		t.Fatalf("want a 0-block proposal, got:\n%s", stdout)
+	}
+	// The record is materialized (a bare review persists the day) and, with NO
+	// sources, no collection summary is fabricated.
+	rec := loadRecord(t, storage, testDate)
+	if rec.Collection != nil {
+		t.Fatalf("no sources must not fabricate a collection summary, got %+v", rec.Collection)
+	}
+}
+
+// S8-FOLLOWUP-1: review --decisions mark_empty on a NO-RECORD day lazily creates
+// the record, marks it reviewed-empty, and exports a reviewed-empty note.
+func TestRunCLI_ReviewMarkEmptyCreatesRecordAndExports(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	vault := filepath.Join(dir, "vault")
+	cfgPath := writeConfig(t, dir, cliConfig{Vault: vault, DailyDir: "Daily"})
+
+	decisionsPath := filepath.Join(dir, "mark_empty.json")
+	writeJSON(t, decisionsPath, run.ReviewDecisions{MarkEmpty: true})
+
+	code, _, stderr := runArgs(t, "review", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--decisions", decisionsPath, "--no-editorial")
+	if code != exitOK {
+		t.Fatalf("mark-empty review must succeed on a no-record day, got %d (%s)", code, stderr)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Review == nil || !rec.Review.Reviewed || !rec.Review.Empty {
+		t.Fatalf("want a reviewed-empty record, got %+v", rec.Review)
+	}
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("a reviewed-empty day must invent no entries, got %+v", rec.Confirmed)
+	}
+
+	code, stdout, stderr := runArgs(t, "export", "--config", cfgPath, "--storage-dir", storage, "--date", testDate)
+	if code != exitOK {
+		t.Fatalf("export: %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "reviewed-empty") {
+		t.Fatalf("want a reviewed-empty status, got:\n%s", stdout)
+	}
+	blob, err := os.ReadFile(filepath.Join(vault, "Daily", testDate+".md"))
+	if err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	if !strings.Contains(string(blob), "reviewed-empty") {
+		t.Fatalf("want a reviewed-empty note, got:\n%s", blob)
+	}
+}
+
+// F5: `review` with NO sources must not clobber seeded Confirmed intervals or
+// Review decisions (the removed guard + the empty Collect are upserts only).
+func TestRunCLI_ReviewNoSourcesPreservesDecisions(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{}) // NO sources
+
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Review.AcknowledgedSources = []string{"cal"}
+	})
+	before := loadRecord(t, storage, testDate)
+
+	code, _, stderr := runArgs(t, "review", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--no-editorial")
+	if code != exitOK {
+		t.Fatalf("review: %d (%s)", code, stderr)
+	}
+	after := loadRecord(t, storage, testDate)
+	if len(after.Confirmed) != len(before.Confirmed) || after.Confirmed[0].Description != before.Confirmed[0].Description {
+		t.Fatalf("Confirmed must be preserved:\n before=%+v\n after=%+v", before.Confirmed, after.Confirmed)
+	}
+	if after.Review == nil || !after.Review.Reviewed || len(after.Review.AcknowledgedSources) != 1 || after.Review.AcknowledgedSources[0] != "cal" {
+		t.Fatalf("Review decisions must be preserved, got %+v", after.Review)
+	}
+}
+
+// F6: the empty-day path WITH an active editor must succeed and invoke NO agent
+// (an empty proposal has zero targets). The command is deliberately a
+// non-existent binary, so a test that passes proves the editor was never run.
+func TestRunCLI_ReviewEmptyDayWithEditor(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := cliConfig{Editorial: editorial.Config{
+		Enabled: true, Adapter: "command", Command: []string{"/nonexistent-editorial-agent"},
+	}}
+	cfgPath := writeConfig(t, dir, cfg)
+
+	code, stdout, stderr := runArgs(t, "review", "--config", cfgPath, "--storage-dir", storage, "--date", testDate)
+	if code != exitOK {
+		t.Fatalf("review with an editor on an empty day must succeed, got %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "proposal (reviewed=0 blocks") {
+		t.Fatalf("want a 0-block proposal, got:\n%s", stdout)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Usage == nil || rec.Usage.Invoked || rec.Usage.EditorialRuns != 0 {
+		t.Fatalf("an empty proposal must invoke no editor, got %+v", rec.Usage)
 	}
 }
 

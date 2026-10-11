@@ -416,11 +416,13 @@ func cmdReview(ctx context.Context, r *run.Runner, cfg cliConfig, editorActive b
 		return exitError
 	}
 	for _, d := range dates {
-		if len(cfg.Evidence.Sources) > 0 {
-			if _, err := r.Collect(ctx, d); err != nil {
-				fmt.Fprintf(stderr, "timesheet: collect %s: %v\n", d, err)
-				return exitError
-			}
+		// Always collect, even with NO configured sources: Collect with an empty
+		// registry persists the day's record with an empty collection summary, so an
+		// empty draft is durable and `review` is consistent for every date. Collect
+		// preserves user decisions (the merge is an upsert).
+		if _, err := r.Collect(ctx, d); err != nil {
+			fmt.Fprintf(stderr, "timesheet: collect %s: %v\n", d, err)
+			return exitError
 		}
 		prop, err := r.Propose(ctx, d)
 		if err != nil {

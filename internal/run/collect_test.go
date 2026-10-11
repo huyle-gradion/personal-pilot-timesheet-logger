@@ -1,9 +1,13 @@
 package run
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/review"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
 // S8L1-7: Collect merges evidence into the record (CollectedEvidence upsert +
@@ -55,5 +59,48 @@ func TestCollect_MergesEvidence(t *testing.T) {
 	}
 	if len(rec2.Evidence) != 1 {
 		t.Fatalf("legacy refs must upsert, got %d", len(rec2.Evidence))
+	}
+}
+
+// F2: a NO-SOURCE collection must not clobber a prior INCOMPLETE collection summary
+// (the readiness gate must still see the incomplete collection).
+func TestCollect_NoSourcesPreservesIncompleteCollection(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry()}, Config{}) // NO sources
+
+	date := "2026-10-06"
+	if _, err := store.UpdateDay(ctx, date, func(rec *workflow.Record) error {
+		rec.Collection = &evidence.CollectionSummary{
+			Date: date,
+			Sources: []evidence.SourceResult{
+				{SourceID: "cal", Type: evidence.SourceCalendar, Status: evidence.StatusIncomplete, ErrorCode: "SOURCE_ERROR"},
+			},
+			Complete: false,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := r.Collect(ctx, date); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	rec, err := store.GetDay(ctx, date)
+	if err != nil {
+		t.Fatalf("GetDay: %v", err)
+	}
+	if rec.Collection == nil || rec.Collection.Complete || len(rec.Collection.Sources) != 1 {
+		t.Fatalf("a no-source collection must preserve the prior incomplete summary, got %+v", rec.Collection)
+	}
+	rd := review.Readiness(*rec)
+	blocked := false
+	for _, reason := range rd.Reasons {
+		if strings.Contains(reason, "incomplete_collection") {
+			blocked = true
+		}
+	}
+	if !rd.Blocked || !blocked {
+		t.Fatalf("readiness must still report incomplete_collection, got %v", rd.Reasons)
 	}
 }

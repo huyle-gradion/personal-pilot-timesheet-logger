@@ -26,10 +26,17 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 		return CollectResult{Date: date, Summary: summary}, err
 	}
 	out := CollectResult{Date: date, Evidence: ev, Summary: summary, MergedCount: len(ev)}
+	// Only (over)write the collection summary when collection actually RAN with
+	// configured sources. With NO sources, an existing (possibly INCOMPLETE) summary
+	// is preserved, so a prior partial collection is never silently presented as
+	// complete to the readiness gate.
+	hasSources := len(r.cfg.Evidence.Sources) > 0
 	_, err = r.deps.Store.UpdateDay(ctx, date, func(rec *workflow.Record) error {
 		mergeEvidenceIntoRecord(rec, ev)
-		summaryCopy := summary
-		rec.Collection = &summaryCopy
+		if hasSources {
+			summaryCopy := summary
+			rec.Collection = &summaryCopy
+		}
 		return nil
 	})
 	if err != nil {
