@@ -22,12 +22,27 @@ type PreflightStatus struct {
 	Error       string   `json:"error,omitempty"`
 }
 
-// probeGHAuthToken queries `gh auth token` with bounded timeout and safe subprocess execution.
-func probeGHAuthToken(ctx context.Context) (string, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
+// probeTimeoutDuration bounds a single `gh auth token` probe. It is the
+// production deadline and is deliberately unchanged.
+const probeTimeoutDuration = 2 * time.Second
 
-	cmd := exec.CommandContext(probeCtx, "gh", "auth", "token")
+// runGH executes the `gh auth token` probe under a bounded, cancelable context
+// and returns its raw stdout. It is an unexported, in-package test seam:
+// package tests swap it for a hermetic fake via withRunGH so they spawn no
+// subprocess and never depend on the installed `gh`. Unlike the exported
+// keychain.SetDefaultResolver, it has no external setter and must only be
+// swapped by tests in this package. Not safe for concurrent mutation.
+var runGH = defaultRunGH
+
+// defaultRunGH runs `gh auth token` with safe subprocess execution and returns
+// its stdout bytes.
+//
+// Unlike the previous implementation it PROPAGATES the subprocess failure — a
+// start error, non-zero exit, or context deadline/cancellation — instead of
+// discarding it. A killed or timed-out probe must never masquerade as a
+// successful empty token.
+func defaultRunGH(ctx context.Context) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil && cmd.Process.Pid > 0 {
@@ -38,23 +53,47 @@ func probeGHAuthToken(ctx context.Context) (string, error) {
 		return nil
 	}
 	cmd.WaitDelay = time.Second
+	cmd.Stderr = nil // Suppress stderr output from gh
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	cmd.Stderr = nil // Suppress stderr output from gh
 
 	if err := cmd.Start(); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	var stdout bytes.Buffer
-	_, _ = io.Copy(&stdout, io.LimitReader(stdoutPipe, 4096))
-	_ = cmd.Wait()
+	_, copyErr := io.Copy(&stdout, io.LimitReader(stdoutPipe, 4096))
+	waitErr := cmd.Wait()
 
-	tok := strings.TrimSpace(stdout.String())
-	return tok, nil
+	// Deadline/cancellation takes precedence: a killed probe is a failure, not
+	// an empty-but-successful token. ctx.Err() is secret-free.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if waitErr != nil {
+		return nil, waitErr
+	}
+	if copyErr != nil {
+		return nil, copyErr
+	}
+	return stdout.Bytes(), nil
+}
+
+// probeGHAuthToken queries `gh auth token` with a bounded timeout. It applies
+// the production bound (probeTimeoutDuration) to the caller's context and
+// routes through runGH, trimming the output and propagating any error.
+func probeGHAuthToken(ctx context.Context) (string, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeoutDuration)
+	defer cancel()
+
+	out, err := runGH(probeCtx)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // ResolveAuthToken resolves a GitHub authentication token from arguments, env
