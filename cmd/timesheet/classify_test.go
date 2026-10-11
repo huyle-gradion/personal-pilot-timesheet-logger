@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +13,32 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/selection"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
+
+// fakeCatalogFetcher is a hermetic catalogFetcher that echoes the query.
+type fakeCatalogFetcher struct {
+	catalog gradion.Catalog
+	err     error
+	queries []string
+}
+
+func (f *fakeCatalogFetcher) ClassificationCatalog(ctx context.Context, query string) (gradion.Catalog, error) {
+	f.queries = append(f.queries, query)
+	if f.err != nil {
+		return gradion.Catalog{}, f.err
+	}
+	cat := f.catalog
+	cat.Query = query
+	cat.Source = "live"
+	return cat, nil
+}
+
+// withCatalogFetcher installs a fake catalog fetcher for the test's duration.
+func withCatalogFetcher(t *testing.T, f *fakeCatalogFetcher) {
+	t.Helper()
+	prev := newCatalogFetcher
+	newCatalogFetcher = func(context.Context, cliConfig) (catalogFetcher, error) { return f, nil }
+	t.Cleanup(func() { newCatalogFetcher = prev })
+}
 
 // withHome points the non-secret selection state at a temp dir so tests never
 // touch the real ~/.timesheet.
@@ -406,5 +433,118 @@ func TestLoadSubmitCatalog_StaleOrAbsentBlocks(t *testing.T) {
 	}
 	if !strings.Contains(prov, "cache") {
 		t.Fatalf("the cache provenance must be disclosed, got %q", prov)
+	}
+}
+
+// W2: `classify list` (live) caches under the SEARCH query: the unfiltered fetch
+// under "", a filtered fetch under its query — and neither clobbers the other.
+func TestClassifyList_LiveCachesUnderQuery(t *testing.T) {
+	withHome(t)
+	fetch := &fakeCatalogFetcher{catalog: sampleCat()}
+	withCatalogFetcher(t, fetch)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, cliConfig{})
+
+	if code, _, stderr := runArgs(t, "classify", "list", "--config", cfgPath); code != exitOK {
+		t.Fatalf("unfiltered list: %d (%s)", code, stderr)
+	}
+	if code, _, stderr := runArgs(t, "classify", "list", "--config", cfgPath, "--search", "intern"); code != exitOK {
+		t.Fatalf("filtered list: %d (%s)", code, stderr)
+	}
+	if len(fetch.queries) != 2 || fetch.queries[0] != "" || fetch.queries[1] != "intern" {
+		t.Fatalf("want an unfiltered then filtered fetch, got %v", fetch.queries)
+	}
+
+	p, err := selection.DefaultCatalogCachePath()
+	if err != nil {
+		t.Fatalf("cache path: %v", err)
+	}
+	unfiltered, err := selection.LoadCatalogCache(p, "")
+	if err != nil || len(unfiltered.Options) != 2 {
+		t.Fatalf("the unfiltered entry must be cached and intact: %+v err=%v", unfiltered, err)
+	}
+	filtered, err := selection.LoadCatalogCache(p, "intern")
+	if err != nil || filtered.Query != "intern" {
+		t.Fatalf("the filtered entry must be cached under its query: %+v err=%v", filtered, err)
+	}
+}
+
+// W2: loadSubmitCatalog prefers the UNFILTERED cache entry over a newer filtered
+// one, so a filtered search can never shadow the whole-catalog gate.
+func TestLoadSubmitCatalog_PrefersUnfilteredEntry(t *testing.T) {
+	withHome(t)
+	unfiltered := sampleCat()
+	unfiltered.ObservedAt = time.Now().UTC().Add(-2 * time.Hour)
+	filtered := sampleCat()
+	filtered.Query = "intern"
+	filtered.ObservedAt = time.Now().UTC() // newer, but filtered
+	filtered.Options = []gradion.ClassificationOption{{ID: "uuid-1"}}
+	seedCache(t, unfiltered)
+	seedCache(t, filtered)
+
+	cat, prov := loadSubmitCatalog(context.Background(), cliConfig{})
+	if cat == nil {
+		t.Fatalf("want the unfiltered cache entry")
+	}
+	if cat.Query != "" || len(cat.Options) != 2 {
+		t.Fatalf("must prefer the unfiltered entry, got %+v", cat)
+	}
+	if !strings.Contains(prov, "cache") {
+		t.Fatalf("provenance must be disclosed, got %q", prov)
+	}
+}
+
+// F5: a fresh but NON-FULL unfiltered cache entry (truncated) is labelled partial,
+// never presented as a complete whole-catalog validation.
+func TestLoadSubmitCatalog_PartialUnfilteredEntryLabelledPartial(t *testing.T) {
+	withHome(t)
+	partial := sampleCat()
+	partial.Complete = false // unfiltered (Query == "") but truncated
+	seedCache(t, partial)
+
+	cat, prov := loadSubmitCatalog(context.Background(), cliConfig{})
+	if cat == nil || cat.Query != "" {
+		t.Fatalf("want the unfiltered partial entry, got %+v", cat)
+	}
+	if !strings.Contains(prov, "partial") {
+		t.Fatalf("a non-full entry must be labelled partial, got %q", prov)
+	}
+}
+
+// F5: a live but truncated (non-full) fetch is likewise labelled partial.
+func TestLoadSubmitCatalog_LivePartialIsLabelledPartial(t *testing.T) {
+	withHome(t)
+	partial := sampleCat()
+	partial.Complete = false
+	withCatalogFetcher(t, &fakeCatalogFetcher{catalog: partial})
+
+	cat, prov := loadSubmitCatalog(context.Background(), cliConfig{})
+	if cat == nil || cat.Source != "live" {
+		t.Fatalf("want a live fetch, got %+v", cat)
+	}
+	if !strings.Contains(prov, "partial") {
+		t.Fatalf("a non-full live fetch must be labelled partial, got %q", prov)
+	}
+}
+
+// W2: when only a PARTIAL (filtered) cache exists, loadSubmitCatalog returns it
+// (with a partial marker) so the submit boundary can targeted-validate — a recent
+// preference outside the current search is never treated as invalid.
+func TestLoadSubmitCatalog_FallsBackToPartialEntry(t *testing.T) {
+	withHome(t)
+	filtered := sampleCat()
+	filtered.Query = "intern"
+	filtered.Complete = false
+	seedCache(t, filtered)
+
+	cat, prov := loadSubmitCatalog(context.Background(), cliConfig{})
+	if cat == nil {
+		t.Fatalf("want the partial cache entry as a fallback")
+	}
+	if cat.Query != "intern" {
+		t.Fatalf("want the filtered entry, got %+v", cat)
+	}
+	if !strings.Contains(prov, "partial") {
+		t.Fatalf("a partial fallback must be disclosed, got %q", prov)
 	}
 }

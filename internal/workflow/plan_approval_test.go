@@ -85,6 +85,29 @@ func TestPlanHash_DuplicateKeyOperationsOrderIndependent(t *testing.T) {
 	}
 }
 
+// W1: a change to the chosen classification OR its derived activity type changes
+// the local fingerprint, so an existing approval is invalidated.
+func TestLocalFingerprint_TracksClassificationAndActivityType(t *testing.T) {
+	rec := Record{
+		Date: "2026-10-06",
+		Confirmed: []ConfirmedInterval{{
+			ID: "c1", Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", Project: "P",
+			ClassificationID: "cls-1", ActivityType: "internal project",
+		}},
+	}
+	base := LocalFingerprint(rec)
+
+	rec.Confirmed[0].ClassificationID = "cls-2"
+	if LocalFingerprint(rec) == base {
+		t.Error("a classification change must change the fingerprint")
+	}
+	rec.Confirmed[0].ClassificationID = "cls-1"
+	rec.Confirmed[0].ActivityType = "client project"
+	if LocalFingerprint(rec) == base {
+		t.Error("an activity-type change must change the fingerprint")
+	}
+}
+
 // T6: LocalFingerprint covers a mapping change (identity fields, not LastObserved).
 func TestLocalFingerprint_CoversMappingChange(t *testing.T) {
 	rec := Record{

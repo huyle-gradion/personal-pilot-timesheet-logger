@@ -1,7 +1,9 @@
 package selection
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -150,13 +152,13 @@ func TestFirstRunSuggestion_IncompatibleActivityTypeRejected(t *testing.T) {
 
 func TestCatalogCache_RoundTripAndSource(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache", "catalog-cache.json")
-	if _, err := LoadCatalogCache(path); !errors.Is(err, ErrNoCache) {
+	if _, err := LoadCatalogCache(path, ""); !errors.Is(err, ErrNoCache) {
 		t.Fatalf("missing cache: %v", err)
 	}
 	if err := SaveCatalogCache(path, sampleCatalog()); err != nil {
 		t.Fatalf("SaveCatalogCache: %v", err)
 	}
-	got, err := LoadCatalogCache(path)
+	got, err := LoadCatalogCache(path, "")
 	if err != nil {
 		t.Fatalf("LoadCatalogCache: %v", err)
 	}
@@ -165,6 +167,123 @@ func TestCatalogCache_RoundTripAndSource(t *testing.T) {
 	}
 	if len(got.Options) != 2 || got.Options[0].Code != "INTGRADI2610" {
 		t.Errorf("cache lost options: %+v", got.Options)
+	}
+	// A query with no entry is a cache miss, not a silent unfiltered fallback.
+	if _, err := LoadCatalogCache(path, "intern"); !errors.Is(err, ErrNoCache) {
+		t.Fatalf("a missing query entry must be ErrNoCache, got %v", err)
+	}
+}
+
+// W2: the cache is QUERY-SCOPED. A filtered fetch must not clobber the unfiltered
+// entry, and vice versa; each is retrievable by its own query.
+func TestCatalogCache_QueryScopedEntriesPreserved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache", "catalog-cache.json")
+
+	unfiltered := sampleCatalog() // Query == ""
+	filtered := sampleCatalog()
+	filtered.Query = "intern"
+	filtered.Options = []gradion.ClassificationOption{{ID: "uuid-1", Name: "Intern", Code: "INTGRADI2610", ActivityType: "internal project"}}
+
+	// Filtered first, then unfiltered: the unfiltered write must PRESERVE the
+	// filtered entry, and the filtered write must not have created a "" entry.
+	if err := SaveCatalogCache(path, filtered); err != nil {
+		t.Fatalf("save filtered: %v", err)
+	}
+	if _, err := LoadCatalogCache(path, ""); !errors.Is(err, ErrNoCache) {
+		t.Fatalf("a filtered fetch must not populate the unfiltered entry: %v", err)
+	}
+	if err := SaveCatalogCache(path, unfiltered); err != nil {
+		t.Fatalf("save unfiltered: %v", err)
+	}
+
+	gotUnfiltered, err := LoadCatalogCache(path, "")
+	if err != nil || len(gotUnfiltered.Options) != 2 {
+		t.Fatalf("the unfiltered entry must survive a later filtered fetch: %+v err=%v", gotUnfiltered, err)
+	}
+	gotFiltered, err := LoadCatalogCache(path, "intern")
+	if err != nil || len(gotFiltered.Options) != 1 || gotFiltered.Options[0].ID != "uuid-1" {
+		t.Fatalf("the filtered entry must be preserved: %+v err=%v", gotFiltered, err)
+	}
+	if gotFiltered.Query != "intern" {
+		t.Errorf("the filtered entry must retain its query, got %q", gotFiltered.Query)
+	}
+}
+
+// W2: a filtered fetch overwriting the cache must not clobber an EXISTING
+// unfiltered entry (the exact bug this fixes).
+func TestCatalogCache_FilteredFetchDoesNotClobberUnfiltered(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache", "catalog-cache.json")
+	if err := SaveCatalogCache(path, sampleCatalog()); err != nil {
+		t.Fatalf("save unfiltered: %v", err)
+	}
+	filtered := sampleCatalog()
+	filtered.Query = "alpha"
+	filtered.Options = []gradion.ClassificationOption{{ID: "uuid-2", Code: "ALPHA-1"}}
+	if err := SaveCatalogCache(path, filtered); err != nil {
+		t.Fatalf("save filtered: %v", err)
+	}
+	got, err := LoadCatalogCache(path, "")
+	if err != nil {
+		t.Fatalf("the unfiltered entry was clobbered: %v", err)
+	}
+	if len(got.Options) != 2 {
+		t.Fatalf("the unfiltered entry must be intact, got %+v", got.Options)
+	}
+}
+
+// W2: a LEGACY single-Catalog file loads as the unfiltered ("") entry, and is
+// migrated on the next save rather than silently discarded.
+func TestCatalogCache_LegacySingleCatalogFileLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache", "catalog-cache.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacy, _ := json.Marshal(sampleCatalog())
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatalf("write legacy: %v", err)
+	}
+	got, err := LoadCatalogCache(path, "")
+	if err != nil || len(got.Options) != 2 {
+		t.Fatalf("a legacy file must load as the unfiltered entry: %+v err=%v", got, err)
+	}
+	if _, err := LoadCatalogCache(path, "intern"); !errors.Is(err, ErrNoCache) {
+		t.Fatalf("a legacy file has no filtered entry: %v", err)
+	}
+	// A subsequent filtered save migrates the legacy entry under "".
+	filtered := sampleCatalog()
+	filtered.Query = "intern"
+	if err := SaveCatalogCache(path, filtered); err != nil {
+		t.Fatalf("save after legacy: %v", err)
+	}
+	if got, err := LoadCatalogCache(path, ""); err != nil || len(got.Options) != 2 {
+		t.Fatalf("the legacy entry must be migrated to the unfiltered key, got %+v err=%v", got, err)
+	}
+}
+
+// W2: LoadCatalogCacheAny returns the newest entry across queries.
+func TestCatalogCache_AnyReturnsNewest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache", "catalog-cache.json")
+	old := sampleCatalog()
+	old.ObservedAt = time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
+	newer := sampleCatalog()
+	newer.Query = "intern"
+	newer.ObservedAt = time.Date(2026, 10, 11, 8, 0, 0, 0, time.UTC)
+	newer.Options = []gradion.ClassificationOption{{ID: "uuid-9"}}
+	if err := SaveCatalogCache(path, old); err != nil {
+		t.Fatalf("save old: %v", err)
+	}
+	if err := SaveCatalogCache(path, newer); err != nil {
+		t.Fatalf("save newer: %v", err)
+	}
+	got, err := LoadCatalogCacheAny(path)
+	if err != nil {
+		t.Fatalf("LoadCatalogCacheAny: %v", err)
+	}
+	if got.Query != "intern" || got.Options[0].ID != "uuid-9" || got.Source != "cache" {
+		t.Fatalf("want the newest filtered entry, got %+v", got)
+	}
+	if _, err := LoadCatalogCacheAny(filepath.Join(t.TempDir(), "absent.json")); !errors.Is(err, ErrNoCache) {
+		t.Fatalf("an absent cache must be ErrNoCache, got %v", err)
 	}
 }
 

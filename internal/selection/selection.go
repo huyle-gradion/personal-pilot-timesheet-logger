@@ -222,9 +222,9 @@ func ResolveToken(cat gradion.Catalog, token string) (gradion.ClassificationOpti
 }
 
 // --- catalog cache -----------------------------------------------------------
-
-// CatalogMaxAge bounds how old a cached catalog may be before it is STALE.
-const CatalogMaxAge = 24 * time.Hour
+//
+// The staleness policy itself lives in the shared lower layer: gradion.CatalogMaxAge
+// (with gradion.CatalogFresh). This package only DISPLAYS freshness via Freshness.
 
 // DefaultCatalogCachePath returns ~/.timesheet/catalog-cache.json.
 func DefaultCatalogCachePath() (string, error) {
@@ -238,30 +238,106 @@ func DefaultCatalogCachePath() (string, error) {
 // ErrNoCache reports that no cached catalog exists at the given path.
 var ErrNoCache = errors.New("no cached catalog")
 
-// LoadCatalogCache reads a cached catalog. A missing file returns ErrNoCache. The
-// loaded catalog's Source is forced to "cache".
-func LoadCatalogCache(path string) (gradion.Catalog, error) {
+// catalogCacheFile is the QUERY-SCOPED cache document. Each fetched catalog is
+// stored under its normalized query, so a filtered `--search Q` fetch can never
+// overwrite the unfiltered ("") catalog.
+type catalogCacheFile struct {
+	Entries map[string]gradion.Catalog `json:"entries"`
+}
+
+// normalizeQuery is the cache key for a search query: trimmed, so "" is the
+// unfiltered catalog.
+func normalizeQuery(q string) string { return strings.TrimSpace(q) }
+
+// readCacheFile loads the cache document, migrating a LEGACY single-Catalog file
+// (written before query scoping) to the unfiltered ("") entry so it is never
+// silently discarded. A missing file yields an empty document.
+func readCacheFile(path string) (catalogCacheFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return gradion.Catalog{}, ErrNoCache
+			return catalogCacheFile{}, nil
 		}
-		return gradion.Catalog{}, fmt.Errorf("selection: read catalog cache: %w", err)
+		return catalogCacheFile{}, fmt.Errorf("selection: read catalog cache: %w", err)
 	}
-	var cat gradion.Catalog
-	if err := json.Unmarshal(data, &cat); err != nil {
-		return gradion.Catalog{}, fmt.Errorf("selection: parse catalog cache: %w", err)
+	var file catalogCacheFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return catalogCacheFile{}, fmt.Errorf("selection: parse catalog cache: %w", err)
+	}
+	if file.Entries != nil {
+		return file, nil
+	}
+	// Legacy single-Catalog document: migrate it to the unfiltered entry.
+	var legacy gradion.Catalog
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return catalogCacheFile{}, fmt.Errorf("selection: parse catalog cache: %w", err)
+	}
+	return catalogCacheFile{Entries: map[string]gradion.Catalog{"": legacy}}, nil
+}
+
+// LoadCatalogCache reads the cached catalog for query. A missing file or a
+// missing entry for that query returns ErrNoCache. A legacy single-Catalog file
+// is treated as the unfiltered ("") entry. The loaded catalog's Source is forced
+// to "cache".
+func LoadCatalogCache(path, query string) (gradion.Catalog, error) {
+	file, err := readCacheFile(path)
+	if err != nil {
+		return gradion.Catalog{}, err
+	}
+	if file.Entries == nil {
+		return gradion.Catalog{}, ErrNoCache
+	}
+	cat, ok := file.Entries[normalizeQuery(query)]
+	if !ok {
+		return gradion.Catalog{}, ErrNoCache
 	}
 	cat.Source = "cache"
 	return cat, nil
 }
 
-// SaveCatalogCache writes a fetched catalog (0600), creating the directory (0700).
+// LoadCatalogCacheAny returns the NEWEST cached catalog across ALL queries,
+// regardless of query. It is the submit path's last resort when no unfiltered
+// catalog is available: the returned catalog may be PARTIAL/filtered, and the
+// submission boundary then validates absent choices with targeted per-id reads.
+// It returns ErrNoCache when the cache holds no entries. Ties break on the
+// normalized query for determinism.
+func LoadCatalogCacheAny(path string) (gradion.Catalog, error) {
+	file, err := readCacheFile(path)
+	if err != nil {
+		return gradion.Catalog{}, err
+	}
+	if len(file.Entries) == 0 {
+		return gradion.Catalog{}, ErrNoCache
+	}
+	var best gradion.Catalog
+	bestKey := ""
+	first := true
+	for key, cat := range file.Entries {
+		if first || cat.ObservedAt.After(best.ObservedAt) || (cat.ObservedAt.Equal(best.ObservedAt) && key < bestKey) {
+			best, bestKey, first = cat, key, false
+		}
+	}
+	best.Source = "cache"
+	return best, nil
+}
+
+// SaveCatalogCache UPSERTS a fetched catalog under its normalized Query (0600),
+// creating the directory (0700). Every other query's entry is PRESERVED, so a
+// filtered fetch never clobbers the unfiltered catalog. A legacy single-Catalog
+// file is migrated first.
 func SaveCatalogCache(path string, cat gradion.Catalog) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("selection: mkdir: %w", err)
 	}
-	data, err := json.MarshalIndent(cat, "", "  ")
+	file, err := readCacheFile(path)
+	if err != nil {
+		return err
+	}
+	if file.Entries == nil {
+		file.Entries = map[string]gradion.Catalog{}
+	}
+	file.Entries[normalizeQuery(cat.Query)] = cat
+	data, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return fmt.Errorf("selection: marshal catalog cache: %w", err)
 	}
@@ -272,20 +348,21 @@ func SaveCatalogCache(path string, cat gradion.Catalog) error {
 }
 
 // Freshness describes a catalog's provenance and age. fresh is false for a cache
-// older than CatalogMaxAge.
+// older than CatalogMaxAge. The freshness decision is delegated to the shared
+// gradion.CatalogFresh policy.
 func Freshness(cat gradion.Catalog, now time.Time) (string, bool) {
 	source := strings.TrimSpace(cat.Source)
 	if source == "" {
 		source = "unknown"
 	}
+	fresh := gradion.CatalogFresh(cat, now)
 	if cat.ObservedAt.IsZero() {
-		return fmt.Sprintf("%s, observed-at unknown", source), source == "live"
+		return fmt.Sprintf("%s, observed-at unknown", source), fresh
 	}
 	age := now.Sub(cat.ObservedAt)
 	if age < 0 {
 		age = 0
 	}
-	fresh := source == "live" || age <= CatalogMaxAge
 	state := "fresh"
 	if !fresh {
 		state = "STALE"

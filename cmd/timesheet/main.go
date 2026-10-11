@@ -726,7 +726,7 @@ func cmdSubmit(ctx context.Context, r *run.Runner, cfg cliConfig, date, approval
 		var prov string
 		cat, prov = loadSubmitCatalog(ctx, cfg)
 		if cat == nil {
-			fmt.Fprintln(stdout, "submit blocked: "+submit.BlockUnverifiedClassification+" (no live catalog and no fresh cache)")
+			fmt.Fprintln(stdout, "submit blocked: "+run.BlockMissingCatalog+" (no live catalog and no fresh cache)")
 			return exitBlocked
 		}
 		// ALWAYS disclose which catalog validated the submission.
@@ -748,33 +748,59 @@ func cmdSubmit(ctx context.Context, r *run.Runner, cfg cliConfig, date, approval
 	return exitOK
 }
 
-// loadSubmitCatalog fetches a live catalog (saving it to the cache); on failure it
-// falls back to a FRESH cache. It returns the catalog and a provenance/freshness
-// line for it, or (nil, "") when neither is available.
+// loadSubmitCatalog resolves the catalog that validates a submission. It prefers
+// the UNFILTERED cache entry (query ""), then a live unfiltered fetch (saved to
+// the unfiltered cache entry), then the newest PARTIAL cache entry — which the
+// submission boundary may use to TARGETED-validate an absent choice with a
+// per-id read. It returns the catalog and a provenance/freshness line, or
+// (nil, "") when nothing usable is available.
 func loadSubmitCatalog(ctx context.Context, cfg cliConfig) (*gradion.Catalog, string) {
-	if client, err := catalogClient(ctx, cfg); err == nil {
+	cachePath, pathErr := selection.DefaultCatalogCachePath()
+	now := time.Now().UTC()
+
+	// 1. Prefer a FRESH UNFILTERED cache entry, so a filtered search can never
+	// shadow the whole-catalog entry the submission gate needs.
+	if pathErr == nil {
+		if cached, err := selection.LoadCatalogCache(cachePath, ""); err == nil {
+			if prov, fresh := catalogProvenance(cached, now); fresh {
+				return &cached, prov
+			}
+		}
+	}
+	// 2. Else fetch live (unfiltered) and cache it under the unfiltered entry.
+	if client, err := newCatalogFetcher(ctx, cfg); err == nil {
 		if fetched, ferr := client.ClassificationCatalog(ctx, ""); ferr == nil {
 			fetched.Source = "live"
-			if p, perr := selection.DefaultCatalogCachePath(); perr == nil {
-				_ = selection.SaveCatalogCache(p, fetched)
+			if pathErr == nil {
+				_ = selection.SaveCatalogCache(cachePath, fetched)
 			}
-			prov, _ := selection.Freshness(fetched, time.Now().UTC())
+			prov, _ := catalogProvenance(fetched, now)
 			return &fetched, prov
 		}
 	}
-	p, err := selection.DefaultCatalogCachePath()
-	if err != nil {
-		return nil, ""
+	// 3. Else fall back to the newest PARTIAL cache entry; the submit boundary
+	// targeted-validates any choice absent from it. This keeps a recent preference
+	// outside the current search resolvable rather than treating it as invalid.
+	if pathErr == nil {
+		if cached, err := selection.LoadCatalogCacheAny(cachePath); err == nil {
+			if prov, fresh := catalogProvenance(cached, now); fresh {
+				return &cached, prov
+			}
+		}
 	}
-	cached, err := selection.LoadCatalogCache(p)
-	if err != nil {
-		return nil, ""
+	return nil, ""
+}
+
+// catalogProvenance returns the freshness/provenance line for a catalog used to
+// validate a submission. A catalog that is NOT full (unfiltered AND complete) is
+// labelled PARTIAL, so a filtered or truncated entry is never presented as a
+// complete whole-catalog validation. fresh mirrors selection.Freshness.
+func catalogProvenance(cat gradion.Catalog, now time.Time) (string, bool) {
+	prov, fresh := selection.Freshness(cat, now)
+	if !cat.IsFullCatalog() {
+		prov += " (partial; targeted validation)"
 	}
-	prov, fresh := selection.Freshness(cached, time.Now().UTC())
-	if !fresh {
-		return nil, ""
-	}
-	return &cached, prov
+	return prov, fresh
 }
 
 // printSuggestions renders NON-APPLIED classification suggestions.

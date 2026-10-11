@@ -14,7 +14,9 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence/plugins"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/export"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/mcp"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/run"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/submit"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
@@ -286,6 +288,68 @@ func TestRunCLI_SubmitWithoutApprovalBlocked(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "no_active_approval") {
 		t.Fatalf("want no_active_approval, got:\n%s", stdout)
+	}
+}
+
+// submitFakeRemote is a hermetic run.Remote whose writes are counted (and never
+// expected on the blocked path).
+type submitFakeRemote struct{ writes int }
+
+func (f *submitFakeRemote) Initialize(context.Context) (mcp.ServerInfo, error) {
+	return mcp.ServerInfo{}, nil
+}
+func (f *submitFakeRemote) VerifyCapabilities(context.Context) error { return nil }
+func (f *submitFakeRemote) Classifications(context.Context, string) ([]gradion.Classification, error) {
+	return nil, nil
+}
+func (f *submitFakeRemote) ClassificationCatalog(_ context.Context, query string) (gradion.Catalog, error) {
+	return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: time.Now().UTC(),
+		Options: []gradion.ClassificationOption{{ID: "cls-1"}}}, nil
+}
+func (f *submitFakeRemote) ListEntries(context.Context, string, string, int) (gradion.Listing, error) {
+	return gradion.Listing{Complete: true, ObservedAt: time.Now().UTC()}, nil
+}
+func (f *submitFakeRemote) CreateEntry(context.Context, gradion.CreateRequest) (gradion.WriteResult, error) {
+	f.writes++
+	return gradion.WriteResult{}, nil
+}
+func (f *submitFakeRemote) EditEntry(context.Context, gradion.EditRequest) (gradion.WriteResult, error) {
+	f.writes++
+	return gradion.WriteResult{}, nil
+}
+
+// W1: the CLI submit entry point fails closed (missing_catalog) when a remote is
+// present but no catalog can be obtained — BEFORE any write.
+func TestRunCLI_SubmitMissingCatalogBlocksZeroWrites(t *testing.T) {
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Plans = []workflow.SubmissionPlan{{PlanID: "p1", Date: testDate}}
+		rec.Approvals = []workflow.Approval{{ApprovalID: "p1", PlanID: "p1", Date: testDate}}
+	})
+	store, err := workflow.NewJSONFileStore(storage)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	remote := &submitFakeRemote{}
+	r, err := run.New(run.Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, run.Config{})
+	if err != nil {
+		t.Fatalf("run.New: %v", err)
+	}
+
+	// No configured endpoint => no catalog is supplied to Submit, which must fail
+	// closed with missing_catalog against the present remote.
+	var stdout, stderr bytes.Buffer
+	code := cmdSubmit(context.Background(), r, cliConfig{}, testDate, "", false, &stdout, &stderr)
+	if code != exitBlocked {
+		t.Fatalf("want a blocked submit, got %d (%s)", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), run.BlockMissingCatalog) {
+		t.Fatalf("want %s, got:\n%s", run.BlockMissingCatalog, stdout.String())
+	}
+	if remote.writes != 0 {
+		t.Fatalf("a missing catalog must produce ZERO writes, got %d", remote.writes)
 	}
 }
 

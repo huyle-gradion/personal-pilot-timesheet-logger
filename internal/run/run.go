@@ -38,6 +38,13 @@ const (
 	BlockNoActiveApproval  = "no_active_approval"
 	BlockApprovalMismatch  = "approval_mismatch"
 	BlockRemoteUnavailable = "remote_unavailable"
+	// BlockMissingCatalog is returned when a remote is configured but the caller
+	// supplied NO classification catalog: submission fails closed BEFORE any write
+	// rather than skipping classification validation.
+	BlockMissingCatalog = "missing_catalog"
+	// BlockStaleCatalog is returned when the supplied catalog is older than the
+	// shared gradion.CatalogMaxAge policy: submission fails closed BEFORE any write.
+	BlockStaleCatalog = "stale_catalog"
 )
 
 // keychainRefPrefix marks a config value that references a Keychain secret rather

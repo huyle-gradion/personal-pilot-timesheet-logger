@@ -32,6 +32,37 @@ type Catalog struct {
 	Source     string                 `json:"source"`
 }
 
+// CatalogMaxAge bounds how old a cached catalog may be before it is STALE. It is
+// the single shared policy: the cache display (internal/selection) and the
+// submission gate (internal/run) both reference it, so they can never drift.
+const CatalogMaxAge = 24 * time.Hour
+
+// IsFullCatalog reports whether the catalog is an UNFILTERED, COMPLETE fetch:
+// Query is empty AND Complete is true. Only a full catalog can PROVE a
+// classification ABSENT. A filtered (Query != "") or partial (!Complete) catalog
+// can only show that a choice was not retrieved for this query, which never
+// proves the choice invalid.
+func (c Catalog) IsFullCatalog() bool {
+	return strings.TrimSpace(c.Query) == "" && c.Complete
+}
+
+// CatalogFresh reports whether a catalog is usable at now: a live catalog is
+// always fresh; a cache is fresh only when observed within CatalogMaxAge. A zero
+// ObservedAt is fresh only for a live catalog (an undated cache is unusable).
+func CatalogFresh(cat Catalog, now time.Time) bool {
+	if strings.TrimSpace(cat.Source) == "live" {
+		return true
+	}
+	if cat.ObservedAt.IsZero() {
+		return false
+	}
+	age := now.Sub(cat.ObservedAt)
+	if age < 0 {
+		age = 0
+	}
+	return age <= CatalogMaxAge
+}
+
 // classificationLine is one parsed text line:
 //
 //   - <Name> (<Code>) [<Activity Type>] · <uuid>

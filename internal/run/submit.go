@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/export"
@@ -67,13 +68,17 @@ type SubmitOptions struct {
 	ApprovalID string
 	Resolver   submit.ClassificationResolver
 	// Catalog is MANDATORY whenever the runner has a Remote (deps.Remote != nil):
-	// it is validated against every planned operation before any write. An
-	// operation whose classification is missing/empty/inconsistent blocks the whole
-	// run with ZERO writes (unverified_classification). The CLI always supplies it
-	// (live, else a fresh cache) whenever a Gradion endpoint is configured; a
-	// caller that reaches a real remote MUST NOT leave it nil. It is nil only for an
-	// offline runner (deps.Remote == nil), which blocks earlier with
-	// remote_unavailable.
+	// a nil Catalog fails closed with missing_catalog BEFORE any write, and a
+	// catalog older than the shared gradion.CatalogMaxAge policy fails closed with
+	// stale_catalog. A supplied catalog is validated against every planned
+	// operation before any write. An operation whose classification is empty or
+	// absent blocks the whole run with ZERO writes: unknown_classification when the
+	// catalog is FULL (proven absent), else unverified_classification — but an
+	// absent choice under a filtered/partial catalog is re-validated with a bounded
+	// targeted read before blocking. The CLI always supplies it (a fresh cache,
+	// else live, else a partial cache) whenever a Gradion endpoint is configured.
+	// It is nil only for an offline runner (deps.Remote == nil), which blocks
+	// earlier with remote_unavailable.
 	Catalog *gradion.Catalog
 }
 
@@ -105,23 +110,29 @@ func (r *Runner) Submit(ctx context.Context, date string, opts SubmitOptions) (S
 		return SubmitResult{Blocked: true, BlockReasons: []string{BlockRemoteUnavailable}}, nil
 	}
 
-	// Approval-safety gate: when a catalog is available (live or cached), verify
-	// every planned operation's classification BEFORE any write. An unverifiable
-	// classification blocks with zero writes; it never becomes a default.
-	//
-	// Contract: Catalog is MANDATORY whenever deps.Remote != nil (the CLI always
-	// supplies it). It is left nil only for an offline runner, which blocks earlier
-	// with remote_unavailable. This stays opt-in at the API level to avoid breaking
-	// programmatic callers; the CLI path is unconditional when a remote is
-	// configured.
-	if opts.Catalog != nil {
-		if plan, ok := workflow.FindPlan(rec, active.PlanID); ok {
-			if reasons := submit.ValidateCatalog(*opts.Catalog, plan.Operations, rec.Confirmed); len(reasons) > 0 {
-				return SubmitResult{Blocked: true, BlockReasons: reasons}, nil
-			}
+	// Classification-safety gate: with a remote configured, a catalog is MANDATORY
+	// and must be FRESH. Both checks fail closed BEFORE any write — a caller that
+	// reaches a real remote can never skip classification validation.
+	if opts.Catalog == nil {
+		return SubmitResult{Blocked: true, BlockReasons: []string{BlockMissingCatalog}}, nil
+	}
+	if !gradion.CatalogFresh(*opts.Catalog, r.now()) {
+		return SubmitResult{Blocked: true, BlockReasons: []string{BlockStaleCatalog}}, nil
+	}
+	// Verify every planned operation's classification BEFORE any write. An
+	// unverifiable classification blocks with zero writes; it never becomes a
+	// default. When the catalog cannot prove absence, a bounded targeted read may
+	// authoritatively validate a specific choice.
+	if plan, ok := workflow.FindPlan(rec, active.PlanID); ok {
+		if reasons := r.validateClassification(ctx, *opts.Catalog, plan.Operations, rec.Confirmed); len(reasons) > 0 {
+			return SubmitResult{Blocked: true, BlockReasons: reasons}, nil
 		}
 	}
 
+	// This is the ONLY sanctioned path to submit.Execute: classification was
+	// validated (catalog present, fresh, and every planned operation checked —
+	// including targeted re-validation and the activity-type comparison) ABOVE,
+	// before any write. submit.Execute is a pure dispatcher and does NOT gate.
 	run, execErr := submit.Execute(ctx, r.deps.Store, r.deps.Remote, r.deps.Remote, date, active, opts.Resolver, r.now())
 	out := SubmitResult{Blocked: run.Blocked, BlockReasons: run.BlockReasons, Execution: run}
 	if execErr != nil {
@@ -131,6 +142,83 @@ func (r *Runner) Submit(ctx context.Context, date string, opts SubmitOptions) (S
 	exp, expErr := r.Export(ctx, date)
 	out.Export = exp
 	return out, expErr
+}
+
+// validateClassification returns the block reasons for a plan's operations. When
+// the catalog is a FULL, COMPLETE fetch, absence is authoritative and the reasons
+// from submit.ClassifyOperations stand. Otherwise an ABSENT choice is not proof of
+// invalidity: it is re-validated with a bounded, read-only TARGETED fetch of that
+// specific id — one call per distinct missing id, deduped — and a fetch that FINDS
+// the id makes that option available to the FULL comparison.
+//
+// The resolved options are fed back through submit.ClassifyOperations so the
+// ACTIVITY-TYPE comparison is re-run against the FETCHED option: a targeted fetch
+// that returns the id with a DIFFERENT derived activity type still blocks with
+// unverified_classification (it never clears the op merely because the id exists).
+// A not-found or errored fetch fails closed (the op stays blocked).
+//
+// TARGETED-READ ASSUMPTION: ClassificationCatalog(ctx, <id>) matches the
+// classification by that id (the server filters on the id/code search term). A
+// server that does not match the id returns no option, so the choice stays blocked
+// — the assumption is fail-closed, never fail-open.
+func (r *Runner) validateClassification(ctx context.Context, cat gradion.Catalog, ops []workflow.PlanOperation, confirmed []workflow.ConfirmedInterval) []string {
+	issues := submit.ClassifyOperations(cat, ops, confirmed)
+	if len(issues) == 0 || cat.IsFullCatalog() {
+		return submit.IssueReasons(issues)
+	}
+	resolved := cat
+	resolved.Options = append([]gradion.ClassificationOption(nil), cat.Options...)
+	added := false
+	for _, id := range absentIDs(issues) {
+		res, err := r.deps.Remote.ClassificationCatalog(ctx, id)
+		if err != nil {
+			continue // fail closed: the op stays blocked
+		}
+		opt, ok := optionByID(res, id)
+		if !ok {
+			continue
+		}
+		resolved.Options = append(resolved.Options, opt)
+		added = true
+	}
+	if !added {
+		return submit.IssueReasons(issues)
+	}
+	// Re-run the FULL comparison (absence AND activity type) against the resolved
+	// options. A resolved id whose fetched activity type disagrees with the
+	// confirmed interval blocks as unverified_classification.
+	return submit.IssueReasons(submit.ClassifyOperations(resolved, ops, confirmed))
+}
+
+// absentIDs returns the distinct, non-empty classification ids of ABSENT issues,
+// sorted, so each is fetched at most once.
+func absentIDs(issues []submit.ClassificationIssue) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, is := range issues {
+		if !is.Absent {
+			continue
+		}
+		id := strings.TrimSpace(is.ClassificationID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// optionByID returns the catalog option with the given id (first match).
+func optionByID(cat gradion.Catalog, id string) (gradion.ClassificationOption, bool) {
+	id = strings.TrimSpace(id)
+	for _, o := range cat.Options {
+		if strings.TrimSpace(o.ID) == id {
+			return o, true
+		}
+	}
+	return gradion.ClassificationOption{}, false
 }
 
 // Export writes the managed daily-note section. A nil Exporter disables export.

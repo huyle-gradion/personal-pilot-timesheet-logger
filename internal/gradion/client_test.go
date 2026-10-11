@@ -470,6 +470,54 @@ func TestEditEntry_ConfirmedSendsReason(t *testing.T) {
 	}
 }
 
+// W1: the DERIVED activity type is display/validation only and must NEVER enter
+// the log_time/edit_time payload. Only classificationId is sent.
+func TestWrite_PayloadHasNoActivityTypeKey(t *testing.T) {
+	f := newFakeMCP()
+	f.onCall = func(name string, _ map[string]any) callOutcome {
+		switch name {
+		case ToolLogTime:
+			return structured(json.RawMessage(`{"id":"uuid-1"}`))
+		case ToolEditTime:
+			return structured(json.RawMessage(`{"id":"uuid-2"}`))
+		}
+		return callOutcome{}
+	}
+	c := newTestClient(t, f)
+
+	if _, err := c.CreateEntry(context.Background(), CreateRequest{
+		Date: "2026-10-06", Description: "work", ClassificationID: "cls-1",
+	}); err != nil {
+		t.Fatalf("CreateEntry: %v", err)
+	}
+	if _, err := c.EditEntry(context.Background(), EditRequest{
+		EntryID: "uuid-2", Reason: "fix", Description: "work", ClassificationID: "cls-1",
+	}); err != nil {
+		t.Fatalf("EditEntry: %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	checked := 0
+	for _, r := range f.requests {
+		if r.Method != "tools/call" || (r.Tool != ToolLogTime && r.Tool != ToolEditTime) {
+			continue
+		}
+		checked++
+		for k := range r.Args {
+			if strings.Contains(strings.ToLower(k), "activity") {
+				t.Errorf("%s payload must not carry an activity-type key, got %q", r.Tool, k)
+			}
+		}
+		if r.Args["classificationId"] != "cls-1" {
+			t.Errorf("%s must send classificationId=cls-1, got %v", r.Tool, r.Args["classificationId"])
+		}
+	}
+	if checked != 2 {
+		t.Fatalf("want one log_time and one edit_time payload, checked %d", checked)
+	}
+}
+
 func TestSecretSafety(t *testing.T) {
 	const token = "S3CR3T-GRADION-TOKEN"
 	tr := methodAwareTransport(func(*http.Request) (*http.Response, error) {

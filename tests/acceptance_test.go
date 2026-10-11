@@ -97,7 +97,10 @@ func (f *fakeRemote) Classifications(ctx context.Context, query string) ([]gradi
 }
 
 func (f *fakeRemote) ClassificationCatalog(ctx context.Context, query string) (gradion.Catalog, error) {
-	return gradion.Catalog{Complete: true, Query: query, ObservedAt: accNow, Source: "live"}, nil
+	// A live catalog carrying the classification the ready record uses, so both
+	// the FULL catalog gate and a TARGETED per-id read can resolve it.
+	return gradion.Catalog{Complete: true, Query: query, ObservedAt: accNow, Source: "live",
+		Options: []gradion.ClassificationOption{{ID: "cls-1", Code: "INTGRADI2610", ActivityType: "internal project"}}}, nil
 }
 
 func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, limit int) (gradion.Listing, error) {
@@ -326,6 +329,15 @@ func accLoad(t *testing.T, store workflow.Store, date string) workflow.Record {
 }
 
 func accResolver(string) (string, bool) { return "cls-1", true }
+
+// accCatalog is a FRESH, FULL live catalog carrying the classification the ready
+// record uses. Every submission must supply a catalog: a nil one fails closed.
+func accCatalog() *gradion.Catalog {
+	return &gradion.Catalog{
+		Complete: true, Source: "live", ObservedAt: accNow,
+		Options: []gradion.ClassificationOption{{ID: "cls-1", Code: "INTGRADI2610", ActivityType: "internal project"}},
+	}
+}
 
 func accGit(id, repo, branch, title string, start time.Time) evidence.Evidence {
 	return evidence.Evidence{
@@ -599,7 +611,7 @@ func TestAcceptance_03_UnresolvedWorkBlocksSubmission(t *testing.T) {
 			if _, err := r.Approve(accCtx, accDate, workflow.SubmissionPlan{}); err == nil {
 				t.Fatalf("a blocked day must not be approvable")
 			}
-			res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver})
+			res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()})
 			if err != nil {
 				t.Fatalf("Submit: %v", err)
 			}
@@ -841,7 +853,7 @@ func TestAcceptance_06_RemoteChangeInvalidatesApproval(t *testing.T) {
 		ClassificationID: "cls-1", Description: "changed remotely", ObservedAt: accNow,
 	})
 
-	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver})
+	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -876,7 +888,7 @@ func TestAcceptance_07_NoBlindDuplicatesAfterFailure(t *testing.T) {
 	accSeed(t, store, accDate, func(rec *workflow.Record) { *rec = accReadyRecord(accDate) })
 	accPlanFor(t, store, r, accDate)
 
-	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver})
+	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -930,7 +942,7 @@ func TestAcceptance_07_NoBlindDuplicatesAfterFailure(t *testing.T) {
 	if _, err := r.Approve(accCtx, accDate, pre2.Plan); err != nil {
 		t.Fatalf("Approve 2: %v", err)
 	}
-	if _, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver}); err != nil {
+	if _, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()}); err != nil {
 		t.Fatalf("Submit 2: %v", err)
 	}
 	if remote.writes() != 1 {
@@ -1244,7 +1256,7 @@ func TestAcceptance_10_SharedNoAIWorkflow(t *testing.T) {
 	if _, err := r.Approve(accCtx, accDate, pre.Plan); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver})
+	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -1257,6 +1269,64 @@ func TestAcceptance_10_SharedNoAIWorkflow(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(vault, "Daily", accDate+".md")); err != nil {
 		t.Fatalf("the managed note must exist: %v", err)
 	}
+}
+
+// --- Submission boundary: classification validation is never bypassed --------
+
+// W1: at the shared submission boundary, a remote configured with a NIL catalog
+// fails closed (missing_catalog) BEFORE any write — the closed bypass.
+func TestAcceptance_SubmissionBoundary_MissingCatalogBlocks(t *testing.T) {
+	store := accStore(t)
+	remote := newFakeRemote()
+	r := accRunner(t, run.Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, run.Config{})
+	accSeed(t, store, accDate, func(rec *workflow.Record) { *rec = accReadyRecord(accDate) })
+	accPlanFor(t, store, r, accDate)
+
+	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver}) // no Catalog
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !res.Blocked || !hasReasonStr(res.BlockReasons, run.BlockMissingCatalog) {
+		t.Fatalf("want %s, got %v", run.BlockMissingCatalog, res.BlockReasons)
+	}
+	if remote.writes() != 0 {
+		t.Fatalf("a missing catalog must produce ZERO writes, got %d", remote.writes())
+	}
+}
+
+// W1: a PARTIAL catalog that does not contain the planned classification is
+// resolved by a TARGETED read, so a valid recent preference outside the current
+// search is never treated as invalid.
+func TestAcceptance_SubmissionBoundary_TargetedReadResolvesPartialCatalog(t *testing.T) {
+	store := accStore(t)
+	remote := newFakeRemote()
+	r := accRunner(t, run.Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, run.Config{})
+	accSeed(t, store, accDate, func(rec *workflow.Record) { *rec = accReadyRecord(accDate) })
+	accPlanFor(t, store, r, accDate)
+
+	partial := &gradion.Catalog{
+		Complete: false, Source: "live", Query: "something-else", ObservedAt: accNow,
+		Options: []gradion.ClassificationOption{{ID: "other"}},
+	}
+	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: partial})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if res.Blocked {
+		t.Fatalf("a targeted read that finds cls-1 must clear the block, got %v", res.BlockReasons)
+	}
+	if remote.writes() != 1 {
+		t.Fatalf("want one write, got %d", remote.writes())
+	}
+}
+
+func hasReasonStr(reasons []string, want string) bool {
+	for _, r := range reasons {
+		if r == want {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Fault injection --------------------------------------------------------
@@ -1301,7 +1371,7 @@ func TestAcceptance_Fault_IntentPersistFailureZeroWrites(t *testing.T) {
 	plainRunner := accRunner(t, run.Deps{Store: base, Registry: evidence.NewRegistry(), Remote: remote}, run.Config{})
 	accPlanFor(t, base, plainRunner, accDate)
 
-	if _, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver}); err == nil {
+	if _, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()}); err == nil {
 		t.Fatalf("an intent-persist failure must surface as an error")
 	}
 	if remote.writes() != 0 {
@@ -1319,7 +1389,7 @@ func TestAcceptance_Fault_RemoteWriteUncertaintyStopsAndBlocks(t *testing.T) {
 	accSeed(t, store, accDate, func(rec *workflow.Record) { *rec = accReadyRecord(accDate) })
 	accPlanFor(t, store, r, accDate)
 
-	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver})
+	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -1349,7 +1419,7 @@ func TestAcceptance_Fault_RemoteChangeBetweenPreviewAndSubmit(t *testing.T) {
 		ClassificationID: "cls-1", Description: "work", ObservedAt: accNow,
 	})
 
-	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver})
+	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -1378,7 +1448,7 @@ func TestAcceptance_Fault_ExportFailureDoesNotReplay(t *testing.T) {
 	accSeed(t, store, accDate, func(rec *workflow.Record) { *rec = accReadyRecord(accDate) })
 	accPlanFor(t, store, r, accDate)
 
-	if _, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver}); err == nil {
+	if _, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()}); err == nil {
 		t.Fatalf("the export failure must surface")
 	}
 	if remote.writes() != 1 {
@@ -1415,7 +1485,7 @@ func TestAcceptance_Fault_ConcurrentSecondWriter(t *testing.T) {
 	}
 	defer func() { _ = held.Close() }()
 
-	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver})
+	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: accCatalog()})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}

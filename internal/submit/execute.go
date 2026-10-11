@@ -77,6 +77,17 @@ type RunResult struct {
 // confirmed creates become edits/no-ops and are never replayed; the rebuild is
 // advisory, so any problem there is surfaced in RebuildWarnings, never as a
 // top-level error.
+//
+// PRE-VALIDATION CONTRACT: Execute does NOT itself validate plan classifications
+// against the classification catalog (it has no catalog and no catalog reader).
+// The CALLER is REQUIRED to pre-validate before invoking Execute.
+// run.Runner.Submit is the MANDATORY, enforced boundary: it fails closed on a nil
+// or stale catalog and blocks unknown/unverified classifications (including
+// targeted re-validation and the activity-type comparison) BEFORE calling
+// Execute. Any new caller that reaches a real remote MUST go through that gate
+// (or reproduce it); calling Execute directly with unvalidated operations is a
+// defect. The executor is intentionally a pure dispatcher so a caller cannot
+// silently widen the payload (only the classification id is ever sent).
 func Execute(ctx context.Context, store workflow.Store, obs RemoteObserver, w RemoteWriter, date string, approval workflow.Approval, resolver ClassificationResolver, now time.Time) (RunResult, error) {
 	if ctx == nil {
 		return RunResult{}, errors.New("submit: nil context")

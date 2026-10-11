@@ -255,12 +255,19 @@ func idPrefix(id string) string {
 	return id
 }
 
-// fetchCatalog returns the catalog: live by default (and saved to the cache), or
-// the cache with --cache. Source is set to "live" or "cache" accordingly.
+// newCatalogFetcher is the injectable client factory used by the classify and
+// submit catalog paths. It is a package variable so hermetic tests can drive the
+// live-fetch→cache path without a network. Production uses catalogClient.
+var newCatalogFetcher = catalogClient
+
+// fetchCatalog returns the catalog: live by default (and cached under the search
+// query), or the cache ENTRY for that query with --cache. Source is set to "live"
+// or "cache" accordingly. The cache is QUERY-SCOPED, so a filtered fetch never
+// overwrites the unfiltered ("") entry.
 func fetchCatalog(ctx context.Context, cfg cliConfig, useCache bool, search string) (gradion.Catalog, error) {
 	cachePath, _ := selection.DefaultCatalogCachePath()
 	if useCache {
-		cat, err := selection.LoadCatalogCache(cachePath)
+		cat, err := selection.LoadCatalogCache(cachePath, search)
 		if err != nil {
 			if errors.Is(err, selection.ErrNoCache) {
 				return gradion.Catalog{}, errors.New("no cached catalog: run `timesheet classify list` (live) first")
@@ -269,7 +276,7 @@ func fetchCatalog(ctx context.Context, cfg cliConfig, useCache bool, search stri
 		}
 		return cat, nil
 	}
-	client, err := catalogClient(ctx, cfg)
+	client, err := newCatalogFetcher(ctx, cfg)
 	if err != nil {
 		return gradion.Catalog{}, err
 	}

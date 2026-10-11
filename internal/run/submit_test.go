@@ -3,6 +3,7 @@ package run
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/export"
@@ -10,6 +11,26 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/submit"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
+
+// fullCatalogWith returns a fresh, FULL (unfiltered, complete) live catalog that
+// contains the given classification ids. A live catalog is always fresh.
+func fullCatalogWith(ids ...string) *gradion.Catalog {
+	cat := gradion.Catalog{Complete: true, Source: "live"}
+	for _, id := range ids {
+		cat.Options = append(cat.Options, gradion.ClassificationOption{ID: id})
+	}
+	return &cat
+}
+
+// partialCatalog returns a fresh but FILTERED/PARTIAL catalog for the given query,
+// which cannot prove absence. Its options are the given ids.
+func partialCatalog(query string, ids ...string) *gradion.Catalog {
+	cat := gradion.Catalog{Complete: false, Source: "live", Query: query}
+	for _, id := range ids {
+		cat.Options = append(cat.Options, gradion.ClassificationOption{ID: id})
+	}
+	return &cat
+}
 
 func TestSubmit_NoActiveApprovalBlocked(t *testing.T) {
 	store := newStore(t)
@@ -60,7 +81,7 @@ func TestSubmit_ExecutesActiveApprovalAndExports(t *testing.T) {
 	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote, Exporter: exp}, Config{})
 	seedApproved(t, store, r, date)
 
-	res, err := r.Submit(ctx, date, SubmitOptions{Resolver: clsResolver})
+	res, err := r.Submit(ctx, date, SubmitOptions{Resolver: clsResolver, Catalog: fullCatalogWith("cls-1")})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -86,7 +107,7 @@ func TestSubmit_ExportFailureDoesNotReplay(t *testing.T) {
 	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote, Exporter: exp}, Config{})
 	seedApproved(t, store, r, date)
 
-	if _, err := r.Submit(ctx, date, SubmitOptions{Resolver: clsResolver}); err == nil {
+	if _, err := r.Submit(ctx, date, SubmitOptions{Resolver: clsResolver, Catalog: fullCatalogWith("cls-1")}); err == nil {
 		t.Fatalf("want the export error surfaced")
 	}
 	if remote.creates != 1 {
@@ -154,17 +175,117 @@ func TestSubmit_OfflineBlocked(t *testing.T) {
 	}
 }
 
-// An available catalog that lacks a planned classification blocks submission with
-// ZERO writes (unverified_classification).
-func TestSubmit_UnverifiedClassificationBlocksZeroWrites(t *testing.T) {
+// A FULL catalog that genuinely lacks a planned classification PROVES it invalid:
+// the block is unknown_classification, with ZERO writes.
+func TestSubmit_FullCatalogMissingClassificationBlocksZeroWrites(t *testing.T) {
 	store := newStore(t)
 	date := "2026-10-06"
 	remote := newFakeRemote()
 	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
 	seedApproved(t, store, r, date)
 
-	cat := gradion.Catalog{Complete: true, Source: "live", Options: []gradion.ClassificationOption{{ID: "other-cls"}}}
-	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: &cat})
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: fullCatalogWith("other-cls")})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !res.Blocked || !hasReason(res.BlockReasons, submit.BlockUnknownClassification+":c1") {
+		t.Fatalf("want %s:c1, got %v", submit.BlockUnknownClassification, res.BlockReasons)
+	}
+	if remote.creates != 0 || remote.edits != 0 {
+		t.Fatalf("an unknown classification must produce ZERO writes, got creates=%d edits=%d", remote.creates, remote.edits)
+	}
+	// A full catalog is authoritative: NO targeted read is performed.
+	if len(remote.catalogCalls) != 0 {
+		t.Fatalf("a full catalog must not trigger a targeted read, got %v", remote.catalogCalls)
+	}
+}
+
+// W1: a remote with a NIL catalog fails closed with missing_catalog BEFORE any
+// write — the closed bypass.
+func TestSubmit_MissingCatalogBlocksZeroWrites(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+	seedApproved(t, store, r, date)
+
+	res, err := r.Submit(ctx, date, SubmitOptions{Resolver: clsResolver})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !res.Blocked || !hasReason(res.BlockReasons, BlockMissingCatalog) {
+		t.Fatalf("want %s, got %v", BlockMissingCatalog, res.BlockReasons)
+	}
+	if remote.creates != 0 || remote.edits != 0 {
+		t.Fatalf("a missing catalog must produce ZERO writes, got creates=%d edits=%d", remote.creates, remote.edits)
+	}
+}
+
+// W1: a STALE catalog fails closed with stale_catalog BEFORE any write.
+func TestSubmit_StaleCatalogBlocksZeroWrites(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+	seedApproved(t, store, r, date)
+
+	stale := gradion.Catalog{
+		Complete: true, Source: "cache", ObservedAt: fixedNow().Add(-48 * time.Hour),
+		Options: []gradion.ClassificationOption{{ID: "cls-1"}},
+	}
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: &stale})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !res.Blocked || !hasReason(res.BlockReasons, BlockStaleCatalog) {
+		t.Fatalf("want %s, got %v", BlockStaleCatalog, res.BlockReasons)
+	}
+	if remote.creates != 0 || remote.edits != 0 {
+		t.Fatalf("a stale catalog must produce ZERO writes, got creates=%d edits=%d", remote.creates, remote.edits)
+	}
+}
+
+// W1: a PARTIAL/FILTERED catalog cannot prove absence; a TARGETED read that finds
+// the id clears the choice and the submission proceeds.
+func TestSubmit_PartialCatalogTargetedReadResolvesChoice(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
+		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
+			Options: []gradion.ClassificationOption{{ID: "cls-1"}}}, nil
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+	seedApproved(t, store, r, date)
+
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: partialCatalog("intern", "other-cls")})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if res.Blocked {
+		t.Fatalf("a targeted read that finds the id must clear the block, got %v", res.BlockReasons)
+	}
+	if remote.creates != 1 {
+		t.Fatalf("want one create, got %d", remote.creates)
+	}
+	if len(remote.catalogCalls) != 1 || remote.catalogCalls[0] != "cls-1" {
+		t.Fatalf("want one targeted read for cls-1, got %v", remote.catalogCalls)
+	}
+}
+
+// W1: a targeted read that does NOT find the id fails closed.
+func TestSubmit_PartialCatalogTargetedReadNotFoundBlocks(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
+		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
+			Options: []gradion.ClassificationOption{{ID: "something-else"}}}, nil
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+	seedApproved(t, store, r, date)
+
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: partialCatalog("intern", "other-cls")})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -172,7 +293,145 @@ func TestSubmit_UnverifiedClassificationBlocksZeroWrites(t *testing.T) {
 		t.Fatalf("want %s:c1, got %v", submit.BlockUnverifiedClassification, res.BlockReasons)
 	}
 	if remote.creates != 0 || remote.edits != 0 {
-		t.Fatalf("an unverified classification must produce ZERO writes, got creates=%d edits=%d", remote.creates, remote.edits)
+		t.Fatalf("a not-found targeted read must produce ZERO writes, got creates=%d edits=%d", remote.creates, remote.edits)
+	}
+}
+
+// W1: a targeted read that ERRORS fails closed.
+func TestSubmit_PartialCatalogTargetedReadErrorBlocks(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
+		return gradion.Catalog{}, errors.New("targeted read failed")
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+	seedApproved(t, store, r, date)
+
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: partialCatalog("intern", "other-cls")})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !res.Blocked || !hasReason(res.BlockReasons, submit.BlockUnverifiedClassification+":c1") {
+		t.Fatalf("want %s:c1, got %v", submit.BlockUnverifiedClassification, res.BlockReasons)
+	}
+	if remote.creates != 0 {
+		t.Fatalf("an errored targeted read must produce ZERO writes, got %d", remote.creates)
+	}
+}
+
+// seedApprovedWithActivityType writes a ready record whose single confirmed
+// interval carries an activity type, then previews and approves it.
+func seedApprovedWithActivityType(t *testing.T, store workflow.Store, r *Runner, date, activityType string) workflow.Approval {
+	t.Helper()
+	rec := readyRecord(date)
+	rec.Confirmed[0].ActivityType = activityType
+	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error { *x = rec; return nil }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	pre, err := r.Preview(ctx, date, clsResolver)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if pre.Blocked {
+		t.Fatalf("unexpected preview block: %v", pre.BlockReasons)
+	}
+	approval, err := r.Approve(ctx, date, pre.Plan)
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	return approval
+}
+
+// F1: a targeted read that FINDS the id but returns a DIFFERENT derived activity
+// type must still block (unverified_classification) with ZERO writes.
+func TestSubmit_PartialCatalogTargetedReadActivityTypeMismatchBlocks(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
+		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
+			Options: []gradion.ClassificationOption{{ID: "cls-1", ActivityType: "client project"}}}, nil
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+	seedApprovedWithActivityType(t, store, r, date, "internal project")
+
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: partialCatalog("intern", "other-cls")})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !res.Blocked || !hasReason(res.BlockReasons, submit.BlockUnverifiedClassification+":c1") {
+		t.Fatalf("a targeted activity-type mismatch must block with %s:c1, got %v", submit.BlockUnverifiedClassification, res.BlockReasons)
+	}
+	if remote.creates != 0 || remote.edits != 0 {
+		t.Fatalf("a targeted activity-type mismatch must produce ZERO writes, got creates=%d edits=%d", remote.creates, remote.edits)
+	}
+}
+
+// F1: a targeted read that finds the id with a MATCHING activity type proceeds.
+func TestSubmit_PartialCatalogTargetedReadActivityTypeMatchProceeds(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
+		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
+			Options: []gradion.ClassificationOption{{ID: "cls-1", ActivityType: "internal project"}}}, nil
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+	seedApprovedWithActivityType(t, store, r, date, "internal project")
+
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: partialCatalog("intern", "other-cls")})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if res.Blocked {
+		t.Fatalf("a matching targeted activity type must not block, got %v", res.BlockReasons)
+	}
+	if remote.creates != 1 {
+		t.Fatalf("want one create, got %d", remote.creates)
+	}
+}
+
+// W1: the targeted read is BOUNDED: one call per distinct missing id, deduped.
+func TestSubmit_TargetedReadIsDeduped(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
+		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
+			Options: []gradion.ClassificationOption{{ID: "cls-1"}}}, nil
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+
+	// Two confirmed intervals share cls-1, which is absent from the partial catalog.
+	rec := readyRecord(date)
+	rec.Confirmed = append(rec.Confirmed, workflow.ConfirmedInterval{
+		ID: "c2", Date: date, StartTime: "11:00", EndTime: "12:00",
+		Project: "Proj", Description: "b", Attendance: true, ClassificationID: "cls-1",
+	})
+	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error { *x = rec; return nil }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	pre, err := r.Preview(ctx, date, clsResolver)
+	if err != nil || pre.Blocked {
+		t.Fatalf("Preview: %v %v", err, pre.BlockReasons)
+	}
+	if _, err := r.Approve(ctx, date, pre.Plan); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: partialCatalog("intern", "other-cls")})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if res.Blocked {
+		t.Fatalf("both ops share cls-1 and it is found, so submission must proceed: %v", res.BlockReasons)
+	}
+	if len(remote.catalogCalls) != 1 {
+		t.Fatalf("want exactly ONE targeted read for the shared id, got %v", remote.catalogCalls)
+	}
+	if remote.creates != 2 {
+		t.Fatalf("want two creates, got %d", remote.creates)
 	}
 }
 

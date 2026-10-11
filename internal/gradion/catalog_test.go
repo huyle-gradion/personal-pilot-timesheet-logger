@@ -170,3 +170,91 @@ func TestClassificationCatalog_SearchArgSent(t *testing.T) {
 		t.Fatalf("ClassificationCatalog: %v", err)
 	}
 }
+
+// W3: the fetch path issues EXACTLY ONE get_classifications call and an unfiltered
+// fetch carries no search argument.
+func TestClassificationCatalog_FetchesOnceAndOmitsEmptySearch(t *testing.T) {
+	f := newFakeMCP()
+	f.onCall = func(name string, args map[string]any) callOutcome {
+		if name != ToolGetClassifications {
+			return callOutcome{}
+		}
+		if _, ok := args["search"]; ok {
+			t.Errorf("an unfiltered fetch must not send a search arg, got %v", args)
+		}
+		return classificationFixture(struct{ id, name, code, activity string }{"u1", "I", "INTGRADI2610", "internal project"})
+	}
+	c := newTestClient(t, f)
+	if _, err := c.ClassificationCatalog(context.Background(), ""); err != nil {
+		t.Fatalf("ClassificationCatalog: %v", err)
+	}
+	if n := f.countToolCalls(ToolGetClassifications); n != 1 {
+		t.Fatalf("tools/call for get_classifications = %d, want exactly 1", n)
+	}
+}
+
+// W3: a tool-level error (isError:true) fails closed with CodeReadToolError.
+func TestClassificationCatalog_ToolErrorFailsClosed(t *testing.T) {
+	c := catalogFake(t, callOutcome{IsError: true, Text: "boom"})
+	if _, err := c.ClassificationCatalog(context.Background(), ""); CodeOf(err) != CodeReadToolError {
+		t.Fatalf("expected %s, got %v", CodeReadToolError, err)
+	}
+}
+
+// W3: a malformed structured reference envelope fails closed with CodeReadSchema.
+func TestClassificationCatalog_MalformedStructuredFailsClosed(t *testing.T) {
+	for _, raw := range []string{`{"resources":"not-an-array"}`, `{"nope":1}`, `{"resources":[{"id":1}]}`} {
+		c := catalogFake(t, callOutcome{Structured: []byte(raw)})
+		if _, err := c.ClassificationCatalog(context.Background(), ""); CodeOf(err) != CodeReadSchema {
+			t.Fatalf("structured %q: expected %s, got %v", raw, CodeReadSchema, err)
+		}
+	}
+}
+
+// W3: a tool result with neither structuredContent nor a text block is rejected by
+// the MCP layer before parsing — it never becomes a fabricated empty catalog.
+func TestClassificationCatalog_EmptyResponseFailsClosed(t *testing.T) {
+	c := catalogFake(t, callOutcome{})
+	if _, err := c.ClassificationCatalog(context.Background(), ""); err == nil {
+		t.Fatal("an empty tool result must fail closed")
+	}
+}
+
+// F3: a TARGETED read passes the classification id as the search term, and the
+// fake server receives exactly that query. The targeted path assumes the server
+// matches on the id; an unmatched id returns no option and fails closed upstream.
+func TestClassificationCatalog_TargetedQueryIsTheSearchArg(t *testing.T) {
+	f := newFakeMCP()
+	var got any
+	f.onCall = func(name string, args map[string]any) callOutcome {
+		if name != ToolGetClassifications {
+			return callOutcome{}
+		}
+		got = args["search"]
+		return classificationFixture(struct{ id, name, code, activity string }{"uuid-1", "Intern", "INTGRADI2610", "internal project"})
+	}
+	c := newTestClient(t, f)
+	cat, err := c.ClassificationCatalog(context.Background(), "uuid-1")
+	if err != nil {
+		t.Fatalf("ClassificationCatalog: %v", err)
+	}
+	if got != "uuid-1" {
+		t.Fatalf("targeted query must be the search arg, got %v", got)
+	}
+	if len(cat.Options) != 1 || cat.Options[0].ID != "uuid-1" || cat.Query != "uuid-1" {
+		t.Fatalf("targeted result must carry the matched option and query, got %+v", cat)
+	}
+}
+
+// W1: IsFullCatalog is exactly Query=="" && Complete.
+func TestCatalog_IsFullCatalog(t *testing.T) {
+	if !(Catalog{Complete: true}).IsFullCatalog() {
+		t.Error("empty query + complete must be a full catalog")
+	}
+	if (Catalog{Complete: true, Query: "intern"}).IsFullCatalog() {
+		t.Error("a filtered catalog is not full")
+	}
+	if (Catalog{Complete: false}).IsFullCatalog() {
+		t.Error("a partial catalog is not full")
+	}
+}

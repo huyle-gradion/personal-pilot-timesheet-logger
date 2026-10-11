@@ -115,6 +115,11 @@ type fakeRemote struct {
 	initErr     error
 	verifyErr   error
 	onCreate    func(gradion.CreateRequest) (gradion.WriteResult, error)
+
+	// catalogByQuery, when set, supplies ClassificationCatalog results for
+	// targeted validation. catalogCalls records every query it received.
+	catalogByQuery func(query string) (gradion.Catalog, error)
+	catalogCalls   []string
 }
 
 func newFakeRemote() *fakeRemote {
@@ -139,6 +144,10 @@ func (f *fakeRemote) Classifications(ctx context.Context, query string) ([]gradi
 }
 
 func (f *fakeRemote) ClassificationCatalog(ctx context.Context, query string) (gradion.Catalog, error) {
+	f.catalogCalls = append(f.catalogCalls, query)
+	if f.catalogByQuery != nil {
+		return f.catalogByQuery(query)
+	}
 	return gradion.Catalog{Complete: true, Query: query, ObservedAt: fixedNow(), Source: "live"}, nil
 }
 
