@@ -5,9 +5,14 @@ deciders:
   - Huy Le Minh
 related:
   - 0005
+vault_mirror: ADR-007
 ---
 
 # Journal evidence source
+
+Mirrored in the ai-database vault as
+`05 - Architecture Decisions/ADR-007 - Optional read-only journal evidence.md`
+(verified 2026-10-11).
 
 ## Context
 
@@ -119,6 +124,6 @@ primary store.
 
 The CLI and the agent skill keep one shared core; the journal source adds no new
 subcommand. The exact authority/safety boilerplate strings must be confirmed by
-the owner against the real vault (the current set is deliberately small). The
-vault mirror ADR id for this record is not assigned here; the parent verifies it
-later. No UI or downstream (B) dependency is added.
+the owner against the real vault (the current set is deliberately small). This
+record is mirrored in the vault as ADR-007. No UI or downstream (B) dependency is
+added.

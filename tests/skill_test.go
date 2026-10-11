@@ -101,4 +101,45 @@ func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
 			t.Errorf("retired path still exists: %s", gone)
 		}
 	}
+
+	// 8. The skill delegates the guided run to the shared core and links the
+	// detailed journal/guided docs instead of duplicating their flags.
+	for _, want := range []string{
+		"run --interactive",
+		"run --plain",
+		"guided-workflow.md",
+		"journal-source.md",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("skill docs missing guided/journal delegation reference %q", want)
+		}
+	}
+
+	// 9. The skill states the binding boundaries: no independent accounting, the
+	// guided run never approves/submits, and journal notes are read-only evidence.
+	for _, want := range []string{
+		"no accounting",
+		"never approves or submits",
+		"read-only narrative evidence",
+		"UNTIMED",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("skill docs missing binding boundary %q", want)
+		}
+	}
+
+	// 10. The decisions schema documents the actual ReviewDecisions fields.
+	for _, field := range []string{
+		"block_id", "evidence_id", "work_block_id", "meeting_ev_id",
+		"new_start", "mark_empty", "acknowledge", "evidence_ids",
+	} {
+		if !strings.Contains(wfContent, field) {
+			t.Errorf("workflow.md decisions schema missing actual field %q", field)
+		}
+	}
+
+	// 11. The shipped personal example config exists for the guided workflow.
+	if _, statErr := os.Stat(filepath.Join(repoRoot, "cmd", "timesheet", "timesheet.personal.example.json")); statErr != nil {
+		t.Errorf("cmd/timesheet/timesheet.personal.example.json does not exist: %v", statErr)
+	}
 }

@@ -11,7 +11,20 @@ here.
 
 Set `TS="go run ./cmd/timesheet"` (or the built binary) and `CFG=timesheet.json`.
 Default to today in the configured timezone; pass `--date` or `--from/--to` to
-target specific days. `--offline` never contacts the remote.
+target specific days. `--offline` skips **ONLY** the Gradion remote; configured
+source fetches (calendar ICS, git, journal) still run.
+
+## Run modes
+
+`run` has one scripted path and a guided one. `--decisions FILE` /
+`--non-interactive` force the scripted path and take precedence; `--plain` is the
+safe line-based guided path (works on a pipe, EOF aborts); `--interactive` is the
+terminal UI and runs only when stdin and stdout are real terminals and the
+environment is not CI. The default (no flag) is scripted, so headless behavior
+and exit codes are unchanged. The guided run reviews one day at a time, applies
+every choice in one atomic step only after a deliberate final confirmation, and
+never approves or submits. Full modes, precedence, and cancellation:
+[guided workflow](../../../docs/agents/guided-workflow.md).
 
 ---
 
@@ -41,16 +54,25 @@ is named `configuration`). Exit code `3` when refused.
 
 ## Step 2: `[Script]` Collect and propose
 
-Collect evidence from the enabled sources, merge it into the day's workflow
-record, and print the deterministic proposal. Collection proceeds independently of
-review or submission. Nothing is confirmed.
+Collect evidence from the enabled sources (calendar, git, and the optional
+read-only journal note), merge it into the day's workflow record, and print the
+deterministic proposal. Collection proceeds independently of review or
+submission. Nothing is confirmed.
+
+Journal items appear as **UNTIMED narrative candidates** with their provenance
+(relative note path, heading, line range, stated date) and an explicit unknown
+duration; a note never establishes working time. A missing or unreadable note is
+a **visibly incomplete** source (`JOURNAL_NOTE_MISSING` / `JOURNAL_VAULT_MISSING`)
+that blocks the preview until acknowledged with `--ack <source-id>`. Only
+recorded work is captured. See
+[journal source](../../../docs/agents/journal-source.md).
 
 ```bash
 $TS review --config "$CFG" --date "$DATE"
 ```
 
 **Output Seam**: the proposed work/meeting/manual blocks with their stable block
-ids (used by later decisions).
+ids (used by later decisions), plus the untimed journal narratives.
 
 ---
 
@@ -67,8 +89,9 @@ synthesize a title and description per block. The core:
 - falls back to deterministic text on any failure, so review is **never blocked**.
 
 The editorial text is TEXT ONLY and is applied to block descriptions by the core;
-it can never alter intervals, attendance, projects, evidence, or approvals. Disable
-it with `--no-editorial`.
+it can never alter intervals, attendance, projects, evidence, or approvals. Private
+journal note text is **never** forwarded to the editorial service, including a
+manually linked journal description. Disable it with `--no-editorial`.
 
 ---
 
@@ -82,16 +105,25 @@ review uses. The decisions file may contain a `{date}` placeholder for a range.
 $TS review --config "$CFG" --date "$DATE" --decisions decisions.json
 ```
 
-Example `decisions.json`:
+Example `decisions.json` (a subset of the `run.ReviewDecisions` fields):
 
 ```json
 {
-  "confirm": [{"block_id": "<BLOCK_ID>", "project": "Proj"}],
+  "confirm": [{"block_id": "<BLOCK_ID>", "project": "Proj", "attendance": true}],
   "exclude": [{"evidence_id": "<EVIDENCE_ID>", "reason": "user_excluded"}],
+  "join": [{"work_block_id": "<BLOCK_ID>", "meeting_ev_id": "<EVIDENCE_ID>"}],
   "trim": [{"block_id": "<BLOCK_ID>", "new_start": "09:15", "new_end": "09:45"}],
+  "project": [{"block_id": "<BLOCK_ID>", "project": "Proj"}],
+  "manual": [{"uuid": "<UUID>", "start": "2026-10-06T09:00:00Z", "end": "2026-10-06T11:00:00Z", "project": "Proj", "description": "Pairing", "evidence_ids": ["<EVIDENCE_ID>"]}],
+  "mark_empty": false,
   "acknowledge": ["cal"]
 }
 ```
+
+A `manual` entry's `evidence_ids` links one user-timed interval to several
+supporting source records (for example journal items); the links add **no
+minutes** and the interval's own span is authoritative. Omitting `uuid` generates
+a fresh identity per call, so pass a stable `uuid` to edit the same interval.
 
 **Output Seam**: the day is reviewed (or reviewed-empty) and persisted.
 
@@ -181,11 +213,17 @@ $TS submit --config "$CFG" --date "$DATE"
 - After execution the core rewrites only the marker block in
   `<vault>/<daily-dir>/<date>.md`, preserving everything else byte-for-byte.
 
-Reconcile an unresolved operation with an explicit decision (never a bare absence):
+A normal day does not call `resolve`. Reconcile an operation left unresolved by
+an **uncertain** write with an explicit decision (never a bare absence); `resolve`
+reports the applied count and errors when a decision matches no unresolved
+operation:
 
 ```bash
 $TS resolve --config "$CFG" --date "$DATE" --decisions resolve.json
 ```
+
+where `resolve.json` is an array of
+`{"operation_key": "...", "kind": "adopt"|"not_applied", "remote_id": "...", "local_id": "..."}`.
 
 Re-render the managed note without submitting (read-only with respect to the
 remote):
@@ -193,8 +231,6 @@ remote):
 ```bash
 $TS export --config "$CFG" --date "$DATE"
 ```
-
-where `resolve.json` is an array of `{"operation_key": "...", "kind": "adopt"|"not_applied", "remote_id": "...", "local_id": "..."}`.
 
 **Output Seam**: durable per-operation outcomes and the exported daily note.
 

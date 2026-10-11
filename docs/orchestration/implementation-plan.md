@@ -146,6 +146,10 @@ Run the full requirement matrix below using hermetic scenarios and fault injecti
 
 Exit: independent integrated review, source acceptance, and owner release decision. A production pilot requires separate approval of real work in an exact daily plan; synthetic billable test entries are not permitted. Commits, passing tests, and a plan do not grant that approval.
 
+## PERSONAL-WORKFLOW-1. Personal daily workflow (post-S9)
+
+State: closed - source-accepted (2026-10-11), local only, not pushed. A (optional read-only journal evidence source) `195fb4e`; B (guided daily review through explicit local gates) `543966d`. Both independently reviewed and re-reviewed (A F1-F5 fixed, F6 no action; B1-B8 fixed). A/B vault sync complete. Depends on S9. Carried: recorded-only evidence (no all-day coverage claim), no live-vault integration run, no live UI pty or Windows verification, mandatory submit-time classification validation, user-span-only confirmed duration, advisory heuristic invalidation with the exact plan-execution guard authoritative. Release and production submission remain separate owner decisions. See [state](state.md).
+
 ## Requirement traceability
 
 ### Shared-workflow coverage

@@ -4,6 +4,93 @@ Updated: 2026-10-11. This is a resumable status ledger, not a grant of authority
 
 ## Authority now
 
+### PERSONAL-WORKFLOW-1 session grant, 2026-10-11
+
+Owner authorized bounded implementation, tests, direct specialist dispatch,
+independent review and fixes, local accepted-slice commits, repository docs,
+and targeted ai-database updates for A then B. Credential retrieval, live
+services, Keychain changes, remote writes, push, merge, and publication remain
+prohibited. Production submission remains blocked. Use fake remotes for checks.
+
+Baseline reconciled against planner handoff: `feat/s9-integrated-acceptance`,
+HEAD `60a7398`, tracked tree clean. Previous worker released the overlapping
+CLI/collector files. Unrelated untracked paths remain preserved. The owner-
+identified stray `0` file was removed with explicit permission.
+
+Work graph and current gates (both slices closed - source-accepted):
+- A (optional read-only journal evidence source): committed locally `195fb4e`,
+  parent `60a7398`, independently accepted. Contract @oracle
+  `ses_ed53e2522ffezLk6e5Lfc1rodp`; implementer @fixer
+  `ses_ed53249a6ffeR6icLqiQSDDMsI`; fresh independent reviewer @oracle
+  `ses_ed519bb97ffezdIVnHYg2SdFIB`. F1-F5 fixed and independently re-reviewed
+  (F6 no action). Parent owns validation/integration. A vault synchronization
+  complete.
+- B (guided daily review through explicit local gates): committed locally
+  `543966d`, parent `195fb4e`, independently accepted. Implementer @designer
+  `ses_ed53dd0c6ffeUfMyeIix2B7kMp`; independent reviewer @oracle
+  `ses_ed4bf8b7affeX1oncc9R5PtUMb` (initial + re-review); B1-B8 fixed and
+  re-reviewed. Vault synchronization complete.
+- Lifecycle: PERSONAL-WORKFLOW-1 closed - source-accepted. Both slices are local
+  only; nothing pushed, merged, or published. Release and production submission
+  remain separate owner decisions.
+- Records: accepted commits precede skill/examples/ledger/project/daily updates.
+
+Owner chose historical journal/accomplishment evidence plus optional stable
+entry IDs. No historical rewrite. Ambiguous edits remain separate/detached for
+review; confirmed decisions survive recollection. ai-database changes from
+export-only to optional read-only evidence input, not the primary workflow store.
+Only recorded evidence can be collected; this does not establish a complete day.
+
+Verification owners: A implementer supplies sanitized collector and shared-core
+regressions; B designer supplies interaction/scripted parity, cancellation,
+headless and fake-remote checks; fresh reviewers independently assess exact
+snapshots; parent runs final build, vet, uncached full tests, relevant race/e2e,
+and staged/diff checks. No live verification is authorized.
+
+A acceptance artifacts: `.../T/opencode/personal-workflow-a-fix1-review/` contains
+the SHA-256 manifest, HEAD, and tracked diff. Independent report:
+`.../T/opencode/pw1-fix1-review-report.md`. Parent verification log:
+`.../T/opencode/personal-workflow-a-final-checks.log`. Build, vet, full uncached
+tests, evidence/proposal/review/run/editorial race checks, hermetic e2e, and diff
+checks all exited 0. Accepted paths were hash-verified before staging; 28 files
+committed. Parent ledger was excluded from the implementation commit. Nothing
+pushed, merged, or published. Production submission remains blocked.
+
+B acceptance artifacts: `.../T/opencode/personal-workflow-b-fix1-review/`
+(SHA-256 manifest, HEAD, tracked diff). Independent report:
+`.../T/opencode/pw1b-fix1-independent-review-report.md`. Parent verification log:
+`.../T/opencode/personal-workflow-b-final-checks.log`. Build, vet, full uncached
+25-package tests, 4-package race checks, hermetic e2e, the guided harness, and
+`git diff --check` all exited 0. B (20 files) committed by the parent at
+`543966d`. Nothing pushed, merged, or published.
+
+A carried limitations: only recorded journal/accomplishment evidence is collected;
+no live-vault integration run. Identical implicit bullets in one heading fail
+visibly rather than silently collapse. Heading edits change implicit identity;
+explicit IDs avoid that ambiguity. Narrow metrics connectors may exclude
+unit-only phrases such as `1 test to run`, with an exclusion-count warning.
+Detached excluded evidence may appear in advisory Changed. No time is inferred.
+No all-day coverage is claimed: a note never establishes a complete day.
+
+B carried limitations: existing classification changes require the explicit
+`classify select` follow-up; a scripted raw classification/type is validated
+mandatorily at submit; confirmed duration comes from user spans only and source
+completeness is recorded-only; no live UI pty or Windows verification; a
+zero-length manual interval is blocked by a local gate; heuristic eager invalidation is
+advisory and the exact plan-execution guard is authoritative.
+
+A vault sync completed by @ai-database `ses_ed54550a7ffecFm5IBJjsZbO42` on
+2026-10-11: project note, today's daily log, and new vault
+`ADR-007 - Optional read-only journal evidence.md`. Agent verified YAML and
+ADR/project links; existing unresolved person link was preserved. No deadlines,
+working hours, or production-readiness claims added.
+
+B vault sync completed by @ai-database `ses_ed54550a7ffecFm5IBJjsZbO42` on
+2026-10-11: project personal-workflow status and the 2026-10-11 daily
+journal/impact only; YAML, project, and ADR links validated; A+B source-accepted
+and local-only; the existing unresolved person link was preserved as a
+limitation. No production-readiness or publication claims added.
+
 Owner authorization for the current orchestrator session (2026-10-10):
 
 - Authorized: implement and fix the agreed S1 through S9 plan through bounded worker tasks; dispatch workers directly (direct-dispatch mode); create isolated branches/worktrees while preserving existing work; commit independently accepted slices locally; update repository progress documentation and ai-database; run hermetic checks and tests.
@@ -774,6 +861,30 @@ Commit and publication status: committed locally 8d27079; NOT pushed, no PR, no 
 Vault sync status: complete - project note and daily note updated.
 Hygiene note: a stray untracked file `0` (a leftover shell redirect from a preview run) sits in the repo root; it was NOT staged or committed and should be removed or ignored by the owner.
 Next gate and blockers: production submission remains blocked (live-authority verification and an owner-approved exact daily plan are still required). Live calendar collection has NOT been exercised against the real Keychain; the fix is verified hermetically only. F2 does not independently block release readiness.
+```
+
+```text
+2026-10-11 / PERSONAL-WORKFLOW-1-A / authorized -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: PERSONAL-WORKFLOW-1 session grant; local commit of the accepted slice; targeted vault update. Not authorized: push/merge/publication, live services, credential retrieval, Keychain changes, remote/production writes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 195fb4e (parent 60a7398) / 28 files, +3151/-21: new internal/evidence/plugins/journal.go(+journal_test, testdata/journal/*); new docs/adr/0007-journal-evidence-source.md, docs/agents/journal-source.md; new cmd/timesheet/{journal_test.go,timesheet.journal.example.json}; new internal/{proposal/narrative_test.go,review/link_test.go,run/journal_test.go,editorial/privacy_test.go}; edits internal/evidence/{contract,identity}.go(+tests), internal/evidence/plugins/fixture.go, internal/proposal/{model,build}.go, internal/review/review.go, internal/run/{collect,review}.go, internal/editorial/build.go, cmd/timesheet/{main,main_test}.go, docs/{timesheet-redesign.md,agents/collection-config.md}. Snapshot .../opencode/personal-workflow-a-fix1-review/ (SHA-256 manifest, HEAD, tracked diff).
+Worker/reviewer report references and verification level: contract @oracle ses_ed53e2522ffezLk6e5Lfc1rodp; implementer @fixer ses_ed53249a6ffeR6icLqiQSDDMsI; fresh independent reviewer @oracle ses_ed519bb97ffezdIVnHYg2SdFIB; report .../opencode/pw1-fix1-review-report.md. F1-F5 fixed and re-reviewed; F6 (editorial request forwards non-secret stable sha256-derived ids; no text) no action. Parent log .../opencode/personal-workflow-a-final-checks.log: build/vet/full uncached tests/evidence-proposal-review-run-editorial race/hermetic e2e/diff all exit 0.
+Behavior: new compile-time SourceJournal plugin reads <vault>/<daily_dir>/<date>.md read-only (path confinement incl. symlink escape refusal), parses narrative sections (Work journal/quick capture/Daily impact) with full heading ancestry, and emits UNTIMED evidence (zero start/end, unknown duration) with additive provenance (relative note path, heading, line range, stated date, clock, inline project links). Explicit/implicit identity via JournalID; duplicate explicit or implicit ids fail visibly; normalized full-ancestry identity keeps phrase-sharing headings and nested sections distinct. Active/detached history marks absent items detached only on a successful COMPLETE collection. Proposal gains additive untimed Narratives; manual intervals may link several evidence ids with no added minutes; editorial never forwards journal/manual text. CLI registers the journal plugin; the shipped example config is cmd/timesheet/timesheet.journal.example.json.
+Open findings and disposition: none blocking. Carried: only recorded evidence is collected; no live-vault run; duplicate implicit bullets in one heading fail visibly; heading edits change implicit identity (explicit IDs avoid it); narrow metrics connectors may exclude unit-only phrases with a warning; detached evidence may appear in advisory Changed; no time inferred; no all-day coverage claim.
+Commit and publication status: committed locally 195fb4e; NOT pushed, no PR, no merge.
+Vault sync status: complete - project note, daily note, and vault ADR-007 updated; existing unresolved person link preserved.
+Next gate and blockers: B (guided review) depends on A; then PERSONAL-WORKFLOW-1 lifecycle close. Production submission remains blocked.
+```
+
+```text
+2026-10-11 / PERSONAL-WORKFLOW-1-B / authorized -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed -> vault-synced -> lifecycle closed source-accepted
+Owner authority reference: PERSONAL-WORKFLOW-1 session grant; local commit of the accepted slice; targeted vault update. Not authorized: push/merge/publication, live services, credential retrieval, Keychain changes, remote/production writes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 543966d (parent 195fb4e) / 20 files, +3754/-73: new cmd/timesheet/{interactive,interactive_test,prompt_plain,prompt_tui,tty_darwin,tty_linux,tty_other}.go, cmd/timesheet/timesheet.personal.example.json, docs/agents/guided-workflow.md; edits cmd/timesheet/{main,main_test}.go, docs/agents/collection-config.md, docs/timesheet-redesign.md, go.mod, go.sum, internal/review/{review,actions_test}.go, internal/run/{guided_decisions_test,review,review_test}.go. Snapshot .../opencode/personal-workflow-b-fix1-review/ (SHA-256 manifest, HEAD, tracked diff).
+Worker/reviewer report references and verification level: implementer @designer ses_ed53dd0c6ffeUfMyeIix2B7kMp; independent reviewer @oracle ses_ed4bf8b7affeX1oncc9R5PtUMb (initial + re-review); report .../opencode/pw1b-fix1-independent-review-report.md. B1-B8 fixed and re-reviewed. Parent log .../opencode/personal-workflow-b-final-checks.log: build/vet/full uncached 25-package tests/4-package race/hermetic e2e/guided harness/diff all exit 0. Retest command: `go test ./cmd/timesheet -run '^TestGuidedOfflineHarness$' -count=1 -v`.
+Behavior: `run --interactive` (huh TUI, real terminal only, never on a pipe/CI) and `run --plain` (safe line-based, EOF aborts) stage the day's review in memory and apply it in ONE atomic ApplyReview only after a deliberate final confirmation; cancelling before that final deliberate local-review confirmation applies no unfinished confirmation, approval, or submission change and preserves prior reviewed state (collection and optional editorial synthesis may already have persisted their own durable state). Precedence: `--decisions`/`--non-interactive` > `--plain` > `--interactive` > default scripted (headless behavior and exit codes unchanged). The guided run reviews one day at a time (a range is refused) and never approves or submits; it prints the exact preview, total, and a single `approve --plan` follow-up. Journal narratives are shown UNTIMED with provenance; a missing note is a visibly incomplete source requiring explicit `--ack`; a manually timed interval can link several supporting records with no added minutes; private note text is never forwarded externally. `--offline` skips only the Gradion remote; source fetches still run.
+Open findings and disposition: B1-B8 closed. Carried: existing classification changes need the explicit `classify select` follow-up; a scripted raw classification/type is validated mandatorily at submit; confirmed duration comes from user spans only and source completeness is recorded-only; no live UI pty or Windows verification; a zero-length manual interval is blocked by a local gate; heuristic eager invalidation is advisory and the exact plan-execution guard is authoritative.
+Commit and publication status: committed locally 543966d; NOT pushed, no PR, no merge.
+Vault sync status: complete - project personal-workflow status and the 2026-10-11 daily journal/impact updated; YAML/project/ADR links validated; A+B source-accepted and local-only; existing unresolved person link preserved as a limitation.
+Next gate and blockers: PERSONAL-WORKFLOW-1 lifecycle closed - source-accepted. Release and production submission remain separate owner decisions; live verification and an owner-approved exact daily plan are still required. No deadlines assigned.
 ```
 
 ## Documentation review
