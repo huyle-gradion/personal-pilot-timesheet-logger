@@ -549,6 +549,157 @@ func TestRunCLI_ReviewEmptyDayWithEditor(t *testing.T) {
 	}
 }
 
+// S8-FOLLOWUP-2: the preview must show the EXACT operations + a correct total,
+// while keeping the machine-readable plan_id:/operations: lines.
+func TestRunCLI_PreviewShowsOperationsAndTotal(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := cliConfig{Classifications: map[string]string{"Proj": "cls-1"}}
+	cfgPath := writeConfig(t, dir, cfg)
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:30", Project: "Proj", Description: "first", Attendance: true, ClassificationID: "cls-1"},
+			{ID: "c2", Date: testDate, StartTime: "11:00", EndTime: "15:30", Project: "Proj", Description: "second", Attendance: true, ClassificationID: "cls-1"},
+		}
+	})
+
+	code, stdout, stderr := runArgs(t, "preview", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--offline")
+	if code != exitOK {
+		t.Fatalf("preview: %d (%s)", code, stderr)
+	}
+	for _, want := range []string{
+		"plan_id: ",
+		"operations: 2",
+		"remote observed: ",
+		"remote complete: true",
+		"  create 09:00-10:30 Proj first",
+		"  create 11:00-15:30 Proj second",
+		"total: 6h 0m across 2 operation(s)",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("preview output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+// S8-FOLLOWUP-2: a blocked preview keeps the existing `preview blocked:` behavior.
+func TestRunCLI_PreviewBlockedStillPrintsReason(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Confirmed[0].Project = "" // unresolved project -> blocked
+	})
+
+	code, stdout, _ := runArgs(t, "preview", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--offline")
+	if code != exitBlocked {
+		t.Fatalf("want a blocked exit, got %d (%s)", code, stdout)
+	}
+	if !strings.Contains(stdout, "preview blocked: ") {
+		t.Fatalf("want the blocked message, got:\n%s", stdout)
+	}
+}
+
+// S8F2-1: the label comes from the CONFIRMED INTERVAL's own project, not a
+// reverse classification-id lookup (which mislabels duplicate ids / unmapped
+// projects).
+func TestRunCLI_PreviewLabelsFromIntervalProject(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	// Two projects share cls-1 (a reverse lookup would pick "Alpha"); "Gamma" is
+	// absent from the map.
+	cfg := cliConfig{Classifications: map[string]string{"Alpha": "cls-1", "Zeta": "cls-1"}}
+	cfgPath := writeConfig(t, dir, cfg)
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Zeta", Description: "first", Attendance: true, ClassificationID: "cls-1"},
+			{ID: "c2", Date: testDate, StartTime: "11:00", EndTime: "12:00", Project: "Gamma", Description: "second", Attendance: true, ClassificationID: "cls-9"},
+		}
+	})
+
+	code, stdout, stderr := runArgs(t, "preview", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--offline")
+	if code != exitOK {
+		t.Fatalf("preview: %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "  create 09:00-10:00 Zeta first") {
+		t.Errorf("the label must be the interval's project (Zeta), not a reverse-map pick:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "Alpha") {
+		t.Errorf("the reverse-map name Alpha must not appear:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "  create 11:00-12:00 Gamma second") {
+		t.Errorf("an unmapped interval must still show its own project (Gamma):\n%s", stdout)
+	}
+}
+
+// S8F2-2: a description with a newline must be collapsed to one line.
+func TestRunCLI_PreviewCollapsesDescription(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Confirmed[0].Description = "line one\nline two"
+	})
+
+	code, stdout, stderr := runArgs(t, "preview", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--offline")
+	if code != exitOK {
+		t.Fatalf("preview: %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "  create 09:00-10:00 Proj line one line two") {
+		t.Errorf("a multi-line description must collapse to one line:\n%s", stdout)
+	}
+}
+
+// S8F2-4: a midnight-crossing interval contributes its exact total minutes.
+func TestRunCLI_PreviewMidnightTotal(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Confirmed[0].StartTime = "23:00"
+		rec.Confirmed[0].EndTime = "01:00"
+	})
+
+	code, stdout, stderr := runArgs(t, "preview", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--offline")
+	if code != exitOK {
+		t.Fatalf("preview: %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "total: 2h 0m across 1 operation(s)") {
+		t.Errorf("a 23:00-01:00 interval must total 2h 0m:\n%s", stdout)
+	}
+}
+
+// S8F2-4: the edit suffix and the (unclassified) fallback (renderer unit tests).
+func TestFormatPlanOperation_EditSuffixAndUnclassified(t *testing.T) {
+	edit := workflow.PlanOperation{
+		LocalID: "c1", Kind: workflow.PlanOpEdit, RemoteID: "r1",
+		StartTime: "09:00", EndTime: "10:00", ClassificationID: "cls-1", Description: "work",
+	}
+	line := formatPlanOperation(edit, cliConfig{}, nil)
+	if !strings.Contains(line, "  edit 09:00-10:00 cls-1 work") || !strings.Contains(line, " remote=r1") {
+		t.Fatalf("an edit must show the target remote id, got %q", line)
+	}
+
+	if got := operationLabel(workflow.PlanOperation{LocalID: "c1", ClassificationID: ""}, cliConfig{}, nil); got != "(unclassified)" {
+		t.Fatalf("want (unclassified), got %q", got)
+	}
+	// A confirmed interval's project wins over the reverse lookup.
+	projects := map[string]string{"c1": "Zeta"}
+	if got := operationLabel(workflow.PlanOperation{LocalID: "c1", ClassificationID: "cls-1"}, cliConfig{Classifications: map[string]string{"Alpha": "cls-1"}}, projects); got != "Zeta" {
+		t.Fatalf("want the interval project Zeta, got %q", got)
+	}
+}
+
 func TestRunCLI_ResolveAdopts(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "test-token")
 	dir := t.TempDir()

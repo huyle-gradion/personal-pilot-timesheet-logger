@@ -155,7 +155,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "export":
 		return cmdExport(ctx, runner, *date, *from, *to, stdout, stderr)
 	case "preview":
-		return cmdPreview(ctx, runner, cfg, *date, stdout, stderr)
+		return cmdPreview(ctx, store, runner, cfg, *date, stdout, stderr)
 	case "approve":
 		return cmdApprove(ctx, store, runner, *date, *planID, stdout, stderr)
 	case "submit":
@@ -488,7 +488,7 @@ func cmdExport(ctx context.Context, r *run.Runner, date, from, to string, stdout
 	return exitOK
 }
 
-func cmdPreview(ctx context.Context, r *run.Runner, cfg cliConfig, date string, stdout, stderr io.Writer) int {
+func cmdPreview(ctx context.Context, store workflow.Store, r *run.Runner, cfg cliConfig, date string, stdout, stderr io.Writer) int {
 	d, err := singleDate(r, date)
 	if err != nil {
 		fmt.Fprintln(stderr, "timesheet:", err)
@@ -503,9 +503,123 @@ func cmdPreview(ctx context.Context, r *run.Runner, cfg cliConfig, date string, 
 		fmt.Fprintf(stdout, "preview blocked: %s\n", strings.Join(res.BlockReasons, ", "))
 		return exitBlocked
 	}
+	// Machine-readable lines (kept byte-for-byte: the e2e extracts plan_id:).
 	fmt.Fprintf(stdout, "plan_id: %s\n", res.Plan.PlanID)
 	fmt.Fprintf(stdout, "operations: %d\n", len(res.Plan.Operations))
+	// Human-readable detail: the EXACT creates/edits, intervals, descriptions,
+	// projects, and total hours the user approves (secret-free: plan fields only).
+	projects := confirmedProjects(ctx, store, d)
+	fmt.Fprintf(stdout, "remote observed: %s\n", res.Plan.RemoteObservedAt.Format(time.RFC3339))
+	fmt.Fprintf(stdout, "remote complete: %t\n", res.Plan.RemoteComplete)
+	totalMinutes := 0
+	for _, op := range res.Plan.Operations {
+		fmt.Fprintln(stdout, formatPlanOperation(op, cfg, projects))
+		totalMinutes += minutesBetween(op.StartTime, op.EndTime)
+	}
+	fmt.Fprintf(stdout, "total: %dh %dm across %d operation(s)\n", totalMinutes/60, totalMinutes%60, len(res.Plan.Operations))
 	return exitOK
+}
+
+// confirmedProjects maps each confirmed interval's LocalID to its project name, so
+// the preview labels an operation from the interval the user actually reviewed.
+func confirmedProjects(ctx context.Context, store workflow.Store, date string) map[string]string {
+	rec, err := store.GetDay(ctx, date)
+	if err != nil || rec == nil {
+		return nil
+	}
+	out := make(map[string]string, len(rec.Confirmed))
+	for _, ci := range rec.Confirmed {
+		out[ci.ID] = strings.TrimSpace(ci.Project)
+	}
+	return out
+}
+
+// formatPlanOperation renders one planned create/edit as a stable, greppable line:
+//
+//	"  <create|edit> <start>-<end> <project-or-classification> <description>[ remote=<id>]"
+//
+// The label prefers the CONFIRMED INTERVAL's own project; it falls back to the
+// config classifications reverse lookup, then the classification id. The rendered
+// text is collapsed to one line. It never prints a secret.
+func formatPlanOperation(op workflow.PlanOperation, cfg cliConfig, projects map[string]string) string {
+	line := fmt.Sprintf("  %s %s-%s %s %s", op.Kind, op.StartTime, op.EndTime,
+		oneLine(operationLabel(op, cfg, projects)), oneLine(op.Description))
+	if op.Kind == workflow.PlanOpEdit {
+		line += " remote=" + op.RemoteID
+	}
+	return line
+}
+
+// operationLabel labels an operation. It prefers the confirmed interval's OWN
+// project (via the plan op's LocalID), because a classification-id reverse lookup
+// can mislabel when several projects share a classification id or when the
+// interval's project is absent from the map. It then falls back to the deterministic
+// reverse lookup, then the classification id, then "(unclassified)".
+func operationLabel(op workflow.PlanOperation, cfg cliConfig, projects map[string]string) string {
+	if p := strings.TrimSpace(projects[op.LocalID]); p != "" {
+		return p
+	}
+	if best := reverseClassificationLabel(op.ClassificationID, cfg); best != "" {
+		return best
+	}
+	if strings.TrimSpace(op.ClassificationID) == "" {
+		return "(unclassified)"
+	}
+	return op.ClassificationID
+}
+
+// reverseClassificationLabel returns the lexicographically smallest configured
+// project name mapped to classID, or "" (an empty classID never matches).
+func reverseClassificationLabel(classID string, cfg cliConfig) string {
+	if strings.TrimSpace(classID) == "" {
+		return ""
+	}
+	best := ""
+	for project, cid := range cfg.Classifications {
+		if cid != classID {
+			continue
+		}
+		if best == "" || project < best {
+			best = project
+		}
+	}
+	return best
+}
+
+// oneLine collapses control characters (including newlines/tabs) to a single space
+// so a rendered operation stays on one line, and trims the result.
+func oneLine(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	pendingSpace := false
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			pendingSpace = true
+			continue
+		}
+		if pendingSpace && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		pendingSpace = false
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// minutesBetween returns the exact minutes from "HH:MM" to "HH:MM". Only an end
+// BEFORE the start is treated as crossing midnight (equal times return 0).
+// Unparseable times contribute 0.
+func minutesBetween(start, end string) int {
+	s, err1 := time.Parse("15:04", strings.TrimSpace(start))
+	e, err2 := time.Parse("15:04", strings.TrimSpace(end))
+	if err1 != nil || err2 != nil {
+		return 0
+	}
+	m := int(e.Sub(s).Minutes())
+	if m < 0 {
+		m += 24 * 60
+	}
+	return m
 }
 
 func cmdApprove(ctx context.Context, store workflow.Store, r *run.Runner, date, planID string, stdout, stderr io.Writer) int {
