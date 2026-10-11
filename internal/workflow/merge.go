@@ -123,6 +123,9 @@ func preserveConfirmedFields(incoming, existing ConfirmedInterval) ConfirmedInte
 	if incoming.ClassificationID == "" {
 		incoming.ClassificationID = existing.ClassificationID
 	}
+	if incoming.ActivityType == "" {
+		incoming.ActivityType = existing.ActivityType
+	}
 	return incoming
 }
 
@@ -424,6 +427,7 @@ func LocalFingerprint(rec Record) string {
 		Attendance       bool   `json:"attendance"`
 		Kind             string `json:"kind"`
 		ClassificationID string `json:"classification_id"`
+		ActivityType     string `json:"activity_type"`
 	}
 	type reviewExcluded struct {
 		EvidenceID string `json:"evidence_id"`
@@ -455,7 +459,7 @@ func LocalFingerprint(rec Record) string {
 		confirmedRows = append(confirmedRows, confirmed{
 			ID: c.ID, Date: c.Date, StartTime: c.StartTime, EndTime: c.EndTime,
 			Project: c.Project, Description: c.Description, Attendance: c.Attendance,
-			Kind: c.Kind, ClassificationID: c.ClassificationID,
+			Kind: c.Kind, ClassificationID: c.ClassificationID, ActivityType: c.ActivityType,
 		})
 	}
 	sort.Slice(confirmedRows, func(i, j int) bool { return confirmedRows[i].ID < confirmedRows[j].ID })

@@ -97,6 +97,19 @@ func TestValidateApproval_LocalFingerprintChangeInvalidates(t *testing.T) {
 	}
 }
 
+// A classification SELECTION change (which also updates the derived ActivityType)
+// invalidates the approval: both fields feed LocalFingerprint.
+func TestValidateApproval_ActivityTypeChangeInvalidates(t *testing.T) {
+	rec := reviewedRecord()
+	rec.Confirmed[0].ActivityType = "internal project"
+	a := planAndApprove(t, &rec, completeListing())
+	rec.Confirmed[0].ActivityType = "client project"
+	status, _ := ValidateApproval(rec, a, completeListing(), testNow)
+	if status != ApprovalStaleLocal {
+		t.Fatalf("a changed activity type must invalidate (stale_local), got %q", status)
+	}
+}
+
 func TestValidateApproval_RemoteContentChangeIsStaleRemote(t *testing.T) {
 	rec := reviewedRecord()
 	observed := remoteState("r1", "09:00", "10:00", "cls-1", "old text")

@@ -52,6 +52,7 @@ type Remote interface {
 	Initialize(ctx context.Context) (mcp.ServerInfo, error)
 	VerifyCapabilities(ctx context.Context) error
 	Classifications(ctx context.Context, query string) ([]gradion.Classification, error)
+	ClassificationCatalog(ctx context.Context, query string) (gradion.Catalog, error)
 }
 
 // Deps are the injected collaborators. A nil Remote/Editor/Exporter disables that

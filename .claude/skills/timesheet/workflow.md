@@ -97,11 +97,49 @@ Example `decisions.json`:
 
 ---
 
-## Step 5: `[Script]` Submission preview
+## Step 5: `[Script]` Classification selection (explicit only)
+
+Classification is an **explicit user choice**. Repository mappings, calendar text,
+AI, and config defaults may **suggest** only — they are never applied silently. An
+unset classification **blocks** the plan (`unresolved_classification`).
+
+First present the fetched catalog, then ASK the user to select, then apply the
+explicit choice:
+
+```bash
+$TS classify list --config "$CFG"              # live by default; --cache reads the cache
+$TS classify list --config "$CFG" --json       # machine-readable Catalog
+$TS classify select --config "$CFG" --date "$DATE" --classification "<CODE|ID>" --block-id "<BLOCK_ID>"
+$TS classify select --config "$CFG" --date "$DATE" --classification "<CODE|ID>" --all
+```
+
+- `classify list` prints `Name (Code) [Activity Type] · <id-prefix>` plus a
+  `complete|partial` marker and provenance/freshness (`live`/`cache`, observed-at).
+  The Activity Type is **derived by the server** from the classification; it is
+  display/validation only and is never a payload field.
+- `classify select` requires an **EXACT unique** match — by id, by code, or by an
+  unambiguous id-prefix (unknown/ambiguous tokens are refused; no id is ever
+  synthesized). It prints the catalog's provenance/freshness, and **refuses a STALE
+  `--cache` catalog** unless `--force` is given. `--block-id` sets one interval.
+  `--all` is the visible **bulk** option: it applies to **every** confirmed interval
+  of the day and requires the explicit `--all` flag; the exact change list is printed
+  before applying.
+- A selection change **invalidates any existing approval** (via `stale_local`). The
+  recent choice is persisted as a **suggestion that still requires explicit
+  confirmation** — it is never auto-applied.
+- `--classification` must be an explicit user input; no config default fills it.
+
+**Output Seam**: the chosen `classification_id` (and its derived activity type) on
+the day's confirmed interval(s), with any prior approval invalidated.
+
+---
+
+## Step 6: `[Script]` Submission preview
 
 Build the exact create/edit plan from the reviewed record and the freshly observed
 remote state, and persist it. This performs **zero remote writes** (a read-only
-re-observe is allowed).
+re-observe is allowed). An empty classification blocks; the resolver's value is
+surfaced as a **non-applied suggestion** only.
 
 ```bash
 $TS preview --config "$CFG" --date "$DATE"
@@ -112,7 +150,7 @@ plan's content hash.
 
 ---
 
-## Step 6: `[Script]` Approval
+## Step 7: `[Script]` Approval
 
 Bind an approval to the exact plan content hash. The approval is single-use: any
 local, plan, or remote change invalidates it.
@@ -125,7 +163,7 @@ $TS approve --config "$CFG" --date "$DATE" --plan "$PLANID"
 
 ---
 
-## Step 7: `[Script]` Submit and export
+## Step 8: `[Script]` Submit and export
 
 Execute the record's **active** approval and then update the managed daily-note
 section (read-only with respect to the remote).

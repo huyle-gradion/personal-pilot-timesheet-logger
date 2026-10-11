@@ -30,6 +30,7 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/mcp"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/proposal"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/run"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/selection"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/submit"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
@@ -97,6 +98,11 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// shares no state with the workflow runner and never triggers submission.
 	if sub == "metrics" {
 		return cmdMetrics(ctx, args[1:], stdout, stderr)
+	}
+	// The classify subcommand also has its OWN subcommands (list/select) that
+	// precede its flags, so it is dispatched before the shared flag set.
+	if sub == "classify" {
+		return cmdClassify(ctx, args[1:], stdout, stderr)
 	}
 
 	fs := flag.NewFlagSet("timesheet "+sub, flag.ContinueOnError)
@@ -166,7 +172,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "approve":
 		return cmdApprove(ctx, store, runner, *date, *planID, stdout, stderr)
 	case "submit":
-		return cmdSubmit(ctx, runner, cfg, *date, *approvalID, stdout, stderr)
+		return cmdSubmit(ctx, runner, cfg, *date, *approvalID, *offline, stdout, stderr)
 	case "resolve":
 		return cmdResolve(ctx, runner, *date, *decisionsPath, stdout, stderr)
 	case "run":
@@ -190,6 +196,7 @@ Subcommands:
   submit      execute the record's ACTIVE approval: submit --date D [--approval <APPROVALID>]
   resolve     reconcile unresolved operations from --decisions
   run         preflight + collect + review + export convenience
+  classify    classification catalog: classify list | classify select
   metrics     token usage + durations (metrics import|aggregate|report|compare|run)
 
 Flags:
@@ -549,12 +556,16 @@ func cmdPreview(ctx context.Context, store workflow.Store, r *run.Runner, cfg cl
 		return exitError
 	}
 	if res.Blocked {
+		printSuggestions(stdout, res.Suggestions)
 		fmt.Fprintf(stdout, "preview blocked: %s\n", strings.Join(res.BlockReasons, ", "))
 		return exitBlocked
 	}
 	// Machine-readable lines (kept byte-for-byte: the e2e extracts plan_id:).
 	fmt.Fprintf(stdout, "plan_id: %s\n", res.Plan.PlanID)
 	fmt.Fprintf(stdout, "operations: %d\n", len(res.Plan.Operations))
+	// Suggestions are NON-APPLIED hints; surface them so the user can accept one
+	// with an explicit `timesheet classify select`.
+	printSuggestions(stdout, res.Suggestions)
 	// Human-readable detail: the EXACT creates/edits, intervals, descriptions,
 	// projects, and total hours the user approves (secret-free: plan fields only).
 	projects := confirmedProjects(ctx, store, d)
@@ -700,13 +711,28 @@ func cmdApprove(ctx context.Context, store workflow.Store, r *run.Runner, date, 
 	return exitOK
 }
 
-func cmdSubmit(ctx context.Context, r *run.Runner, cfg cliConfig, date, approvalID string, stdout, stderr io.Writer) int {
+func cmdSubmit(ctx context.Context, r *run.Runner, cfg cliConfig, date, approvalID string, offline bool, stdout, stderr io.Writer) int {
 	d, err := singleDate(r, date)
 	if err != nil {
 		fmt.Fprintln(stderr, "timesheet:", err)
 		return exitError
 	}
-	res, err := r.Submit(ctx, d, run.SubmitOptions{ApprovalID: approvalID, Resolver: classificationResolver(cfg)})
+	// Approval safety: when a remote is configured, obtain a catalog (live, else a
+	// FRESH cache) and validate every planned classification before any write. A
+	// stale or unavailable catalog blocks rather than defaulting. `Catalog` is
+	// MANDATORY whenever the runner has a Remote: the CLI always supplies it here.
+	var cat *gradion.Catalog
+	if !offline && strings.TrimSpace(cfg.Gradion.Endpoint) != "" {
+		var prov string
+		cat, prov = loadSubmitCatalog(ctx, cfg)
+		if cat == nil {
+			fmt.Fprintln(stdout, "submit blocked: "+submit.BlockUnverifiedClassification+" (no live catalog and no fresh cache)")
+			return exitBlocked
+		}
+		// ALWAYS disclose which catalog validated the submission.
+		fmt.Fprintf(stdout, "provenance: %s\n", prov)
+	}
+	res, err := r.Submit(ctx, d, run.SubmitOptions{ApprovalID: approvalID, Resolver: classificationResolver(cfg), Catalog: cat})
 	if err != nil {
 		fmt.Fprintf(stderr, "timesheet: submit %s: %v\n", d, err)
 		return exitError
@@ -720,6 +746,43 @@ func cmdSubmit(ctx context.Context, r *run.Runner, cfg cliConfig, date, approval
 		fmt.Fprintf(stdout, "exported: %s\n", res.Export.Path)
 	}
 	return exitOK
+}
+
+// loadSubmitCatalog fetches a live catalog (saving it to the cache); on failure it
+// falls back to a FRESH cache. It returns the catalog and a provenance/freshness
+// line for it, or (nil, "") when neither is available.
+func loadSubmitCatalog(ctx context.Context, cfg cliConfig) (*gradion.Catalog, string) {
+	if client, err := catalogClient(ctx, cfg); err == nil {
+		if fetched, ferr := client.ClassificationCatalog(ctx, ""); ferr == nil {
+			fetched.Source = "live"
+			if p, perr := selection.DefaultCatalogCachePath(); perr == nil {
+				_ = selection.SaveCatalogCache(p, fetched)
+			}
+			prov, _ := selection.Freshness(fetched, time.Now().UTC())
+			return &fetched, prov
+		}
+	}
+	p, err := selection.DefaultCatalogCachePath()
+	if err != nil {
+		return nil, ""
+	}
+	cached, err := selection.LoadCatalogCache(p)
+	if err != nil {
+		return nil, ""
+	}
+	prov, fresh := selection.Freshness(cached, time.Now().UTC())
+	if !fresh {
+		return nil, ""
+	}
+	return &cached, prov
+}
+
+// printSuggestions renders NON-APPLIED classification suggestions.
+func printSuggestions(w io.Writer, suggestions []submit.ClassificationSuggestion) {
+	for _, s := range suggestions {
+		fmt.Fprintf(w, "suggestion: %s project=%s -> %s (source=%s)\n",
+			s.IntervalID, s.Project, s.SuggestedClassificationID, s.Source)
+	}
 }
 
 func cmdResolve(ctx context.Context, r *run.Runner, date, decisionsPath string, stdout, stderr io.Writer) int {

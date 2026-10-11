@@ -50,7 +50,17 @@ type ToolDecl struct {
 type CallResult struct {
 	IsError    bool
 	Structured json.RawMessage
-	Text       string
+	// Text is the first text block, populated ONLY when structuredContent is
+	// absent (the legacy fallback). It is deliberately empty when structuredContent
+	// is present, so callers that prefer structured data are unaffected.
+	Text string
+	// Content is the first text block, captured ALWAYS — including when
+	// structuredContent is present. Some live tools return a structured reference
+	// envelope PLUS an authoritative plain-text rendering (e.g.
+	// timesheet__get_classifications carries Code + Activity Type only in the text
+	// block). Content makes that text available without changing Text's fallback
+	// semantics.
+	Content string
 }
 
 // initResult is the initialize result payload.
@@ -116,22 +126,27 @@ func parseCallResult(result json.RawMessage, maxBytes int64) (CallResult, error)
 
 	out := CallResult{IsError: cr.IsError}
 
+	hasStructured := false
 	if sc := bytes.TrimSpace(cr.StructuredContent); len(sc) > 0 && !bytes.Equal(sc, []byte("null")) {
 		if maxBytes > 0 && int64(len(sc)) > maxBytes {
 			return CallResult{}, newError(ErrSchema, CodeResponseTooLarge, "MCP structuredContent exceeded the response limit")
 		}
 		out.Structured = append(json.RawMessage(nil), sc...)
-		return out, nil
+		hasStructured = true
 	}
 
-	// structuredContent absent: fall back to the first text block.
+	// Always capture the first text block into Content; only fall back to it for
+	// Text when structuredContent is absent.
 	for _, block := range cr.Content {
 		if block.Type == "text" || block.Type == "" {
-			out.Text = boundString(block.Text, MaxTextBlockBytes)
+			out.Content = boundString(block.Text, MaxTextBlockBytes)
 			break
 		}
 	}
-	if out.Text == "" {
+	if !hasStructured {
+		out.Text = out.Content
+	}
+	if !hasStructured && out.Text == "" {
 		return CallResult{}, newError(ErrSchema, CodeNoToolOutput, "MCP tool result had neither structuredContent nor a text block")
 	}
 	return out, nil

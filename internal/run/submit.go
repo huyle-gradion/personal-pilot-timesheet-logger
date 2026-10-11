@@ -11,12 +11,15 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
-// PlanResult is the submission preview (ZERO remote writes).
+// PlanResult is the submission preview (ZERO remote writes). Suggestions are
+// NON-APPLIED classification hints for the user to accept through an explicit
+// selection; they never enter the plan.
 type PlanResult struct {
 	Blocked      bool
 	BlockReasons []string
 	Plan         workflow.SubmissionPlan
 	Reconcile    submit.ReconcileResult
+	Suggestions  []submit.ClassificationSuggestion
 }
 
 // Preview builds the submission plan for the day and persists it. It performs NO
@@ -34,7 +37,7 @@ func (r *Runner) Preview(ctx context.Context, date string, resolver submit.Class
 	if err != nil {
 		return PlanResult{}, err
 	}
-	out := PlanResult{Blocked: res.Blocked, BlockReasons: res.Reasons, Plan: res.Plan, Reconcile: res.Reconcile}
+	out := PlanResult{Blocked: res.Blocked, BlockReasons: res.Reasons, Plan: res.Plan, Reconcile: res.Reconcile, Suggestions: res.Suggestions}
 	if res.Blocked {
 		return out, nil
 	}
@@ -63,6 +66,15 @@ type SubmitOptions struct {
 	// ApprovalID, when set, must match the record's ACTIVE approval id.
 	ApprovalID string
 	Resolver   submit.ClassificationResolver
+	// Catalog is MANDATORY whenever the runner has a Remote (deps.Remote != nil):
+	// it is validated against every planned operation before any write. An
+	// operation whose classification is missing/empty/inconsistent blocks the whole
+	// run with ZERO writes (unverified_classification). The CLI always supplies it
+	// (live, else a fresh cache) whenever a Gradion endpoint is configured; a
+	// caller that reaches a real remote MUST NOT leave it nil. It is nil only for an
+	// offline runner (deps.Remote == nil), which blocks earlier with
+	// remote_unavailable.
+	Catalog *gradion.Catalog
 }
 
 // SubmitResult reports one submission attempt plus its export.
@@ -91,6 +103,23 @@ func (r *Runner) Submit(ctx context.Context, date string, opts SubmitOptions) (S
 	}
 	if r.deps.Remote == nil {
 		return SubmitResult{Blocked: true, BlockReasons: []string{BlockRemoteUnavailable}}, nil
+	}
+
+	// Approval-safety gate: when a catalog is available (live or cached), verify
+	// every planned operation's classification BEFORE any write. An unverifiable
+	// classification blocks with zero writes; it never becomes a default.
+	//
+	// Contract: Catalog is MANDATORY whenever deps.Remote != nil (the CLI always
+	// supplies it). It is left nil only for an offline runner, which blocks earlier
+	// with remote_unavailable. This stays opt-in at the API level to avoid breaking
+	// programmatic callers; the CLI path is unconditional when a remote is
+	// configured.
+	if opts.Catalog != nil {
+		if plan, ok := workflow.FindPlan(rec, active.PlanID); ok {
+			if reasons := submit.ValidateCatalog(*opts.Catalog, plan.Operations, rec.Confirmed); len(reasons) > 0 {
+				return SubmitResult{Blocked: true, BlockReasons: reasons}, nil
+			}
+		}
 	}
 
 	run, execErr := submit.Execute(ctx, r.deps.Store, r.deps.Remote, r.deps.Remote, date, active, opts.Resolver, r.now())

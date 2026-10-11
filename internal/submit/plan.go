@@ -12,28 +12,47 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
-// ClassificationResolver maps a project to a Gradion classification id. It is the
-// configured default resolver; a review override on the confirmed interval takes
-// precedence.
+// ClassificationResolver maps a project to a SUGGESTED Gradion classification id.
+// It is a SUGGESTION source only: a resolved id is NEVER applied to a plan. The
+// plan uses exclusively the explicit ConfirmedInterval.ClassificationID; the
+// resolver's output is surfaced as a PlanResult.Suggestion for the user to accept
+// through an explicit selection.
 type ClassificationResolver func(project string) (classificationID string, ok bool)
+
+// ClassificationSuggestion is a NON-APPLIED hint for an interval whose explicit
+// classification is empty. Source names where the suggestion came from (currently
+// "config_map"). A suggestion is surfaced for the user and never written to a plan.
+type ClassificationSuggestion struct {
+	IntervalID                string `json:"interval_id"`
+	Project                   string `json:"project,omitempty"`
+	SuggestedClassificationID string `json:"suggested_classification_id,omitempty"`
+	SuggestedActivityType     string `json:"suggested_activity_type,omitempty"`
+	Source                    string `json:"source"`
+}
 
 // PlanResult is the pure result of BuildPlan. Blockers are DATA (Reasons), never
 // returned as an error; a non-nil error is reserved for programmer failures.
+// Suggestions are NEVER applied: they are informational only.
 type PlanResult struct {
-	Plan      workflow.SubmissionPlan `json:"plan"`
-	Blocked   bool                    `json:"blocked"`
-	Reasons   []string                `json:"reasons,omitempty"`
-	Reconcile ReconcileResult         `json:"reconcile"`
+	Plan        workflow.SubmissionPlan    `json:"plan"`
+	Blocked     bool                       `json:"blocked"`
+	Reasons     []string                   `json:"reasons,omitempty"`
+	Reconcile   ReconcileResult            `json:"reconcile"`
+	Suggestions []ClassificationSuggestion `json:"suggestions,omitempty"`
 }
 
 // BuildPlan derives a submission plan from a reviewed record and an observation.
 // It performs NO IO. Guards run in order: review readiness, unresolved
 // operations, an incomplete listing, and reconciliation with unresolved
 // conditions. Then each confirmed interval becomes a create or an edit (edits are
-// preferred when a mapping exists); classification comes from the review override
-// or the resolver. Never deletes; never silently replaces.
+// preferred when a mapping exists). Classification comes EXCLUSIVELY from the
+// explicit review choice (ConfirmedInterval.ClassificationID): an empty choice
+// BLOCKS with unresolved_classification. The resolver is a SUGGESTION source only
+// (see ClassificationSuggestion); its output is surfaced, never applied. Never
+// deletes; never silently replaces.
 func BuildPlan(rec workflow.Record, obs gradion.Listing, adoptions []Adoption, resolver ClassificationResolver, now time.Time) (PlanResult, error) {
 	res := Reconcile(rec, obs, adoptions, now)
+	suggestions := buildSuggestions(rec, resolver)
 
 	var reasons []string
 	if rd := review.Readiness(rec); rd.Blocked {
@@ -51,7 +70,7 @@ func BuildPlan(rec workflow.Record, obs gradion.Listing, adoptions []Adoption, r
 		reasons = append(reasons, "reconcile:"+u)
 	}
 	if len(reasons) > 0 {
-		return PlanResult{Blocked: true, Reasons: dedupSorted(reasons), Reconcile: res}, nil
+		return PlanResult{Blocked: true, Reasons: dedupSorted(reasons), Reconcile: res, Suggestions: suggestions}, nil
 	}
 
 	observedByID := make(map[string]workflow.RemoteState, len(obs.Entries))
@@ -68,7 +87,7 @@ func BuildPlan(rec workflow.Record, obs gradion.Listing, adoptions []Adoption, r
 
 	var ops []workflow.PlanOperation
 	for _, ci := range intervals {
-		classificationID, ok := resolveClassification(ci, resolver)
+		classificationID, ok := resolveClassification(ci)
 		if !ok {
 			reasons = append(reasons, "unresolved_classification:"+ci.ID)
 			continue
@@ -115,7 +134,7 @@ func BuildPlan(rec workflow.Record, obs gradion.Listing, adoptions []Adoption, r
 	}
 
 	if len(reasons) > 0 {
-		return PlanResult{Blocked: true, Reasons: dedupSorted(reasons), Reconcile: res}, nil
+		return PlanResult{Blocked: true, Reasons: dedupSorted(reasons), Reconcile: res, Suggestions: suggestions}, nil
 	}
 
 	plan := workflow.SubmissionPlan{
@@ -128,27 +147,49 @@ func BuildPlan(rec workflow.Record, obs gradion.Listing, adoptions []Adoption, r
 		CreatedAt:        now,
 	}
 	plan.PlanID = workflow.PlanHash(plan)
-	return PlanResult{Plan: plan, Reconcile: res}, nil
+	return PlanResult{Plan: plan, Reconcile: res, Suggestions: suggestions}, nil
 }
 
-// resolveClassification returns the classification for an interval: the review
-// override if set, else the configured resolver.
-func resolveClassification(ci workflow.ConfirmedInterval, resolver ClassificationResolver) (string, bool) {
-	if id := strings.TrimSpace(ci.ClassificationID); id != "" {
-		return id, true
-	}
-	if resolver == nil {
-		return "", false
-	}
-	id, ok := resolver(ci.Project)
-	if !ok {
-		return "", false
-	}
-	id = strings.TrimSpace(id)
+// resolveClassification returns the classification for an interval. It uses ONLY
+// the explicit review choice (ConfirmedInterval.ClassificationID): there is no
+// resolver auto-fill, no config default, no AI or calendar inference. An empty
+// choice returns ok=false and blocks the plan.
+func resolveClassification(ci workflow.ConfirmedInterval) (string, bool) {
+	id := strings.TrimSpace(ci.ClassificationID)
 	if id == "" {
 		return "", false
 	}
 	return id, true
+}
+
+// buildSuggestions surfaces NON-APPLIED classification suggestions for intervals
+// whose explicit classification is empty. It never mutates the record and never
+// supplies a plan classification. A nil resolver yields no suggestions.
+func buildSuggestions(rec workflow.Record, resolver ClassificationResolver) []ClassificationSuggestion {
+	if resolver == nil {
+		return nil
+	}
+	intervals := append([]workflow.ConfirmedInterval(nil), rec.Confirmed...)
+	sort.Slice(intervals, func(i, j int) bool { return intervals[i].ID < intervals[j].ID })
+	var out []ClassificationSuggestion
+	for _, ci := range intervals {
+		if strings.TrimSpace(ci.ClassificationID) != "" {
+			continue
+		}
+		id, ok := resolver(ci.Project)
+		id = strings.TrimSpace(id)
+		if !ok || id == "" {
+			continue
+		}
+		out = append(out, ClassificationSuggestion{
+			IntervalID:                ci.ID,
+			Project:                   strings.TrimSpace(ci.Project),
+			SuggestedClassificationID: id,
+			SuggestedActivityType:     strings.TrimSpace(ci.ActivityType),
+			Source:                    "config_map",
+		})
+	}
+	return out
 }
 
 // desiredRemoteState is the content a planned edit would produce. It overrides

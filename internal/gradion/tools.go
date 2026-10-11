@@ -32,6 +32,9 @@ const (
 	MaxClassifications  = 100
 	MaxListingPages     = 20
 	MaxListingEntries   = 1000
+	// MaxClassificationResults is the get_classifications tool's result cap
+	// (verified live: max 20). Reaching it means the catalog may be truncated.
+	MaxClassificationResults = 20
 	// MaxWeeks bounds the number of get_my_week calls used to cover a date range
 	// (roughly a year). Hitting it marks the listing incomplete.
 	MaxWeeks = 60
@@ -56,6 +59,11 @@ const (
 
 	CodeReadToolError = "GRADION_ERR_READ_TOOL_ERROR"
 	CodeReadSchema    = "GRADION_ERR_READ_SCHEMA"
+	// CodeCatalogUnparsed is returned when a get_classifications text block is
+	// present but no line matches the classification pattern. The catalog is the
+	// only source of Code + Activity Type, so an unparseable catalog fails closed
+	// rather than silently yielding an empty (and therefore unusable) selection.
+	CodeCatalogUnparsed = "GRADION_ERR_CATALOG_UNPARSED"
 
 	CodeArgOutOfBounds     = "GRADION_ERR_ARG_OUT_OF_BOUNDS"
 	CodeReasonRequired     = "GRADION_ERR_REASON_REQUIRED"

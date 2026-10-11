@@ -167,17 +167,29 @@ func TestBuildPlan_ReviewOverrideClassificationHonored(t *testing.T) {
 		t.Fatalf("unexpected block: %v", res.Reasons)
 	}
 	if got := res.Plan.Operations[0].ClassificationID; got != "override" {
-		t.Errorf("the review override must win over the resolver, got %q", got)
+		t.Errorf("the explicit review choice must be used, got %q", got)
 	}
 
+	// RESOLVER-AUTOFILL REMOVED: an unset classification is NEVER supplied by the
+	// resolver. It BLOCKS, and the resolver's value is surfaced as a NON-APPLIED
+	// suggestion (Source=config_map).
 	rec2 := reviewedRecord()
 	rec2.Confirmed[0].ClassificationID = ""
 	res2, err := BuildPlan(rec2, completeListing(), nil, alwaysResolver("resolved"), testNow)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
-	if got := res2.Plan.Operations[0].ClassificationID; got != "resolved" {
-		t.Errorf("the resolver must supply the classification when unset, got %q", got)
+	if !res2.Blocked || !hasReason(res2.Reasons, "unresolved_classification:c1") {
+		t.Fatalf("an unset classification must block, got blocked=%v reasons=%v", res2.Blocked, res2.Reasons)
+	}
+	if len(res2.Plan.Operations) != 0 {
+		t.Fatalf("a blocked plan must have zero operations, got %+v", res2.Plan.Operations)
+	}
+	if len(res2.Suggestions) != 1 {
+		t.Fatalf("want exactly one suggestion, got %+v", res2.Suggestions)
+	}
+	if s := res2.Suggestions[0]; s.IntervalID != "c1" || s.SuggestedClassificationID != "resolved" || s.Source != "config_map" {
+		t.Errorf("unexpected suggestion: %+v", s)
 	}
 }
 

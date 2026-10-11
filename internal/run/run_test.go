@@ -138,6 +138,10 @@ func (f *fakeRemote) Classifications(ctx context.Context, query string) ([]gradi
 	return nil, nil
 }
 
+func (f *fakeRemote) ClassificationCatalog(ctx context.Context, query string) (gradion.Catalog, error) {
+	return gradion.Catalog{Complete: true, Query: query, ObservedAt: fixedNow(), Source: "live"}, nil
+}
+
 func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, limit int) (gradion.Listing, error) {
 	f.listCalls++
 	entries := make([]workflow.RemoteState, 0, len(f.entries))

@@ -406,30 +406,18 @@ func (c *Client) EntryByID(ctx context.Context, id, from, to string) (workflow.R
 	return workflow.RemoteState{}, false, nil
 }
 
-// Classifications lists the caller's projects/activities. The live
-// get_classifications returns the {resources:[{id,kind,label}]} reference envelope;
-// the `label` names most classifications (verified 19/20), so label -> Name is used
-// and Name is empty when the label is empty. An unrecognized shape fails closed.
+// Classifications lists the caller's projects/activities. It is a thin view over
+// ClassificationCatalog (the structured reference envelope supplies ID + Name, the
+// text rendering supplies Code). An unrecognized shape fails closed.
 func (c *Client) Classifications(ctx context.Context, query string) ([]Classification, error) {
-	if err := c.guardVerified(); err != nil {
-		return nil, err
-	}
-	args := map[string]any{}
-	if q := strings.TrimSpace(query); q != "" {
-		args["search"] = q
-	}
-	res, err := c.callRead(ctx, ToolGetClassifications, args)
+	cat, err := c.ClassificationCatalog(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	if res.IsError {
-		return nil, &Error{Code: CodeReadToolError, Message: ToolGetClassifications + " returned a tool-level error"}
+	classes := make([]Classification, 0, len(cat.Options))
+	for _, o := range cat.Options {
+		classes = append(classes, Classification{ID: o.ID, Name: o.Name, Code: o.Code})
 	}
-	items, err := parseReferenceEnvelope(res)
-	if err != nil {
-		return nil, err
-	}
-	classes := classificationsFromReferences(items)
 	if len(classes) > MaxClassifications {
 		classes = classes[:MaxClassifications]
 	}

@@ -66,10 +66,16 @@ type ConfirmedInterval struct {
 	PartIndex      int      `json:"part_index,omitempty"`
 	StartOffsetMin int      `json:"start_offset_min,omitempty"`
 	EndOffsetMin   *int     `json:"end_offset_min,omitempty"`
-	// ClassificationID is the ADDITIVE S6 review override for the Gradion
-	// classification. When empty, the configured project->classification resolver
-	// supplies it; when neither resolves, submission is blocked.
+	// ClassificationID is the ADDITIVE S6 explicit review choice for the Gradion
+	// classification. It is the ONLY source of a plan's classification: an empty
+	// value blocks submission (there is no resolver auto-fill). The project->
+	// classification map may only SUGGEST a value for the user to accept.
 	ClassificationID string `json:"classification_id,omitempty"`
+	// ActivityType is the ADDITIVE activity type DERIVED by the server for the
+	// chosen classification. It is display + validation only and is NEVER sent to
+	// log_time/edit_time (neither tool accepts an activity-type field). It feeds
+	// LocalFingerprint so a change invalidates an existing approval.
+	ActivityType string `json:"activity_type,omitempty"`
 }
 
 // ExcludedEvidence records a review-time decision to exclude an evidence item

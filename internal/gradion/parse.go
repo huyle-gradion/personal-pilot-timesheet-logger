@@ -257,19 +257,3 @@ func parseReferenceEnvelope(res mcp.CallResult) ([]referenceItem, error) {
 	}
 	return items, nil
 }
-
-// classificationsFromReferences maps reference items to classifications. The live
-// confirmation showed the `label` names most classifications (19/20), so
-// label -> Name is the correct, reproducible mapping; Name is empty when the label
-// is empty.
-func classificationsFromReferences(items []referenceItem) []Classification {
-	out := make([]Classification, 0, len(items))
-	for _, it := range items {
-		id := strings.TrimSpace(it.ID)
-		if id == "" {
-			continue
-		}
-		out = append(out, Classification{ID: id, Name: strings.TrimSpace(it.Label)})
-	}
-	return out
-}

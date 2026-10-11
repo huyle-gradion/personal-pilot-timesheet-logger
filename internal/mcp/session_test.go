@@ -296,6 +296,58 @@ func TestCallTool_StructuredPreferred(t *testing.T) {
 	}
 }
 
+// F4: Content is ALWAYS captured alongside structuredContent (the classification
+// tool carries Code + Activity Type only in the text block), while Text keeps its
+// fallback-only semantics. Content is bounded.
+func TestCallTool_ContentCapturedAlongsideStructured(t *testing.T) {
+	f := newFakeMCP()
+	f.callResultRaw = json.RawMessage(`{"structuredContent":{"resources":[{"id":"u1"}]},"content":[{"type":"text","text":"- Name (CODE) [internal project] · u1"}]}`)
+	sess, _ := newServerSession(t, f)
+	if _, err := sess.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	res, err := sess.CallTool(context.Background(), "t", nil)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(res.Structured) == 0 {
+		t.Error("structuredContent not surfaced")
+	}
+	if res.Content != "- Name (CODE) [internal project] · u1" {
+		t.Errorf("Content = %q, want the text block captured alongside structuredContent", res.Content)
+	}
+	if res.Text != "" {
+		t.Errorf("Text must stay empty when structuredContent is present, got %q", res.Text)
+	}
+}
+
+// F4: Content is bounded to MaxTextBlockBytes.
+func TestCallTool_ContentIsBounded(t *testing.T) {
+	big := strings.Repeat("x", MaxTextBlockBytes+100)
+	f := newFakeMCP()
+	payload, _ := json.Marshal(map[string]any{
+		"structuredContent": map[string]any{"ok": true},
+		"content":           []map[string]any{{"type": "text", "text": big}},
+	})
+	f.callResultRaw = payload
+	sess, _ := newServerSession(t, f)
+	if _, err := sess.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	res, err := sess.CallTool(context.Background(), "t", nil)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(res.Content) > MaxTextBlockBytes {
+		t.Errorf("Content length = %d, want <= %d", len(res.Content), MaxTextBlockBytes)
+	}
+	if len(res.Content) == 0 {
+		t.Error("Content must not be empty")
+	}
+}
+
 func TestCallTool_TextFallback(t *testing.T) {
 	f := newFakeMCP()
 	f.callResultRaw = json.RawMessage(`{"content":[{"type":"text","text":"hello"}]}`)

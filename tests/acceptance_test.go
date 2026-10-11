@@ -96,6 +96,10 @@ func (f *fakeRemote) Classifications(ctx context.Context, query string) ([]gradi
 	return nil, nil
 }
 
+func (f *fakeRemote) ClassificationCatalog(ctx context.Context, query string) (gradion.Catalog, error) {
+	return gradion.Catalog{Complete: true, Query: query, ObservedAt: accNow, Source: "live"}, nil
+}
+
 func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, limit int) (gradion.Listing, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1211,6 +1215,25 @@ func TestAcceptance_10_SharedNoAIWorkflow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ApplyReview: %v", err)
 	}
+	// RESOLVER-AUTOFILL REMOVED: an unset classification blocks with a NON-APPLIED
+	// suggestion; it is never auto-filled from the project->classification map.
+	blockedPre, err := r.Preview(accCtx, accDate, accResolver)
+	if err != nil {
+		t.Fatalf("Preview (unset): %v", err)
+	}
+	if !blockedPre.Blocked || !strings.Contains(strings.Join(blockedPre.BlockReasons, ","), "unresolved_classification") {
+		t.Fatalf("an unset classification must block, got %v", blockedPre.BlockReasons)
+	}
+	if len(blockedPre.Suggestions) == 0 {
+		t.Fatalf("the resolver value must surface as a suggestion, got none")
+	}
+	// The user explicitly selects the suggested classification (what
+	// `timesheet classify select` does), and the flow then completes.
+	accSeed(t, store, accDate, func(rec *workflow.Record) {
+		for i := range rec.Confirmed {
+			rec.Confirmed[i].ClassificationID = "cls-1"
+		}
+	})
 	pre, err := r.Preview(accCtx, accDate, accResolver)
 	if err != nil {
 		t.Fatalf("Preview: %v", err)

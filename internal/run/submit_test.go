@@ -6,6 +6,7 @@ import (
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/export"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/submit"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
@@ -153,6 +154,72 @@ func TestSubmit_OfflineBlocked(t *testing.T) {
 	}
 }
 
+// An available catalog that lacks a planned classification blocks submission with
+// ZERO writes (unverified_classification).
+func TestSubmit_UnverifiedClassificationBlocksZeroWrites(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+	seedApproved(t, store, r, date)
+
+	cat := gradion.Catalog{Complete: true, Source: "live", Options: []gradion.ClassificationOption{{ID: "other-cls"}}}
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: &cat})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !res.Blocked || !hasReason(res.BlockReasons, submit.BlockUnverifiedClassification+":c1") {
+		t.Fatalf("want %s:c1, got %v", submit.BlockUnverifiedClassification, res.BlockReasons)
+	}
+	if remote.creates != 0 || remote.edits != 0 {
+		t.Fatalf("an unverified classification must produce ZERO writes, got creates=%d edits=%d", remote.creates, remote.edits)
+	}
+}
+
+// An available catalog that contains the planned classification allows submission.
+func TestSubmit_VerifiedClassificationProceeds(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+	seedApproved(t, store, r, date)
+
+	cat := gradion.Catalog{Complete: true, Source: "live", Options: []gradion.ClassificationOption{
+		{ID: "cls-1", Code: "INTGRADI2610", ActivityType: "internal project"},
+	}}
+	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: &cat})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if res.Blocked {
+		t.Fatalf("a verified classification must not block, got %v", res.BlockReasons)
+	}
+	if remote.creates != 1 {
+		t.Fatalf("want one create, got %d", remote.creates)
+	}
+}
+
+func TestPreview_OfflineIsZeroRemoteWrites(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	rec := readyRecord(date)
+	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error { *x = rec; return nil }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry()}, Config{})
+	pre, err := r.Preview(ctx, date, clsResolver)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if pre.Blocked {
+		t.Fatalf("want a plan, got %v", pre.BlockReasons)
+	}
+	got, _ := store.GetDay(ctx, date)
+	if len(got.Plans) != 1 {
+		t.Fatalf("preview must persist the plan, got %d", len(got.Plans))
+	}
+}
+
 // S8L1-7: Resolve adopts an unresolved operation through the explicit decision.
 func TestResolve_AdoptUnresolved(t *testing.T) {
 	store := newStore(t)
@@ -194,26 +261,5 @@ func TestResolve_AdoptUnresolved(t *testing.T) {
 	}
 	if blocked, reasons := submit.RestartGate(*rec); blocked {
 		t.Fatalf("the restart gate must clear after resolution, got %v", reasons)
-	}
-}
-
-func TestPreview_OfflineIsZeroRemoteWrites(t *testing.T) {
-	store := newStore(t)
-	date := "2026-10-06"
-	rec := readyRecord(date)
-	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error { *x = rec; return nil }); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry()}, Config{})
-	pre, err := r.Preview(ctx, date, clsResolver)
-	if err != nil {
-		t.Fatalf("Preview: %v", err)
-	}
-	if pre.Blocked {
-		t.Fatalf("want a plan, got %v", pre.BlockReasons)
-	}
-	got, _ := store.GetDay(ctx, date)
-	if len(got.Plans) != 1 {
-		t.Fatalf("preview must persist the plan, got %d", len(got.Plans))
 	}
 }

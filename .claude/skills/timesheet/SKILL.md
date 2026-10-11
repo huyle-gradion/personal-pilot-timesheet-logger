@@ -38,6 +38,11 @@ Invoke this skill when the user issues any of the following triggers:
   leaves every other byte (frontmatter, journals, legacy sections) untouched.
 - **Secrets live in the macOS Keychain.** Configuration holds `keychain:<service>`
   references only and never a raw secret.
+- **Classification is an explicit choice.** `log_time`/`edit_time` receive only a
+  `classificationId`; the activity type is derived server-side and never sent. The
+  project→classification map and the recent-selection preference may **suggest**
+  only — an unset classification blocks the plan, and `--all` bulk selection
+  requires the explicit flag.
 
 ## Execution workflow
 
@@ -49,9 +54,16 @@ either deterministic Go code (`[Script]`) or the optional, bounded editorial age
 2. **Step 2: `[Script]` Collect and propose** (`timesheet review`)
 3. **Step 3: `[AI]` Editorial synthesis (optional)** (delegated by `timesheet review`)
 4. **Step 4: `[Script]` Apply review decisions** (`timesheet review --decisions`)
-5. **Step 5: `[Script]` Submission preview** (`timesheet preview`)
-6. **Step 6: `[Script]` Approval** (`timesheet approve --plan`)
-7. **Step 7: `[Script]` Submit and export** (`timesheet submit`)
+5. **Step 5: `[Script]` Classification selection** (`timesheet classify list`, then the user selects, then `timesheet classify select`)
+6. **Step 6: `[Script]` Submission preview** (`timesheet preview`)
+7. **Step 7: `[Script]` Approval** (`timesheet approve --plan`)
+8. **Step 8: `[Script]` Submit and export** (`timesheet submit`)
+
+Classification is an **explicit user choice**. Repository mappings, calendar text,
+AI, and config defaults may **suggest** only — they are never applied silently. The
+skill fetches the catalog (`timesheet classify list`), ASKS the user to choose, and
+applies the explicit choice (`timesheet classify select`). `--all` is the visible
+bulk option and requires explicit consent; an unset classification blocks the plan.
 
 Optionally, and **non-blocking**: `timesheet metrics import --transcript "$PI_SESSION" && timesheet metrics report --date "$DATE"` records tokens/day (3.6); a metrics failure only warns and never changes a workflow exit code or triggers submission. See [workflow.md](workflow.md).
 
