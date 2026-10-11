@@ -9,6 +9,7 @@ Task ID and slice:
 Objective and requirement links:
 Authority: implement / fix / review / research; commit yes/no; live access yes/no
 Execution mode: owner-mediated / direct
+Selected agent and rationale (capability fit; record the actual runtime agent):
 Repository and working directory:
 Branch, base HEAD, dependent commits:
 Snapshot ID and changed/untracked files:

@@ -31,6 +31,29 @@ Separate permissions for implementation, local commits, GitHub publication, live
 
 An implementer's self-review is useful evidence, not independent acceptance. Reviewers and fixers can use fresh agents or separate sessions; record which happened.
 
+### Available runtime agents (oh-my-opencode-slim)
+
+Select an agent by task and capability, not by a fixed role pairing. The agents
+actually available in this runtime (preset `openai-zen`) are:
+
+| Agent | Lane | Use for |
+| --- | --- | --- |
+| `oracle` | Architecture, risk, debugging strategy, independent review | High-stakes design; independent review; simplification |
+| `explorer` | Fast codebase recon | Locating flows, contracts, and symbols before planning |
+| `librarian` | External docs and library research | Authoritative external API/library facts |
+| `designer` | UI/UX design and terminal interaction | User-facing and terminal-interaction design where available |
+| `fixer` | Bounded implementation and fixes | Implementing or repairing an authorized, fully specified change |
+| `observer` | Observation/measurement lane | Present in the preset; dispatch only if the runtime exposes it |
+| `ai-database` | Knowledge management | Vault project-note and daily-log updates |
+
+Map a role to the agent whose capability fits: exploration to `explorer`,
+external facts to `librarian`, bounded implementation/fixing to `fixer`,
+independent review and design-risk to `oracle`, terminal/UX design to
+`designer`, vault updates to `ai-database`. Do not require every agent type or
+invent an unavailable one. Record the selected agent and rationale in the task
+packet, and preserve independent review and ownership gates regardless of which
+agent performs a lane.
+
 ## Next handoff
 
 S1 (durable workflow store) `d471b46`. S2 (crash-safe submission) `d4d6c00`. S3 (evidence contracts) `28d7891`/`5ff9894`. S4 (proposal model) `5f373f4`/`2a06b5b`. S5 (MCP transport) `42fba53`/`b59661a`/`c943e97`. S6 (plans/approval/reconciliation) `3dfe814`/`40d266d`. S7 (editorial synthesis) `3d4bcc8`. S8 (entry points/export) `06ce95b`/`d65bdf0`. S9 (integrated acceptance) `ca96a20`. All nine slices were independently reviewed and re-reviewed; integrated acceptance was accepted. Release is a separate owner decision; live MCP/agent/Keychain verification remains outstanding. See [state](state.md) and [implementation plan](implementation-plan.md).
