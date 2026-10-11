@@ -18,6 +18,11 @@ The guided terminal `run` (`timesheet run --interactive`, `--plain`) and its
 review contract are documented in
 [the guided workflow note](guided-workflow.md).
 
+The end-to-end operator guide — local vs connected (remote) workflow modes,
+setup, the two configs, review decisions, classification, preview/approve/submit
+gates, privacy, persistence, and troubleshooting — is
+[the product usage guide](product-usage.md).
+
 The optional local read-only **journal** source (`"type": "journal"`) reads the
 Obsidian daily note as narrative evidence. Its keys, path confinement, identity,
 active/detached history, and privacy rules are documented in
