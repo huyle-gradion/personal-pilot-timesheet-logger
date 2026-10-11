@@ -176,8 +176,32 @@ updated; unless a genuine full live complete catalog proves the choice, explicit
 authoritative reselection is required and invalidates the old approval. No automatic
 submit rerun.
 
-Next bounded slice: CONFIG-GUIDED-1. Remaining priorities and unchanged production
-boundaries are recorded in the takeover work graph in [state](state.md).
+Next bounded slice: INTERACTIVE-PERFORMANCE-1. Remaining priorities and unchanged
+production boundaries are recorded in the takeover work graph in [state](state.md).
+
+### CONFIG-GUIDED-1, guided configuration
+
+Source-accepted and committed locally at `59991a8`, parent `cf8c6e0`, after an
+independent review and a focused re-review (accepted; F1-F4/F6 closed). No
+production writes, live access, publication, or private-record change.
+
+| Owner requirement | Evidence on the accepted snapshot |
+| --- | --- |
+| Supported interactive CLI configuration flow | `timesheet config init|edit` over the existing `cliConfig` schema and the existing `prompter` seam (huh TUI, `--plain`, `--answers`) |
+| Equivalent harness questions for the skill | SKILL.md/workflow.md question set that delegates the write to the CLI; the skill never writes the target config or auto-confirms an overwrite |
+| Use the existing schema | only `cliConfig` fields; no new config fields |
+| Validate inputs | offline: IANA timezone (`time.LoadLocation`), source contract (`ValidateSources`), `editorial.Validate`, keychain reference format |
+| Preview the result | exact canonical JSON preview before any write |
+| Permission before overwriting | interactive confirm / scripted `--force`; two-layer refusal; atomic (temp + fsync + rename) write |
+| Credential references only | `keychain:<service>` fields; a raw value is rejected; no secret resolved or written |
+
+Carried non-blocking: F5 (the declared-ref check is not a general secret scanner;
+pre-existing), F7 (cosmetic empty `gradion`/`editorial` object), N1 (the shared
+`checkRelativeDir` rejects a top-level `daily_dir: "."` on the authoring path
+only). The full uncached suite is FAILED solely on the pre-existing,
+time-of-day-dependent `internal/evidence/plugins`
+`TestLocalGitCollectorAdapter_UsesMessageReferencesOnly` (untouched package),
+which is not a CONFIG-GUIDED-1 regression and needs a separate disposition.
 
 ### Shared-workflow coverage
 

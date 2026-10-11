@@ -1,6 +1,6 @@
 # Orchestration state
 
-Updated: 2026-10-11. This is a resumable status ledger, not a grant of authority. Update it at lifecycle transitions without duplicating the product specification.
+Updated: 2026-10-12. This is a resumable status ledger, not a grant of authority. Update it at lifecycle transitions without duplicating the product specification.
 
 ## Authority now
 
@@ -30,8 +30,9 @@ Current work graph, in priority order, with no invented deadlines:
    Persist explicit classification lookup metadata; require fresh remote stable-ID
    and derived-type agreement; fail closed on incomplete/ambiguous/changed proof;
    preserve old records and approval/outcome history. No automatic submit rerun.
-2. CONFIG-GUIDED-1: planned after slice 1 acceptance, supported configuration
-   questions for CLI and skill with validation, preview and overwrite consent.
+2. CONFIG-GUIDED-1: closed, source-accepted and committed locally (`59991a8`);
+   supported `timesheet config init|edit` flow plus equivalent skill questions
+   with offline validation, exact preview and explicit overwrite consent.
 3. INTERACTIVE-PERFORMANCE-1: planned, measure binary provenance, startup,
    collection, catalog, rendering and user wait before choosing an optimization.
 4. MIDNIGHT-CARRY-1: planned, exact linked local-date fragments and visible carry;
@@ -128,9 +129,40 @@ must use planning bullets rather than checkbox tasks without assignees/deadlines
 Both corrections completed. One project ledger entry, daily journal and impact
 entry reflect the slice; YAML, links and idempotency checks passed. Historical
 tasks and unrelated notes were preserved, with no invented working hours.
-Next dependency-ready bounded task is CONFIG-GUIDED-1, using the existing schema
-with validated CLI/skill questions, result preview and explicit overwrite consent.
-No implementation of that next slice has been dispatched yet.
+### CONFIG-GUIDED-1 closure, 2026-10-12
+
+CONFIG-GUIDED-1 is source-accepted and committed locally at `59991a8` (parent
+`cf8c6e0`), on `feat/s9-integrated-acceptance`. It adds a supported
+`timesheet config init|edit` flow over the existing `cliConfig` schema and the
+existing `prompter` seam (huh TUI, safe `--plain`, non-interactive `--answers`),
+with offline validation reusing the real validators (IANA timezone, source
+contract via `ValidateSources`, `editorial.Validate`, keychain reference format),
+an exact canonical JSON preview, explicit overwrite consent, and an atomic
+(temp + fsync + rename) write. Credential fields hold `keychain:<service>`
+references only; authoring resolves no secret and makes no live call. The skill
+gains equivalent chat questions that delegate the write to the CLI. Implementer
+@designer `ses_ed2cc3220ffe8m7hiFvHRXALsD`; independent review and focused
+re-review @oracle `ses_ed2ba7b87ffeMKtkSzlkT6NsVh` (both accepted; F1-F4/F6
+closed). Parent final checks: gofmt (slice files), build, vet,
+`-race ./cmd/timesheet`, `./tests/...`, the guided offline harness, and
+`git diff --check` all exited 0; the full uncached suite FAILED solely on the
+pre-existing, time-of-day-dependent `internal/evidence/plugins`
+`TestLocalGitCollectorAdapter_UsesMessageReferencesOnly` (untouched package;
+fails at pristine `cf8c6e0`; fails under the host `+07`, passes under `TZ=UTC`).
+That failure is recorded honestly and is NOT a CONFIG-GUIDED-1 regression; it
+needs a separate disposition and keeps release readiness unclaimed.
+
+Carried (non-blocking, no invented dates): F5 the declared-credential-reference
+check is not a general secret scanner (pre-existing, same boundary as
+preflight/`loadConfig`); F7 the cosmetic empty `gradion`/`editorial` object
+(`omitempty` on a struct is a no-op); N1 the shared `checkRelativeDir` now
+rejects a top-level `daily_dir: "."` on the authoring path only (the export layer
+accepts it; no shipped example, test, or existing config uses `"."`). Source
+acceptance does not establish live-read compatibility or production readiness;
+production submission remains blocked. Next dependency-ready bounded task is
+INTERACTIVE-PERFORMANCE-1 (measure binary provenance, startup, collection,
+catalog, rendering and user wait before choosing any optimization). No
+implementation of that next slice has been dispatched yet.
 
 Local record reconciliation, read-only, 2026-10-11:
 - October 8 current workflow schema 1, revision 8: 14 confirmed intervals,
@@ -1048,6 +1080,18 @@ Open findings and disposition: B1-B8 closed. Carried: existing classification ch
 Commit and publication status: committed locally 543966d; NOT pushed, no PR, no merge.
 Vault sync status: complete - project personal-workflow status and the 2026-10-11 daily journal/impact updated; YAML/project/ADR links validated; A+B source-accepted and local-only; existing unresolved person link preserved as a limitation.
 Next gate and blockers: PERSONAL-WORKFLOW-1 lifecycle closed - source-accepted. Release and production submission remain separate owner decisions; live verification and an owner-approved exact daily plan are still required. No deadlines assigned.
+```
+
+```text
+2026-10-12 / CONFIG-GUIDED-1 / authorized -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: submission-revalidation takeover grant (direct specialist dispatch, bounded implementation, independent review/fix/re-review, accepted-slice local commits, repo records, vault sync). Not authorized: production creates/edits/deletes, Keychain changes, fabricated caches, manual record repair, destructive migration, push/publication/merge/force-push, silent product-scope changes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 59991a8 (parent cf8c6e0) / 5 files, +2043: new cmd/timesheet/config.go, cmd/timesheet/config_test.go; edits cmd/timesheet/main.go, .claude/skills/timesheet/SKILL.md, .claude/skills/timesheet/workflow.md. Accepted hashes matched the fix1 manifest before staging.
+Worker/reviewer report references and verification level: implementer @designer ses_ed2cc3220ffe8m7hiFvHRXALsD (implement + fix); independent review + focused re-review @oracle ses_ed2ba7b87ffeMKtkSzlkT6NsVh (accepted; F1-F4/F6 closed). Parent log .../opencode/config-guided-1-parent-checks.log: gofmt (slice files)/build/vet/-race cmd/timesheet/./tests/.../guided harness/diff-check all exit 0; full uncached suite FAILED solely on the pre-existing TZ-dependent internal/evidence/plugins test.
+Behavior: timesheet config init|edit authors the existing cliConfig schema via the existing prompter seam (huh TUI, --plain, --answers); offline validation (time.LoadLocation, ValidateSources, editorial.Validate, keychain ref format); exact JSON preview; interactive overwrite consent / scripted --force with a second existence re-check; atomic temp+fsync+rename 0600 write; credential fields keychain:<service> only, no secret resolved or written. Skill asks equivalent questions and delegates the write to the CLI (never writes the target config, never auto-confirms an overwrite).
+Open findings and disposition: F1-F4/F6 closed. Carried non-blocking: F5 (declared-ref check is not a general secret scanner; pre-existing), F7 (cosmetic empty gradion/editorial object), N1 (shared checkRelativeDir rejects top-level daily_dir "." on the authoring path only; export accepts it). Pre-existing full-suite failure internal/evidence/plugins TestLocalGitCollectorAdapter_UsesMessageReferencesOnly (TZ/time-of-day; untouched package) needs a separate disposition.
+Commit and publication status: committed locally 59991a8; NOT pushed, no PR, no merge.
+Vault sync status: pending (delegated to @ai-database).
+Next gate and blockers: INTERACTIVE-PERFORMANCE-1 (measure before optimizing). Production submission remains blocked; live-read compatibility and production readiness not established.
 ```
 
 ## Documentation review
