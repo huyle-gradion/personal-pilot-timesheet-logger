@@ -152,6 +152,33 @@ State: closed - source-accepted (2026-10-11), local only, not pushed. A (optiona
 
 ## Requirement traceability
 
+### SUBMISSION-REVALIDATION-1, post-takeover safety fix
+
+Source-accepted and committed locally at `8a0e7b9`, parent `963be94`, after fresh
+independent review and a focused re-review closing documentation findings RV-1/2.
+No production writes, live discovery, publication or private-record migration.
+
+| Owner requirement | Evidence on the accepted snapshot |
+| --- | --- |
+| Code/name lookup rather than UUID-only fallback | `TestSubmit_EverySelectionProvenByOneCodeRead`: 14-operation approved fake plan resolves through one code query while UUID lookup returns empty |
+| Fresh remote proof, never cache/preference/label proof | `TestSubmit_FreshCacheDoesNotBypassLiveRead`, `TestSubmit_FullLiveCompleteCatalogReusedNoReads`, `TestSubmit_NonLiveTargetedResultBlocks`, `TestSubmit_PartialTargetedResultWithRowBlocks` and targeted-read error tests |
+| Exact selected ID and derived type, fail-closed ambiguity/change | `TestProveClassification_DuplicateIDBlocks`, `TestProveClassification_DuplicateCodeBlocks`, ID/code/name/type mismatch tests, `TestProveClassification_MissingRowMetadataBlocks`, `TestSubmit_InconsistentSharedIDBlocks` |
+| Old records and durable history preserved | `TestRecord_OldSchemaRoundTripPreservesAndDoesNotMutate`, `TestMergeConfirmed_PreservesClassificationMetadata`, `TestSubmit_LegacyNoMetadataReselectBlocksUnchanged` |
+| Approval binding remains safe after additive fields | `TestLocalFingerprint_ClassificationMetadataHintIsInvariant`, `TestSubmit_ClassificationHintAdditionKeepsApprovalValid`, `TestSubmit_ClassificationTypeEditStalesApproval`, `TestLocalFingerprint_TracksClassificationAndActivityType` |
+| Shared selection contract | Classify/guided/manual/split decision metadata tests plus skill packaging and CLI parity assertions |
+
+Parent evidence: build, vet, full uncached tests across 25 packages, race across
+five packages, hermetic e2e, guided harness and diff checks all exited 0. Review
+artifacts and exact manifests are recorded in [state](state.md); temporary paths
+may expire. Source acceptance does not establish live-read compatibility for this
+change or production readiness. Legacy records without code/name are not silently
+updated; unless a genuine full live complete catalog proves the choice, explicit
+authoritative reselection is required and invalidates the old approval. No automatic
+submit rerun.
+
+Next bounded slice: CONFIG-GUIDED-1. Remaining priorities and unchanged production
+boundaries are recorded in the takeover work graph in [state](state.md).
+
 ### Shared-workflow coverage
 
 | Specification step | Owning slices | Completion evidence |

@@ -4,6 +4,169 @@ Updated: 2026-10-11. This is a resumable status ledger, not a grant of authority
 
 ## Authority now
 
+### Submission revalidation takeover grant, 2026-10-11
+
+The owner authorized direct specialist dispatch for bounded implementation,
+independent review, fixes and focused re-review, accepted-slice local commits,
+repository progress records, and assignment-1 project/daily vault synchronization.
+Targeted read-only Gradion catalog discovery using documented Keychain references
+is permitted only when necessary. Production creates/edits/deletes, Keychain
+modifications, fabricated caches, manual record repair, destructive migration,
+push/publication/merge/force-push, and silent product-scope changes are prohibited.
+An existing daily approval does not override this production-write prohibition.
+
+Takeover observed branch `feat/s9-integrated-acceptance`, HEAD
+`963be94157f68b676f4e4e8ab176074fdd025519`, with a clean tracked tree before this
+ledger update and one worktree. Latest commits are `963be94` usage/handoff docs,
+`6d28f7a` personal-workflow records, `543966d` guided review, and `195fb4e`
+journal evidence. Preserve the unrelated untracked `.github/`, `.tickets/`,
+`benchmarks/`, `references/`, `scripts/`, and repo ADRs 0001 through 0004. Their
+ownership is not reassigned and they must not be staged. Historical records
+release the overlapping worker scopes; they do not prove host task liveness.
+
+Current work graph, in priority order, with no invented deadlines:
+1. SUBMISSION-REVALIDATION-1: closed, source-accepted and committed locally;
+   vault synchronization complete.
+   Persist explicit classification lookup metadata; require fresh remote stable-ID
+   and derived-type agreement; fail closed on incomplete/ambiguous/changed proof;
+   preserve old records and approval/outcome history. No automatic submit rerun.
+2. CONFIG-GUIDED-1: planned after slice 1 acceptance, supported configuration
+   questions for CLI and skill with validation, preview and overwrite consent.
+3. INTERACTIVE-PERFORMANCE-1: planned, measure binary provenance, startup,
+   collection, catalog, rendering and user wait before choosing an optimization.
+4. MIDNIGHT-CARRY-1: planned, exact linked local-date fragments and visible carry;
+   confirm guided second-day handling without automatic approval.
+5. TUI-USABILITY-1: planned, designer-owned hierarchy, labels, provenance,
+   unknown-duration indicators, keyboard help and source warnings.
+6. BULK-REVIEW-1: planned, explicit scoped preview, per-block overrides and safe
+   cancellation; no unknown-duration confirmation or silent collision resolution.
+7. CLASSIFICATION-INTERACTION-1: planned, searchable authoritative choices and
+   unapplied recent/first-run suggestions with explicit bulk targets.
+
+Parent orchestrator owns validation/integration and records. Read-only inventory
+@explorer `ses_ed4469c43ffeW2q51AzMtxTbns` completed with a correction distinguishing
+the current October 8 record from its pre-approval backup. Its missing-metadata
+counts were incorrect and were superseded by a parent JSON-key/count inspection.
+Read-only safety contract @oracle `ses_ed445f112ffezUxc1SwDXEJhU7` completed; parent
+requires fresh live proof for every selection, not merely absent-from-cache IDs,
+complete unique targeted results, and explicit reselect guidance for legacy
+records without lookup metadata. Code/name are lookup hints excluded from the
+approval fingerprint; ID and derived activity type remain binding inputs.
+Implementer @fixer `ses_ed441cc26ffeFtUYBf4liC4xMb` claims bounded classification
+metadata, validation, tests and narrow product guidance. The parent owns this
+ledger. No overlapping writer, UI expansion or executor refactor is authorized.
+Independent review follows a frozen exact snapshot; implementation is not accepted.
+
+Review-ready transition: @fixer delivered 22 bounded source/test/guidance paths,
+including three new untracked test files. Implementation report:
+`.../T/opencode/submission-revalidation-1-implementation.md`. Worker reports green
+build, vet, full uncached tests across 25 packages, five-package race, hermetic e2e,
+guided harness and diff checks. These are worker-reported until parent checks
+finish. Frozen review snapshot:
+`.../T/opencode/submission-revalidation-1-review/` with SHA-256 manifest, base HEAD,
+tracked diff and status. Fresh independent reviewer @oracle
+`ses_ed42e3234ffezCHkzbQp2kUaS7` owns acceptance analysis of that exact snapshot;
+the contract adviser is not the independent reviewer. Parent final-check log:
+`.../T/opencode/submission-revalidation-1-parent-checks.log`. No source writer is
+active while review/checks run. This ledger is excluded from the source snapshot.
+
+Independent review completed on 22/22 matching hashes before and after review.
+Report `.../T/opencode/submission-revalidation-1-independent-review.md` gives
+changes-required for documentation only, with no source blocker. Parent accepts
+RV-1: old data-handling guarantees incorrectly deny selected code/name persistence;
+RV-2: skill/product guidance omits the genuine fresh live full complete catalog
+exception for legacy choices. The same implementer owns only these four guidance
+files and any necessary skill assertions during the fix. A focused independent
+re-review is required before commit. RV-3 exported executor contract is an existing
+non-blocking maintainability carry; RV-4 discriminating tests live in the run proof
+suite; RV-5 strict single-row targeted proof can reject extra substring matches
+but remains deliberately fail-closed. No source expansion for these notes.
+
+Parent final checks on the source snapshot all exited 0: build, vet, full uncached
+tests across 25 packages, race across five packages, hermetic e2e, guided harness
+and diff checks. Reviewer independently reproduced focused proof tests, build/vet
+and three-package race checks. Doc-only fixes do not invalidate unchanged source
+test evidence; affected skill/docs checks and snapshot hashes must be renewed.
+Live-read compatibility was not exercised in this slice. Production readiness is
+not established and production writes remain prohibited.
+
+Acceptance and local commit: RV-1 and RV-2 were corrected only in the four guidance
+paths. Focused re-review by the same independent reviewer accepted the revised
+22-file snapshot, with all hashes checked before and after and all source/test
+bytes unchanged. Report:
+`.../T/opencode/submission-revalidation-1-fix1-independent-review.md`; snapshot
+`.../T/opencode/submission-revalidation-1-fix1-review/`. Parent verified all working
+and staged hashes against that manifest, staged exactly those 22 paths, and passed
+staged/diff checks. Local commit `8a0e7b9706ffe1fa51cf9da5fd73781373eef6ff`, parent
+`963be94157f68b676f4e4e8ab176074fdd025519`, on the existing branch. No publication.
+Both private workflow-record preservation hashes remained unchanged before commit.
+Unrelated untracked work and this parent-owned ledger were excluded.
+
+Accepted behavior: code/name metadata survives explicit classify/guided/manual
+selection and split/merge paths; it supplies queries, never identity proof or
+payload fields. Every selection needs fresh live complete identity/type proof.
+Cache presence cannot bypass the live check. A genuine full live complete catalog
+may be reused; otherwise targeted proof requires a unique complete result. The
+14-operation regression uses one code query and fake writes only. Ambiguous,
+changed, missing, incomplete and mismatching results block with zero fake writes.
+Old schemas/history round-trip and blocked legacy records remain unchanged.
+Retrieval hints leave the existing fingerprint unchanged; ID/type changes still
+invalidate approval, and explicit reselection still invalidates existing approval.
+
+Operational consequence for the current October 8/9 records: both lack lookup
+metadata and remain untouched. With the known capped catalog they require an
+explicit authoritative reselect-by-code step before future use, not a fabricated
+cache or manual JSON repair. Reselection requires new preview/approval afterward.
+Neither the existing approval nor this source commit authorizes production use.
+Do not rerun submit automatically.
+
+Vault synchronization completed by @ai-database
+`ses_ed424af39ffeLw1HKQtRJKZPRc`, limited to the project note and 2026-10-11 daily
+log. Parent reviewed the additions and requested two bounded corrections: the
+old UUID lookup was fail-closed, not a cache-absence proof, and the undated queue
+must use planning bullets rather than checkbox tasks without assignees/deadlines.
+Both corrections completed. One project ledger entry, daily journal and impact
+entry reflect the slice; YAML, links and idempotency checks passed. Historical
+tasks and unrelated notes were preserved, with no invented working hours.
+Next dependency-ready bounded task is CONFIG-GUIDED-1, using the existing schema
+with validated CLI/skill questions, result preview and explicit overwrite consent.
+No implementation of that next slice has been dispatched yet.
+
+Local record reconciliation, read-only, 2026-10-11:
+- October 8 current workflow schema 1, revision 8: 14 confirmed intervals,
+  353 minutes, latest plan `0e871cf...` with 14 creates and no edits. One recorded
+  active approval references that plan. Plan content hash matches its ID. There
+  are no local mappings or outcomes. Full approval semantic/fresh-remote validity
+  is not inferred from active status and remains unverified during takeover.
+- October 9 current workflow schema 1, revision 6: one confirmed interval,
+  55 minutes, plan `af695cc9...`, one create, no approval, mappings or outcomes.
+- Both dates have explicit classification ID/type, but all 14 October 8 and the
+  October 9 interval lack `classification_code` and `classification_name`.
+  The fix must not silently enrich those records or rerun their submissions.
+- Reported `/tmp/2026-10-08.record.bak.json` exists and is a distinct pre-approval
+  snapshot, not the current record. Its hash was recorded in private scratch
+  evidence. The legacy standalone daily format also exists for October 8 and is
+  left untouched.
+
+Current record preservation hashes: October 8
+`909cc0849817bdbb095f95ccd94577bd1c4bc591d92eaf289ff8a790df23ed3c`, October 9
+`84a2be3f75c03b9bb742cb2db0b29b8670066f6fb5042a7f7dbff234d9aa9453`.
+Previous acceptance artifacts exist but remain historical evidence, not acceptance
+of this new slice. Current source confirms the UUID-only submit fallback and
+capped-catalog defect. Zero production writes is owner-reported and consistent
+with empty local outcomes; local history cannot prove remote absence. No live
+request, approval command, preview command or submit command has been run during
+takeover.
+
+Required evidence path: fake-remote code lookup regression plus zero-write tests
+for ID/type/metadata mismatch, incomplete/ambiguous results and legacy selections;
+metadata propagation and preservation; approval binding tests across the additive
+schema/fingerprint change. Independent review covers a frozen tracked/untracked
+snapshot. Parent final checks require build, vet, uncached full tests, relevant
+race/e2e and diff checks. Source acceptance, live-read compatibility and production
+readiness must be recorded separately. Full-suite failures remain failures even
+when focused tests pass.
+
 ### PERSONAL-WORKFLOW-1 session grant, 2026-10-11
 
 Owner authorized bounded implementation, tests, direct specialist dispatch,
