@@ -191,3 +191,45 @@ func TestCanonicalRepoKey_ConfiguredFallback(t *testing.T) {
 		t.Errorf("expected configured fallback id, got %q", got)
 	}
 }
+
+// TestJournalID_ExplicitVsImplicit proves the journal identity helper distinguishes
+// an explicit id (sourceID/date/X, section- and content-independent) from an
+// implicit one (sourceID/date/section/content-hash).
+func TestJournalID_ExplicitVsImplicit(t *testing.T) {
+	a := JournalID("src", "2026-10-08", "", "work journal", "h1")
+	if a != JournalID("src", "2026-10-08", "", "work journal", "h1") {
+		t.Error("implicit journal identity must be deterministic")
+	}
+	if a == JournalID("src", "2026-10-08", "", "daily impact", "h1") {
+		t.Error("identical content in different sections must not collide")
+	}
+	if a == JournalID("src", "2026-10-08", "", "work journal", "h2") {
+		t.Error("a content change must change implicit identity")
+	}
+
+	e1 := JournalID("src", "2026-10-08", "abc", "work journal", "h1")
+	e2 := JournalID("src", "2026-10-08", "abc", "daily impact", "h2")
+	if e1 != e2 {
+		t.Error("an explicit id must be independent of section and content")
+	}
+	if e1 == a {
+		t.Error("explicit and implicit identities must differ")
+	}
+	// An invalid explicit id falls back to the implicit identity.
+	if JournalID("src", "d", "has space", "s", "h") != JournalID("src", "d", "", "s", "h") {
+		t.Error("an invalid explicit id must fall back to implicit identity")
+	}
+}
+
+func TestValidJournalExplicitID(t *testing.T) {
+	for _, ok := range []string{"a", "abc.def:1-2_3", "x"} {
+		if !ValidJournalExplicitID(ok) {
+			t.Errorf("expected %q to be valid", ok)
+		}
+	}
+	for _, bad := range []string{"", "has space", "with/slash", "emoji😀", strings.Repeat("a", 65)} {
+		if ValidJournalExplicitID(bad) {
+			t.Errorf("expected %q to be invalid", bad)
+		}
+	}
+}

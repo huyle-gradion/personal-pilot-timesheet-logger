@@ -26,6 +26,28 @@ const (
 	SourceRemotePR     SourceKind = "remote_pr"
 	SourceManual       SourceKind = "manual"
 	SourceAgentSession SourceKind = "agent_session"
+	// SourceJournal is the optional local read-only narrative evidence source:
+	// the owner's Obsidian daily note. ai-database was previously export-only;
+	// as a journal source it is a supplementary evidence source, NEVER the
+	// primary store. Journal evidence is narrative text only and is always
+	// UNTIMED (unknown duration): a note never establishes working time.
+	SourceJournal SourceKind = "journal"
+)
+
+// JournalLifecycleState marks whether a journal evidence item is currently
+// present in its source note (active) or was present in a prior successful
+// collection and is now absent (detached). The zero value "" is ACTIVE, so
+// records written before this field existed stay active and remain backward
+// compatible. A detached item is retained as history and is never re-proposed.
+type JournalLifecycleState string
+
+const (
+	// JournalActive is the zero value: the item is present in the latest
+	// successful collection.
+	JournalActive JournalLifecycleState = ""
+	// JournalDetached marks an item that a later COMPLETE authoritative
+	// collection no longer found. It is history only and is never deleted.
+	JournalDetached JournalLifecycleState = "detached"
 )
 
 // InvitationStatus is a tri-state (plus "none") invitation response. "unknown"
@@ -97,6 +119,36 @@ type SourceRef struct {
 	// not change any StableID. It lets the proposal layer place each folded commit
 	// at its own time instead of only the parent evidence's span.
 	At time.Time `json:"at,omitempty"`
+
+	// --- Journal provenance (ADDITIVE; SourceJournal only) ------------------
+	//
+	// These fields are provenance ONLY and are never identity inputs: the note
+	// path in particular is NOT identity, so moving or renaming a note does not
+	// change a journal evidence item's StableID. All are omitempty so every other
+	// source kind serializes exactly as before.
+	//
+	// SourceID is the configured non-secret journal source id (the identity
+	// namespace); it is never a filesystem path or URL.
+	SourceID string `json:"source_id,omitempty"`
+	// NotePath is the note path RELATIVE to the vault root. It is provenance, not
+	// identity, and never an absolute path.
+	NotePath string `json:"note_path,omitempty"`
+	// HeadingPath is the full heading ancestry (root first, " / " joined).
+	HeadingPath string `json:"heading_path,omitempty"`
+	// Section is the canonical leaf section the item was found under.
+	Section string `json:"section,omitempty"`
+	// LineStart/LineEnd are the inclusive 1-based line range of the item in the
+	// note, retained for review provenance.
+	LineStart int `json:"line_start,omitempty"`
+	LineEnd   int `json:"line_end,omitempty"`
+	// StatedDate is the date the note/item itself states (frontmatter or inline),
+	// retained unchanged. It is never rewritten to the target date.
+	StatedDate string `json:"stated_date,omitempty"`
+	// Clock is the original stated HH:MM string, retained unchanged. A clock is a
+	// stated time, never a working duration.
+	Clock string `json:"clock,omitempty"`
+	// ProjectLinks are inline project hints (wikilinks) found in the item.
+	ProjectLinks []string `json:"project_links,omitempty"`
 }
 
 // TopicHint suggests a reviewable grouping. PRNumber==0 means the caller falls
@@ -126,4 +178,14 @@ type Evidence struct {
 	TopicHint    *TopicHint       `json:"topic_hint,omitempty"`
 	ProjectHints []string         `json:"project_hints,omitempty"`
 	ObservedAt   time.Time        `json:"observed_at,omitempty"`
+	// JournalState is the ADDITIVE active/detached lifecycle state for a
+	// SourceJournal item (zero value "" = active). It is meaningful only for
+	// journal evidence; every other kind leaves it empty.
+	JournalState JournalLifecycleState `json:"journal_state,omitempty"`
+	// LinkedEvidenceIDs is the ADDITIVE linkage a MANUAL evidence item may carry
+	// to several supporting source records (e.g. journal items) that justify ONE
+	// explicitly user-timed activity. Linked evidence NEVER adds minutes: the
+	// manual interval's own duration is authoritative. It is empty for every
+	// other kind.
+	LinkedEvidenceIDs []string `json:"linked_evidence_ids,omitempty"`
 }

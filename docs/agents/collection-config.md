@@ -8,9 +8,16 @@ Sanitized templates:
 
 - `cmd/timesheet/timesheet.example.json` (calendar + local-only git)
 - `cmd/timesheet/timesheet.local-git.example.json` (local + remote git)
+- `cmd/timesheet/timesheet.journal.example.json` (optional local read-only journal + local git)
 
 Both templates use `keychain:<service>` references and contain **no** secret
 values. A user's own config is separate and must never be overwritten.
+
+The optional local read-only **journal** source (`"type": "journal"`) reads the
+Obsidian daily note as narrative evidence. Its keys, path confinement, identity,
+active/detached history, and privacy rules are documented in
+[the journal source note](journal-source.md) and
+[ADR 0007](../adr/0007-journal-evidence-source.md).
 
 ## Git source keys
 

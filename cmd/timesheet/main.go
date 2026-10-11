@@ -310,6 +310,10 @@ func buildRegistry(gitToken string) *evidence.Registry {
 		return plugins.LocalGitCollectorAdapter{Collector: git.NewLocalGitCollector(path)}
 	}
 	reg.Register(gitPlugin)
+	// The optional local read-only journal (Obsidian daily-note) source. It is
+	// registered explicitly here: a journal source is only ever enabled when the
+	// user configures one.
+	plugins.RegisterJournal(reg)
 	return reg
 }
 
@@ -910,6 +914,36 @@ func printProposal(w io.Writer, date string, prop proposal.Proposal) {
 	}
 	for _, b := range prop.Manual {
 		fmt.Fprintf(w, "  manual  %s %s-%s %s\n", b.ID, b.Start, b.End, b.Description)
+	}
+	// Narrative journal candidates are UNTIMED: print provenance and an explicit
+	// unknown-duration marker rather than any fabricated time.
+	for _, n := range prop.Narratives {
+		fmt.Fprintf(w, "  narrative %s section=%s %s duration=unknown\n", n.ID, n.Section, n.Description)
+	}
+	// Excluded evidence is advisory history. A detached journal item is printed
+	// with its human-readable provenance (title/path/heading/line/date) so the
+	// uncertainty is identifiable, not an opaque id or a bare count.
+	for _, ex := range prop.Excluded {
+		line := fmt.Sprintf("  excluded %s reason=%s", ex.EvidenceID, ex.Reason)
+		if ex.Kind != "" {
+			line += " kind=" + string(ex.Kind)
+		}
+		if ex.NotePath != "" {
+			line += " note=" + oneLine(ex.NotePath)
+		}
+		if ex.HeadingPath != "" {
+			line += " heading=" + oneLine(ex.HeadingPath)
+		}
+		if ex.LineStart > 0 {
+			line += fmt.Sprintf(" lines=%d-%d", ex.LineStart, ex.LineEnd)
+		}
+		if ex.StatedDate != "" {
+			line += " date=" + ex.StatedDate
+		}
+		if ex.Title != "" {
+			line += " title=" + oneLine(ex.Title)
+		}
+		fmt.Fprintln(w, line)
 	}
 }
 

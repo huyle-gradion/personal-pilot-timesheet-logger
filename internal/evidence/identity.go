@@ -85,6 +85,40 @@ func AgentSessionID(sessionID, eventType, atRFC3339Nano string) string {
 	return StableID(SourceAgentSession, sessionID, eventType, atRFC3339Nano)
 }
 
+// JournalID builds the deterministic identity of a journal evidence item. It
+// distinguishes an EXPLICIT identity from an IMPLICIT one:
+//
+//   - Explicit: when explicitID is a valid bounded id, identity is the tuple
+//     (sourceID, date, explicitID) and is INDEPENDENT of the section, so moving
+//     an explicitly identified item between sections keeps its identity.
+//   - Implicit: otherwise identity is the tuple (sourceID, date,
+//     canonicalSection, contentHash), so reordering items in the note does not
+//     change identity while a text edit does, and identical text in two
+//     different sections stays DISTINCT.
+//
+// The note path is deliberately NOT an identity input: a note move/rename never
+// changes journal identity. Use ValidJournalExplicitID to check the bounded
+// explicit id before calling with it.
+func JournalID(sourceID, date, explicitID, canonicalSection, contentHash string) string {
+	if ValidJournalExplicitID(explicitID) {
+		return StableID(SourceJournal, sourceID, date, explicitID)
+	}
+	return StableID(SourceJournal, sourceID, date, canonicalSection, contentHash)
+}
+
+// journalExplicitIDPattern bounds an explicit journal evidence id: a trailing
+// HTML-comment marker `<!-- evidence_id: X -->` where X is 1..64 characters from
+// [A-Za-z0-9._:-]. The bound keeps an explicit id a compact, non-secret
+// identifier rather than free-form text.
+var journalExplicitIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
+
+// ValidJournalExplicitID reports whether s is a bounded, valid explicit journal
+// evidence id. An empty or out-of-bounds value is not explicit (the item falls
+// back to its implicit identity).
+func ValidJournalExplicitID(s string) bool {
+	return journalExplicitIDPattern.MatchString(strings.TrimSpace(s))
+}
+
 var (
 	schemePattern  = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*://`)
 	scpLikePattern = regexp.MustCompile(`^[^/@\s]+@([^:/\s]+):(.+)$`)

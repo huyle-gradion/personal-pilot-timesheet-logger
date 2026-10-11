@@ -28,10 +28,12 @@ import (
 
 // Typed operating errors.
 var (
-	ErrNilRecord        = errors.New("review: nil record")
-	ErrBlockNotFound    = errors.New("review: confirmed block not found")
-	ErrEvidenceNotFound = errors.New("review: collected evidence not found")
-	ErrInvalidInterval  = errors.New("review: invalid interval")
+	ErrNilRecord              = errors.New("review: nil record")
+	ErrBlockNotFound          = errors.New("review: confirmed block not found")
+	ErrEvidenceNotFound       = errors.New("review: collected evidence not found")
+	ErrInvalidInterval        = errors.New("review: invalid interval")
+	ErrLinkedEvidenceNotFound = errors.New("review: linked evidence not found")
+	ErrLinkedEvidenceCycle    = errors.New("review: linked evidence cycle")
 )
 
 // Stable exclusion reasons.
@@ -73,6 +75,11 @@ type ManualInterval struct {
 	EndAt       time.Time
 	Project     string
 	Description string
+	// EvidenceIDs links this explicitly user-timed manual activity to several
+	// supporting source records (e.g. journal items). The linked evidence NEVER
+	// adds minutes: the manual interval's own span is authoritative. Each linked
+	// id must exist in the record's collected evidence and must not form a cycle.
+	EvidenceIDs []string
 	Now         time.Time
 }
 
@@ -306,6 +313,11 @@ func AddManualInterval(r *workflow.Record, m ManualInterval) error {
 	}
 	id := evidence.ManualID(date, uuid)
 
+	links, err := normalizeLinkedEvidence(r, id, m.EvidenceIDs)
+	if err != nil {
+		return err
+	}
+
 	title := strings.TrimSpace(m.Description)
 	if title == "" {
 		title = "Manual interval"
@@ -320,6 +332,7 @@ func AddManualInterval(r *workflow.Record, m ManualInterval) error {
 		r.CollectedEvidence[i].Start = m.StartAt
 		r.CollectedEvidence[i].End = m.EndAt
 		r.CollectedEvidence[i].Duration = evidence.KnownDuration(proposal.DurationMinutes(m.StartAt, m.EndAt))
+		r.CollectedEvidence[i].LinkedEvidenceIDs = links
 		if p := strings.TrimSpace(m.Project); p != "" {
 			r.CollectedEvidence[i].ProjectHints = []string{p}
 		}
@@ -327,21 +340,90 @@ func AddManualInterval(r *workflow.Record, m ManualInterval) error {
 	}
 
 	ev := evidence.Evidence{
-		ID:          id,
-		Kind:        evidence.SourceManual,
-		Title:       title,
-		Description: strings.TrimSpace(m.Description),
-		Start:       m.StartAt,
-		End:         m.EndAt,
-		Duration:    evidence.KnownDuration(proposal.DurationMinutes(m.StartAt, m.EndAt)),
-		SourceRefs:  []evidence.SourceRef{{Kind: evidence.SourceManual}},
-		ObservedAt:  now,
+		ID:                id,
+		Kind:              evidence.SourceManual,
+		Title:             title,
+		Description:       strings.TrimSpace(m.Description),
+		Start:             m.StartAt,
+		End:               m.EndAt,
+		Duration:          evidence.KnownDuration(proposal.DurationMinutes(m.StartAt, m.EndAt)),
+		SourceRefs:        []evidence.SourceRef{{Kind: evidence.SourceManual}},
+		ObservedAt:        now,
+		LinkedEvidenceIDs: links,
 	}
 	if p := strings.TrimSpace(m.Project); p != "" {
 		ev.ProjectHints = []string{p}
 	}
 	r.CollectedEvidence = append(r.CollectedEvidence, ev)
 	return nil
+}
+
+// normalizeLinkedEvidence validates and normalizes a manual interval's linked
+// evidence ids. Each non-empty id must exist in the record's collected evidence,
+// must not be the manual item itself, and must not introduce a cycle across
+// manual items. The returned slice is deduped and sorted.
+func normalizeLinkedEvidence(r *workflow.Record, selfID string, links []string) ([]string, error) {
+	if len(links) == 0 {
+		return nil, nil
+	}
+	existing := make(map[string]bool, len(r.CollectedEvidence))
+	for _, e := range r.CollectedEvidence {
+		existing[e.ID] = true
+	}
+	seen := make(map[string]bool, len(links))
+	var out []string
+	for _, id := range links {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if id == selfID {
+			return nil, fmt.Errorf("%w: self-reference", ErrLinkedEvidenceCycle)
+		}
+		if !existing[id] {
+			return nil, fmt.Errorf("%w: %s", ErrLinkedEvidenceNotFound, id)
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+
+	// Cycle detection across manual items: the graph is each manual item's
+	// linked ids; the candidate item's edges are `out`.
+	graph := make(map[string][]string, len(r.CollectedEvidence)+1)
+	for _, e := range r.CollectedEvidence {
+		if e.Kind == evidence.SourceManual && len(e.LinkedEvidenceIDs) > 0 {
+			graph[e.ID] = e.LinkedEvidenceIDs
+		}
+	}
+	graph[selfID] = out
+	if linkedEvidenceHasCycle(graph, selfID) {
+		return nil, fmt.Errorf("%w: %s", ErrLinkedEvidenceCycle, selfID)
+	}
+	return out, nil
+}
+
+// linkedEvidenceHasCycle reports whether following linked-evidence edges from
+// start revisits start.
+func linkedEvidenceHasCycle(graph map[string][]string, start string) bool {
+	visited := map[string]bool{}
+	var walk func(node string) bool
+	walk = func(node string) bool {
+		for _, next := range graph[node] {
+			if next == start {
+				return true
+			}
+			if visited[next] {
+				continue
+			}
+			visited[next] = true
+			if walk(next) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(start)
 }
 
 // MarkReviewedEmpty records a reviewed day with no work, preserving any prior
@@ -704,6 +786,14 @@ func changedEvidenceIDs(prop proposal.Proposal, r workflow.Record) []string {
 	for id := range covered {
 		if !collected[id] {
 			changed[id] = true
+		}
+	}
+	// A detached journal item is an advisory change: it was present before and is
+	// gone now. Surfacing its id keeps the history uncertainty visible (the
+	// proposal's Excluded entry carries the human-readable provenance).
+	for _, e := range r.CollectedEvidence {
+		if e.Kind == evidence.SourceJournal && e.JournalState == evidence.JournalDetached {
+			changed[e.ID] = true
 		}
 	}
 	var out []string

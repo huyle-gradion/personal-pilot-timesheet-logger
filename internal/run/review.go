@@ -63,6 +63,9 @@ type ManualDecision struct {
 	End         time.Time `json:"end"`
 	Project     string    `json:"project,omitempty"`
 	Description string    `json:"description,omitempty"`
+	// EvidenceIDs links the manual activity to supporting source records. They
+	// add no minutes; the manual interval's own span is authoritative.
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
 }
 
 // CurrentProposal re-derives the proposal honoring the record's review decisions
@@ -163,7 +166,8 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 	for _, m := range d.Manual {
 		if err := review.AddManualInterval(rec, review.ManualInterval{
 			UUID: m.UUID, StartAt: m.Start, EndAt: m.End,
-			Project: m.Project, Description: m.Description, Now: r.now(),
+			Project: m.Project, Description: m.Description,
+			EvidenceIDs: m.EvidenceIDs, Now: r.now(),
 		}); err != nil {
 			return err
 		}

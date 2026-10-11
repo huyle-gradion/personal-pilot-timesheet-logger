@@ -48,6 +48,7 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 	hasEnabledSources := enabled > 0
 	_, err = r.deps.Store.UpdateDay(ctx, date, func(rec *workflow.Record) error {
 		mergeEvidenceIntoRecord(rec, ev)
+		reconcileJournalLifecycle(rec, ev, summary)
 		if hasEnabledSources {
 			summaryCopy := summary
 			rec.Collection = &summaryCopy
@@ -127,6 +128,68 @@ func mergeEvidenceIntoRecord(rec *workflow.Record, incoming []evidence.Evidence)
 		byID[e.ID] = len(rec.CollectedEvidence)
 		rec.CollectedEvidence = append(rec.CollectedEvidence, e)
 	}
+}
+
+// reconcileJournalLifecycle marks prior journal evidence DETACHED when a
+// successful, COMPLETE authoritative journal collection no longer contains it,
+// and marks present items ACTIVE. It runs ONLY for a journal source that is
+// StatusComplete in this pass: on a failed or partial collection, prior journal
+// history is never detached and no positional superseded guess is made. Non-journal
+// evidence and user decisions (Confirmed/Review/text/approvals/outcomes) are never
+// touched.
+func reconcileJournalLifecycle(rec *workflow.Record, incoming []evidence.Evidence, summary evidence.CollectionSummary) {
+	if rec == nil {
+		return
+	}
+	completeJournal := map[string]bool{}
+	for _, sr := range summary.Sources {
+		if sr.Type == evidence.SourceJournal {
+			completeJournal[sr.SourceID] = sr.Status == evidence.StatusComplete
+		}
+	}
+	if len(completeJournal) == 0 {
+		return
+	}
+
+	active := map[string]map[string]bool{}
+	for _, e := range incoming {
+		if e.Kind != evidence.SourceJournal {
+			continue
+		}
+		sid := journalSourceIDOf(e)
+		if active[sid] == nil {
+			active[sid] = map[string]bool{}
+		}
+		active[sid][e.ID] = true
+	}
+
+	for i := range rec.CollectedEvidence {
+		e := &rec.CollectedEvidence[i]
+		if e.Kind != evidence.SourceJournal {
+			continue
+		}
+		sid := journalSourceIDOf(*e)
+		if !completeJournal[sid] {
+			// A failed/partial journal collection never detaches prior history.
+			continue
+		}
+		if active[sid][e.ID] {
+			e.JournalState = evidence.JournalActive
+		} else {
+			e.JournalState = evidence.JournalDetached
+		}
+	}
+}
+
+// journalSourceIDOf returns a journal item's configured source id, or "" when it
+// carries none.
+func journalSourceIDOf(e evidence.Evidence) string {
+	for _, ref := range e.SourceRefs {
+		if ref.Kind == evidence.SourceJournal {
+			return ref.SourceID
+		}
+	}
+	return ""
 }
 
 func evidenceReferences(ev []evidence.Evidence) []workflow.EvidenceReference {

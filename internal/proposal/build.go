@@ -47,6 +47,7 @@ func Build(ev []evidence.Evidence, opts ProposalOptions) (Proposal, error) {
 	}
 
 	var calendarEv, gitEv, manualEv []evidence.Evidence
+	var journalEv []evidence.Evidence
 	for _, e := range ev {
 		if !evidence.IsProposalInput(e) {
 			prop.Excluded = append(prop.Excluded, ExcludedEvidence{
@@ -69,6 +70,14 @@ func Build(ev []evidence.Evidence, opts ProposalOptions) (Proposal, error) {
 			gitEv = append(gitEv, e)
 		case evidence.SourceManual:
 			manualEv = append(manualEv, e)
+		case evidence.SourceJournal:
+			// A detached journal item is retained as visible history and is
+			// never re-proposed as a narrative candidate.
+			if e.JournalState == evidence.JournalDetached {
+				prop.Excluded = append(prop.Excluded, excludedFromEvidence(e, ExcludeDetached))
+				continue
+			}
+			journalEv = append(journalEv, e)
 		case evidence.SourceAgentSession:
 			// Context only: visible, but never a block, span, or interruption.
 			prop.Excluded = append(prop.Excluded, ExcludedEvidence{
@@ -125,6 +134,7 @@ func Build(ev []evidence.Evidence, opts ProposalOptions) (Proposal, error) {
 	prop.Meetings = splitBlocks(meetings, maxEntry, loc)
 	prop.Manual = splitBlocks(manual, maxEntry, loc)
 	prop.Work = splitBlocks(buildWorkBlocks(prop.Topics, gitEv, meetings, opts.ProjectMap, loc), maxEntry, loc)
+	prop.Narratives = buildNarratives(journalEv, dateStr)
 	sortProposal(&prop)
 	prop.Warnings = normalizeWarnings(warnings)
 	return prop, nil
@@ -353,7 +363,7 @@ func buildManual(manualEv []evidence.Evidence, loc *time.Location, dateStr strin
 				Duration:      evidence.KnownDuration(f.Minutes),
 				Project:       ResolveProject(projectMap, "", e.ProjectHints),
 				Description:   blockDescription(e),
-				EvidenceIDs:   []string{e.ID},
+				EvidenceIDs:   manualEvidenceIDs(e),
 				Attendance:    AttendanceUnresolved,
 				Preselected:   false,
 				GridSuggested: !onGrid(f.StartAt, loc),
@@ -363,12 +373,92 @@ func buildManual(manualEv []evidence.Evidence, loc *time.Location, dateStr strin
 	return blocks, carry
 }
 
+// manualEvidenceIDs returns a manual item's own identity followed by the linked
+// source evidence IDs it cites. The linked IDs add NO minutes: the manual
+// interval's own duration is authoritative. The result is sorted and deduped so
+// the proposed block (and any four-hour fragment copied from it) is stable.
+func manualEvidenceIDs(e evidence.Evidence) []string {
+	return uniqueSorted(append([]string{e.ID}, e.LinkedEvidenceIDs...))
+}
+
 // blockDescription returns source-derived text only.
 func blockDescription(e evidence.Evidence) string {
 	if d := strings.TrimSpace(e.Description); d != "" {
 		return d
 	}
 	return strings.TrimSpace(e.Title)
+}
+
+// buildNarratives turns active journal evidence into UNTIMED narrative
+// candidates. Candidates are sorted deterministically by (section, id) so
+// identical input in any order yields an identical result. Project hints are
+// raw, non-billing hints; the duration is always UNKNOWN and no times are set.
+func buildNarratives(journalEv []evidence.Evidence, dateStr string) []NarrativeCandidate {
+	out := make([]NarrativeCandidate, 0, len(journalEv))
+	for _, e := range journalEv {
+		section := ""
+		if len(e.SourceRefs) > 0 {
+			section = strings.TrimSpace(e.SourceRefs[0].Section)
+		}
+		out = append(out, NarrativeCandidate{
+			ID:           e.ID,
+			Section:      section,
+			Date:         dateStr,
+			Title:        strings.TrimSpace(e.Title),
+			Description:  strings.TrimSpace(e.Description),
+			EvidenceIDs:  []string{e.ID},
+			ProjectHints: dedupSortedStrings(e.ProjectHints),
+			Duration:     evidence.UnknownDuration(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Section == out[j].Section {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Section < out[j].Section
+	})
+	return out
+}
+
+// excludedFromEvidence builds an excluded entry carrying any journal provenance
+// (title/path/heading/line/date) from the evidence, so a detached item is
+// identifiable in review rather than an opaque id.
+func excludedFromEvidence(e evidence.Evidence, reason ExclusionReason) ExcludedEvidence {
+	ex := ExcludedEvidence{
+		EvidenceID: e.ID,
+		Kind:       e.Kind,
+		Reason:     reason,
+		Title:      strings.TrimSpace(e.Title),
+	}
+	for _, ref := range e.SourceRefs {
+		if ref.Kind != evidence.SourceJournal {
+			continue
+		}
+		ex.Section = ref.Section
+		ex.NotePath = ref.NotePath
+		ex.HeadingPath = ref.HeadingPath
+		ex.LineStart = ref.LineStart
+		ex.LineEnd = ref.LineEnd
+		ex.StatedDate = ref.StatedDate
+		break
+	}
+	return ex
+}
+
+// dedupSortedStrings returns the sorted, deduped, non-empty values.
+func dedupSortedStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	var out []string
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // topicKey is the identity of a topic: repository plus PR number when a PR is

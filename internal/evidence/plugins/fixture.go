@@ -1,8 +1,11 @@
 // Package plugins provides concrete evidence source adapters registered in the
 // compile-time evidence Registry: the calendar, git (local commits + remote PRs),
-// and agent-session adapters, plus the `fixture` plugin. The fixture plugin emits
-// deterministic contract evidence from a fixture file so registry and
-// contract-check behavior can be exercised end to end without a live source.
+// agent-session, and journal (local read-only Obsidian daily-note) adapters, plus
+// the `fixture` plugin. The fixture plugin emits deterministic contract evidence
+// from a fixture file so registry and contract-check behavior can be exercised
+// end to end without a live source. The journal adapter is a supplementary,
+// read-only evidence source (ai-database is never the primary store) and emits
+// narrative, UNTIMED items only.
 package plugins
 
 import (

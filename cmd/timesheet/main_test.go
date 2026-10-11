@@ -901,7 +901,7 @@ func TestShippedExamples_PreflightConfigurationPasses(t *testing.T) {
 		"calendar_feed_url":        "https://example.invalid/feed.ics",
 		"gradion.workspace.ApiKey": "test-token",
 	}}
-	for _, name := range []string{"timesheet.example.json", "timesheet.local-git.example.json"} {
+	for _, name := range []string{"timesheet.example.json", "timesheet.local-git.example.json", "timesheet.journal.example.json"} {
 		cfg, err := loadConfig(name)
 		if err != nil {
 			t.Fatalf("%s: loadConfig: %v", name, err)

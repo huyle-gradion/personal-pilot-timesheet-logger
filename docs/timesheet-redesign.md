@@ -77,6 +77,15 @@ Optional agent instrumentation emits structured start, pause, resume, and finish
 
 Updating agent workflows to emit these events is a future implementation task, not part of this documentation change.
 
+### Journal (narrative daily-note) evidence
+
+The owner's Obsidian daily note (ai-database) may act as an OPTIONAL, local, read-only evidence source. It is supplementary: ai-database remains optional and is never the primary workflow store, and the adapter only ever reads `<vault>/<daily_dir>/<date>.md` (never writes the vault). See [ADR 0007](adr/0007-journal-evidence-source.md) and [the journal source note](agents/journal-source.md).
+
+Narrative items are collected only from recognized sections (`Work journal`, `quick capture`, `Daily impact`), with their full heading ancestry retained. Checkbox tasks (even checked), `priorities`/`standup`/`todo` sections, fenced code, the exact export managed markers, and legacy `## Clustered timesheet` / generated `## Timesheet` sections are skipped; a malformed managed region fails the source closed so exported text never feeds back. Every journal item is UNTIMED: zero start/end, an UNKNOWN duration, and no classification, activity type, or inferred duration. A stated clock is never a working duration; the stated date is retained unchanged and a mismatch with the target date is warned, never rewritten. Project hints are non-billing suggestions only.
+
+Journal identity is deterministic and reorder-stable; identical text in two different sections stays distinct. A successful COMPLETE collection marks prior items absent from the latest set as detached history (never deleted, never re-proposed); a failed or partial collection never detaches prior history. A manual interval may cite several supporting source records, which add NO minutes: the manual interval's own span is authoritative. Private journal text is never forwarded to an external editorial service.
+
+
 ## Time and review rules
 
 Approved working intervals cannot overlap. During collisions, let the user attach evidence to one interval, adjust intervals, or exclude evidence. Meeting and commit evidence can share one entry; its submitted description mentions both activities without inventing a relationship or adding commit duration.
@@ -95,7 +104,7 @@ Persist evidence, confirmations, descriptions, approvals, Remote Mappings, revis
 
 Retain confirmed records, revisions, approvals, and submission outcomes until explicit removal. Raw evidence retention is configurable. Never automatically erase unresolved submission history.
 
-Detailed evidence and reconciliation state stay outside the vault. Export a readable schedule after local review with `reviewed, not submitted` status. Update that same managed section after submission, including partial, failed, or unresolved outcomes. Preserve unrelated journal content. ai-database is optional and not the primary workflow store.
+Detailed evidence and reconciliation state stay outside the vault. Export a readable schedule after local review with `reviewed, not submitted` status. Update that same managed section after submission, including partial, failed, or unresolved outcomes. Preserve unrelated journal content. ai-database is optional and not the primary workflow store; as an optional read-only journal source it may supply narrative evidence (see [ADR 0007](adr/0007-journal-evidence-source.md)), but the exported managed section is never read back as evidence.
 
 ## Gradion reconciliation
 
@@ -117,7 +126,7 @@ Use an explicit plugin registry. Enabled plugins declare evidence types, require
 
 Before enablement, check declared inputs, output schema, stable evidence IDs, timeouts, and secret redaction. Credential checks are separate from contract tests. Tests do not establish permanent availability or sandbox arbitrary executables. Give each plugin only the credentials it needs.
 
-First-version sources: calendar, local git and remote PR activity, manual evidence, and optional agent-session evidence. Test extensibility with a fixture plugin. Defer Slack and issue trackers.
+First-version sources: calendar, local git and remote PR activity, manual evidence, optional agent-session evidence, and an optional local read-only journal (narrative daily-note) source. Test extensibility with a fixture plugin. Defer Slack and issue trackers.
 
 A failed source produces a visibly incomplete draft. Submission requires successful retry or explicit acknowledgment of the missing source. Never silently present partial collection as complete.
 

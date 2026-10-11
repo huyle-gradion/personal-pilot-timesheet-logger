@@ -59,6 +59,10 @@ const (
 	// ExcludeMissingRepository marks git evidence with no repository identity, so
 	// exported Build can never silently merge two repo-less items on one branch.
 	ExcludeMissingRepository ExclusionReason = "missing_repository"
+	// ExcludeDetached marks a journal evidence item that a later complete
+	// collection no longer found in the note. It is retained as visible history
+	// and is never re-proposed as a narrative candidate.
+	ExcludeDetached ExclusionReason = "detached"
 )
 
 // ExcludedEvidence records evidence retained for visibility but not used as
@@ -67,6 +71,16 @@ type ExcludedEvidence struct {
 	EvidenceID string              `json:"evidence_id"`
 	Kind       evidence.SourceKind `json:"kind"`
 	Reason     ExclusionReason     `json:"reason"`
+	// Advisory provenance (ADDITIVE; populated for journal history). It lets a
+	// reviewer identify a detached note item by title/path/heading/line/date
+	// instead of an opaque id. All omitempty.
+	Title       string `json:"title,omitempty"`
+	Section     string `json:"section,omitempty"`
+	NotePath    string `json:"note_path,omitempty"`
+	HeadingPath string `json:"heading_path,omitempty"`
+	LineStart   int    `json:"line_start,omitempty"`
+	LineEnd     int    `json:"line_end,omitempty"`
+	StatedDate  string `json:"stated_date,omitempty"`
 }
 
 // TopicCandidate is a reviewable grouping of git evidence: repository plus PR
@@ -102,6 +116,20 @@ const (
 	ProjectSourceHint       = "hint"
 	ProjectSourceUnresolved = "unresolved"
 )
+
+// NarrativeCandidate is a reviewable, UNTIMED narrative journal item. It carries
+// NO times and an UNKNOWN duration: a journal note is narrative context and never
+// establishes working time. ProjectHints are raw, non-billing hints only.
+type NarrativeCandidate struct {
+	ID           string            `json:"id"`
+	Section      string            `json:"section"`
+	Date         string            `json:"date"`
+	Title        string            `json:"title,omitempty"`
+	Description  string            `json:"description"`
+	EvidenceIDs  []string          `json:"evidence_ids"`
+	ProjectHints []string          `json:"project_hints,omitempty"`
+	Duration     evidence.Duration `json:"duration"`
+}
 
 // ProjectResolution is a suggested project and its provenance. Unresolved or
 // ambiguous work requires user resolution.
@@ -152,6 +180,10 @@ type Proposal struct {
 	// by the refresh layer (S4-IMPL-2), not by a fresh Build.
 	Changed  []string `json:"changed,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
+	// Narratives holds reviewable, UNTIMED narrative journal candidates. They are
+	// never timed work blocks and are deliberately NOT part of Work/Meetings/
+	// Manual, so the time-block count is unaffected.
+	Narratives []NarrativeCandidate `json:"narratives,omitempty"`
 }
 
 // ProposalOptions configures Build. Location and Date define the local day;

@@ -92,6 +92,13 @@ func buildTarget(block proposal.ProposedTimeBlock, date string, evByID map[strin
 		if !ok {
 			continue
 		}
+		// Privacy guard: a journal item is private narrative text and NEVER
+		// contributes provenance or facts to an external request, even when it is
+		// manually linked to a timed activity. A manual item's user-authored text
+		// is likewise never forwarded.
+		if isPrivateEditorialSource(e.Kind) {
+			continue
+		}
 		fillProvenance(&t, e)
 		if f, ok := factFromEvidence(e); ok {
 			facts = append(facts, f)
@@ -156,5 +163,18 @@ func factFromEvidence(e evidence.Evidence) (Fact, bool) {
 		return Fact{Kind: FactEventTitle, Text: text}, true
 	default:
 		return Fact{}, false
+	}
+}
+
+// isPrivateEditorialSource reports whether an evidence kind carries private raw
+// text that must never be forwarded to an external editorial service. Journal
+// items are the owner's private narrative note; manual items are user-authored.
+// Neither contributes provenance or facts.
+func isPrivateEditorialSource(kind evidence.SourceKind) bool {
+	switch kind {
+	case evidence.SourceJournal, evidence.SourceManual:
+		return true
+	default:
+		return false
 	}
 }
