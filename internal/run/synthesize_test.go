@@ -158,3 +158,40 @@ func TestSynthesize_AccumulatesEditorialTotal(t *testing.T) {
 		t.Fatalf("want 20 accumulated tokens, got %d", rec.Usage.Editorial.Value)
 	}
 }
+
+// METRICS-1: the editorial COMPONENT fields accumulate additively so the metrics
+// layer can report the §3.5 input-to-step optimization metric without
+// re-deriving it from the total.
+func TestSynthesize_AccumulatesEditorialComponents(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	seedEvidence(t, store, date, []evidence.Evidence{gitEvidence("e1", "acme/repo", "fix parser")})
+	ed := &fakeEditor{usage: editorial.KnownUsage(10, 20, 3)}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Editor: ed}, Config{})
+
+	for i, repo := range []string{"acme/repo", "acme/other"} {
+		if i > 0 {
+			seedEvidence(t, store, date, []evidence.Evidence{gitEvidence("e2", repo, "tidy up")})
+		}
+		prop, err := r.Propose(ctx, date)
+		if err != nil {
+			t.Fatalf("Propose: %v", err)
+		}
+		if _, err := r.Synthesize(ctx, date, prop); err != nil {
+			t.Fatalf("Synthesize: %v", err)
+		}
+	}
+	rec, err := store.GetDay(ctx, date)
+	if err != nil {
+		t.Fatalf("GetDay: %v", err)
+	}
+	if !rec.Usage.EditorialInput.Known || rec.Usage.EditorialInput.Value != 20 {
+		t.Fatalf("editorial_input = %+v, want known 20", rec.Usage.EditorialInput)
+	}
+	if !rec.Usage.EditorialOutput.Known || rec.Usage.EditorialOutput.Value != 40 {
+		t.Fatalf("editorial_output = %+v, want known 40", rec.Usage.EditorialOutput)
+	}
+	if !rec.Usage.EditorialCache.Known || rec.Usage.EditorialCache.Value != 6 {
+		t.Fatalf("editorial_cache = %+v, want known 6", rec.Usage.EditorialCache)
+	}
+}

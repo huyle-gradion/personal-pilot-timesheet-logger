@@ -91,6 +91,13 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		printUsage(stdout)
 		return exitOK
 	}
+	// The metrics subcommand has its OWN subcommands (import/aggregate/report) that
+	// precede its flags, so it is dispatched before the shared flag set: the
+	// standard flag package stops at the first non-flag argument ("import"). It
+	// shares no state with the workflow runner and never triggers submission.
+	if sub == "metrics" {
+		return cmdMetrics(ctx, args[1:], stdout, stderr)
+	}
 
 	fs := flag.NewFlagSet("timesheet "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -183,6 +190,7 @@ Subcommands:
   submit      execute the record's ACTIVE approval: submit --date D [--approval <APPROVALID>]
   resolve     reconcile unresolved operations from --decisions
   run         preflight + collect + review + export convenience
+  metrics     token usage + durations (metrics import|aggregate|report|compare|run)
 
 Flags:
   --date YYYY-MM-DD        target date (default: today in the configured timezone)

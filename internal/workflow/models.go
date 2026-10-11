@@ -260,14 +260,23 @@ type EditorialSuggestion struct {
 // EditorialUsage is the durable daily usage report (ADDITIVE S7). Editorial and
 // orchestration usage are reported SEPARATELY and are never summed: an unknown
 // measurement is not zero.
+//
+// EditorialInput, EditorialOutput, and EditorialCache are ADDITIVE METRICS-1
+// component fields (SchemaVersion stays 1). They carry the editorial agent's
+// per-component usage so the metrics layer can report the §3.5 optimization
+// metric (editorial input sent to the step) without re-deriving it from the
+// total. Editorial (the total, including cache and retries) is unchanged.
 type EditorialUsage struct {
-	Date          string      `json:"date"`
-	Editorial     Measurement `json:"editorial"`
-	Orchestration Measurement `json:"orchestration"`
-	EditorialRuns int         `json:"editorial_runs"`
-	Invoked       bool        `json:"invoked"`
-	RuntimeMS     int64       `json:"runtime_ms"`
-	PeakRSSMB     float64     `json:"peak_rss_mb"`
+	Date            string      `json:"date"`
+	Editorial       Measurement `json:"editorial"`
+	EditorialInput  Measurement `json:"editorial_input"`
+	EditorialOutput Measurement `json:"editorial_output"`
+	EditorialCache  Measurement `json:"editorial_cache"`
+	Orchestration   Measurement `json:"orchestration"`
+	EditorialRuns   int         `json:"editorial_runs"`
+	Invoked         bool        `json:"invoked"`
+	RuntimeMS       int64       `json:"runtime_ms"`
+	PeakRSSMB       float64     `json:"peak_rss_mb"`
 }
 
 // Record is the durable per-day workflow document. It is stored separately from

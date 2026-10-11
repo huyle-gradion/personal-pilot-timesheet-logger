@@ -159,3 +159,38 @@ $TS export --config "$CFG" --date "$DATE"
 where `resolve.json` is an array of `{"operation_key": "...", "kind": "adopt"|"not_applied", "remote_id": "...", "local_id": "..."}`.
 
 **Output Seam**: durable per-operation outcomes and the exported daily note.
+
+---
+
+## Optional Step: `[Script]` Metrics (non-blocking)
+
+This step is **optional and non-blocking**. It records token usage for the day so
+the 3.5 optimization can be measured (3.6). A failure here prints a warning and
+**does not** change any workflow exit code and **never** triggers a submission or a
+replay. Skip it entirely if `$PI_SESSION` is unset.
+
+```bash
+$TS metrics import --transcript "$PI_SESSION" && $TS metrics report --date "$DATE"
+```
+
+- `import` reads the harness transcript and writes one run file; a reimport of an
+  unchanged transcript is a no-op (content hash match).
+- `aggregate` is required before `report` if the day's runs changed:
+  `$TS metrics aggregate --date "$DATE"`.
+- `report --format json` prints the `DailyAggregate` verbatim; the default table
+  prints fixed ASCII columns. Over `--from/--to`, `--format json` emits ONE JSON
+  array of aggregates.
+- `compare --base D --target D` shows the base→target delta/percentage per metric
+  (a percentage only when the base is Known and non-zero; otherwise `n/a`).
+- `run -- <command...>` records a live monotonic run for a command and derives its
+  state from the exit code (0→completed, 3→blocked, else→failed).
+- `--commit`, `--workflow-version`, `--config-mode`, and `--optimization-change`
+  annotate a run so a later `compare` can cite what changed between two days.
+- The transcript adapter extracts only counters, ids, timestamps, the `timesheet`
+  subcommand token, and provider-native numeric cost; message text, tool arguments,
+  and tool results are never persisted. A claude-schema run is marked
+  `[declared schema]`.
+
+Attribution to a workflow step is a **labelled heuristic** over the `timesheet`
+subcommand token in the assistant turn that issued the tool call (see
+`docs/adr/0006-metrics-contract.md`).

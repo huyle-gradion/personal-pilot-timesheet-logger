@@ -101,6 +101,18 @@ func accumulateUsage(rec *workflow.Record, res editorial.Result) workflow.Editor
 	} else {
 		out.Editorial = workflow.UnknownMeasurement()
 	}
+	// METRICS-1: accumulate the editorial COMPONENT usage additively. A fresh day
+	// (no prior report) starts from a KNOWN zero for each component, mirroring the
+	// total's prior handling, so the first run's components are recorded rather
+	// than lost to an absent prior. A persisted-but-unknown prior component stays
+	// UNKNOWN (never silently zeroed).
+	priorInput, priorOutput, priorCache := workflow.KnownMeasurement(0), workflow.KnownMeasurement(0), workflow.KnownMeasurement(0)
+	if rec.Usage != nil {
+		priorInput, priorOutput, priorCache = prior.EditorialInput, prior.EditorialOutput, prior.EditorialCache
+	}
+	out.EditorialInput = addComponent(priorInput, res.Report.Editorial.Input)
+	out.EditorialOutput = addComponent(priorOutput, res.Report.Editorial.Output)
+	out.EditorialCache = addComponent(priorCache, res.Report.Editorial.Cache)
 	out.EditorialRuns = prior.EditorialRuns + res.Report.EditorialRuns
 	out.Invoked = prior.Invoked || res.Report.Invoked
 	out.RuntimeMS = res.Report.RuntimeMS
@@ -148,6 +160,16 @@ func editorialCache(rec *workflow.Record) map[string]editorial.Suggestion {
 		cache[s.TargetID] = s
 	}
 	return cache
+}
+
+// addComponent accumulates a workflow.Measurement componentwise. It is Known only
+// when both operands are Known; a mixed/unknown component stays Unknown (never
+// zero). It is the METRICS-1 editorial-component accumulator.
+func addComponent(a, b workflow.Measurement) workflow.Measurement {
+	if !a.Known || !b.Known {
+		return workflow.UnknownMeasurement()
+	}
+	return workflow.KnownMeasurement(a.Value + b.Value)
 }
 
 func appendUnique(dst []string, values ...string) []string {

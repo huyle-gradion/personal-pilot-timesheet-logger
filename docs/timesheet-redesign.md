@@ -127,7 +127,9 @@ Store credentials in macOS Keychain using explicit service/account references. T
 
 AI may propose titles and descriptions only. It cannot change intervals, attendance, projects, evidence links, or approvals. Descriptions must reflect evidence; a commit does not prove shipment or improved performance.
 
-Use a soft daily target of 600 editorial input-plus-output tokens, including retries and reruns. Reuse unchanged summaries. Budget exhaustion falls back to deterministic text or manual edits, never blocks review. Report orchestration separately and record unavailable usage honestly rather than as zero. Record runtime and memory measurements without treating them as proof of asymptotic complexity.
+Use a soft daily target of **1,000** editorial tokens/day, counting input, output, and cache tokens across retries and reruns. This is an explicit owner override of the specification's historical 600-token target (`internal/editorial/model.go:37`). Reuse unchanged summaries. Budget exhaustion falls back to deterministic text or manual edits, never blocks review. Report orchestration separately and record unavailable usage honestly rather than as zero. Record runtime and memory measurements without treating them as proof of asymptotic complexity.
+
+The legacy `benchmark.DefaultTokenCeiling = 600` (`internal/benchmark/models.go:11`) is **stale** and does not reflect the current target; it is left unchanged deliberately (no legacy-code edits) and must not be cited as the current budget.
 
 The original bare-JSON and per-call token choices are not additional binding requirements. Choose and validate the editorial output contract during implementation without weakening the text-only boundary.
 
