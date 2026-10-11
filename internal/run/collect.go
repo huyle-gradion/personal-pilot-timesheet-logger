@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence/plugins"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -25,7 +26,8 @@ type CollectResult struct {
 // Collect runs the registry for the day and merges the evidence into the record
 // under the store. Collection proceeds independently of review or submission.
 func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error) {
-	ev, summary, err := r.deps.Registry.CollectDay(ctx, r.cfg.Evidence.Sources, evidence.CollectRequest{Date: date})
+	resolved := r.resolveCalendarSources(ctx, r.cfg.Evidence.Sources)
+	ev, summary, err := r.deps.Registry.CollectDay(ctx, resolved, evidence.CollectRequest{Date: date})
 	if err != nil {
 		return CollectResult{Date: date, Summary: summary}, err
 	}
@@ -56,6 +58,46 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 		return out, err
 	}
 	return out, nil
+}
+
+// resolveCalendarSources returns a COPY of sources with each ENABLED calendar
+// source's keychain url_ref resolved IN MEMORY into Config[source] immediately
+// before collection. It never mutates the caller's/Runner's config: a source with
+// a resolvable reference gets a fresh copied Config map, and every other source is
+// passed through unchanged (its map shared but never written). Only calendar
+// sources are touched; the reference itself is left intact.
+//
+// A resolution failure (NotFound or any other error) leaves source UNSET so the
+// calendar plugin reports incomplete (SOURCE_ERROR). It never aborts the run,
+// never fabricates a source, and never resolves any non-calendar source. The
+// resolved ICS URL is a SECRET: it is placed only in the returned in-memory copy
+// and is never persisted to a record, export, log, warning, or error. Preflight
+// semantics are unaffected: this runs at collection only.
+func (r *Runner) resolveCalendarSources(ctx context.Context, sources []evidence.SourceConfig) []evidence.SourceConfig {
+	out := make([]evidence.SourceConfig, len(sources))
+	copy(out, sources)
+	for i := range out {
+		s := out[i]
+		if !s.Enabled || s.Type != evidence.SourceCalendar {
+			continue
+		}
+		service, ok := keychainService(s.Config[plugins.CalendarConfigURLRef])
+		if !ok {
+			continue
+		}
+		secret, err := r.keychainResolver().Lookup(ctx, service, "")
+		if err != nil || strings.TrimSpace(secret) == "" {
+			continue
+		}
+		// Copy the map before writing so the caller's config is never mutated.
+		cfg := make(map[string]string, len(s.Config)+1)
+		for k, v := range s.Config {
+			cfg[k] = v
+		}
+		cfg[plugins.CalendarConfigSource] = secret
+		out[i].Config = cfg
+	}
+	return out
 }
 
 // enabledSourceCount returns the number of enabled sources.

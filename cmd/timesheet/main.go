@@ -113,7 +113,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		to            = fs.String("to", "", "range end YYYY-MM-DD")
 		configPath    = fs.String("config", "", "path to the JSON config document")
 		storageDir    = fs.String("storage-dir", "", "workflow record directory (overrides config)")
-		offline       = fs.Bool("offline", false, "never contact the remote (no reads or writes)")
+		offline       = fs.Bool("offline", false, "skip the Gradion remote; source fetches (e.g. calendar ICS) still run")
 		deep          = fs.Bool("deep", false, "validate ALL configured sources (including disabled) during preflight")
 		editorialOn   = fs.Bool("editorial", true, "enable the optional editorial agent when configured")
 		noEditorial   = fs.Bool("no-editorial", false, "disable the editorial agent (deterministic text only)")
@@ -204,7 +204,7 @@ Flags:
   --from/--to YYYY-MM-DD   iterate days with per-day review/approval
   --config FILE            JSON config document
   --storage-dir DIR        workflow record directory (default: ~/.timesheet/records)
-  --offline                never contact the remote
+  --offline                skip the Gradion remote; source fetches (e.g. calendar ICS) still run
   --deep                   validate ALL configured sources (including disabled) during preflight
   --editorial/--no-editorial  toggle the optional editorial agent
   --decisions FILE         decisions JSON ({date} substituted per day)

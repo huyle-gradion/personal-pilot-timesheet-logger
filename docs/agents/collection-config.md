@@ -120,6 +120,40 @@ Secrets live in the macOS Keychain and are referenced as
 `keychain:<service>`. A raw secret in config is rejected (see
 `docs/agents/credentials.md`).
 
+## Calendar source keys
+
+A calendar source is one entry in `evidence.sources` with `"type": "calendar"`:
+
+| Key | Meaning |
+| --- | --- |
+| `url_ref` | **Required** `keychain:<service>` reference to the ICS feed URL. Never a raw URL. |
+| `user_email` | Optional owner email used to match invitations. |
+| `timezone` | Optional IANA timezone for date-window parsing. |
+| `cache_path` / `no_cache` | Optional local ICS cache controls. |
+| `fixture` / `fixture_date` | **Test-only** fixed input for fixture-based contract/determinism verification. NEVER required at runtime. |
+
+Rules:
+
+- **`url_ref` is resolved in memory at collection time.** Immediately before
+  collection, `internal/run` resolves each ENABLED calendar source's `url_ref` and
+  places the resolved ICS feed URL in an in-memory copy of that source's
+  `config["source"]`. The resolved URL is **never persisted**: it is not written
+  to the JSON config, a record, an export, a log, a warning, or an error message.
+  `preflight` resolves `url_ref` ONLY to verify the secret is present (a missing
+  item fails the check with `RUN_PREFLIGHT_KEYCHAIN_MISSING`); it never populates
+  `source` and never persists the value. Populating `source` happens at COLLECTION
+  time (in `internal/run.Collect`) on an in-memory copy.
+- **The source `id` is the non-secret identity namespace** (the configured feed
+  id), never the feed URL or a filesystem path; the contract check refuses an id
+  that looks like a URL/path.
+- **A missing or unresolvable secret is visibly incomplete, never fatal.** A
+  Keychain `NotFound` (or any resolution failure) leaves `source` UNSET, so the
+  calendar source reports `incomplete` (`SOURCE_ERROR`) with zero events. The run
+  does **not** abort, no source is fabricated, and the source requires an explicit
+  acknowledgment (`--ack <source-id>`) before `preview`/`submit`.
+- **`--offline` does not suppress a calendar fetch.** The calendar ICS fetch is a
+  **source** fetch, not a Gradion remote call; `--offline` skips only the remote.
+
 ## Command sequence
 
 `help` (actual output):
@@ -143,7 +177,7 @@ Flags:
   --from/--to YYYY-MM-DD   iterate days with per-day review/approval
   --config FILE            JSON config document
   --storage-dir DIR        workflow record directory (default: ~/.timesheet/records)
-  --offline                never contact the remote
+  --offline                skip the Gradion remote; source fetches (e.g. calendar ICS) still run
   --deep                   validate ALL configured sources (including disabled) during preflight
   --editorial/--no-editorial  toggle the optional editorial agent
   --decisions FILE         decisions JSON ({date} substituted per day)
