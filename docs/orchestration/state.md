@@ -762,6 +762,20 @@ Vault sync status: complete - project note and daily note updated.
 Next gate and blockers: production submission remains blocked (live-authority verification and an owner-approved exact daily plan are still required).
 ```
 
+```text
+2026-10-11 / CALENDAR-WIRING-1 / authorized -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: owner-authorized bounded slice (wire the calendar source so calendar events actually collect); local commit; vault update. Not authorized: live access, credentials, Keychain changes, remote writes, push/merge/publication.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 8d27079 (parent 9801a07) / 4 files: internal/run/collect.go (modified), internal/run/calendar_source_test.go (new), cmd/timesheet/main.go (modified), docs/agents/collection-config.md (modified). md5s matched the accepted fix1 manifest (.../opencode/calendar-wiring-1-fix1-manifest.txt).
+Worker/reviewer report references and verification level: @fixer (ses_ed553c3c6ffexAsf5kmTi21Tve) implement + fix; @oracle independent review (ses_ed54ed3e0ffe5PynAzJjT5jncW) verdict "commit yes / release conditional pass" (F1 Low doc; F2 Low defense-in-depth; F3 Low help text; F4 Info; F5 pre-existing), focused re-review "F1/F3/F4 closed; commit yes; release ready". Orchestrator build/vet/tests/race/e2e and `git diff --check` green.
+Root cause: the calendar plugin's live fetch requires config["source"] (the resolved ICS URL), but no shared-core code populated it from `url_ref: keychain:<service>`; only the retired cmd/fetch-calendar referenced keychain.ServiceCalendarFeed. So every live calendar source failed SOURCE_ERROR ("calendar: no resolved source configured") and produced ZERO events.
+Behavior: internal/run.Collect now resolves enabled calendar sources' url_ref IN MEMORY on a COPY of the source config (the Runner/caller config is never mutated) and passes the resolved copy to Registry.CollectDay, via the existing keychain seam. A resolution failure leaves source unset, so the source reports incomplete (SOURCE_ERROR) with zero events and the run does NOT abort; the resolved secret is never persisted. Docs clarify that preflight resolves url_ref ONLY to verify presence (a missing item fails the check) and that `--offline` skips only the Gradion remote while source fetches (calendar ICS) still run. Hermetic tests cover resolve+evidence, NotFound-fail-closed, no mutation, and secret-never-persisted (success + error paths).
+Open findings and disposition: F1/F3/F4 closed. Carried: F2 (the resolved in-memory "source" key is outside the registry's serialized redaction net; no leak today, enforced by construction plus sentinel tests); F5 (redaction is a bounded literal substring check); a missing secret and a genuine fetch/parse failure both surface as calendar SOURCE_ERROR at collection time (preflight distinguishes a missing item as RUN_PREFLIGHT_KEYCHAIN_MISSING).
+Commit and publication status: committed locally 8d27079; NOT pushed, no PR, no merge.
+Vault sync status: complete - project note and daily note updated.
+Hygiene note: a stray untracked file `0` (a leftover shell redirect from a preview run) sits in the repo root; it was NOT staged or committed and should be removed or ignored by the owner.
+Next gate and blockers: production submission remains blocked (live-authority verification and an owner-approved exact daily plan are still required). Live calendar collection has NOT been exercised against the real Keychain; the fix is verified hermetically only. F2 does not independently block release readiness.
+```
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
