@@ -671,6 +671,18 @@ Vault sync status: complete - project note and daily note updated.
 Next gate and blockers: none pending; production submission remains blocked (a pilot requires a separately approved exact daily plan). Live collection remains unverified.
 ```
 
+```text
+2026-10-11 / PREFLIGHT-RUNTIME-1 / authorized -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: owner-authorized bounded runtime-contract fix (separate runtime source validation from fixture-based behavioral testing); local commit of the accepted slice; vault update. Not authorized: push/publish/merge, live service access, Keychain changes, production writes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 4589598 (parent 4a16e9b) / 14 files: internal/evidence/{registry,registry_test}.go; internal/evidence/plugins/{git_test,calendar_test}.go; internal/run/{preflight,preflight_test,collect_test,run}.go; cmd/timesheet/{main,main_test}.go; tests/e2e_test.go; docs/agents/collection-config.md; .claude/skills/timesheet/{workflow,SKILL}.md. md5s matched the accepted fix1 manifest before commit (.../opencode/preflight-runtime-1-fix1-manifest.txt).
+Worker/reviewer report references and verification level: @fixer PREFLIGHT-RUNTIME-1 (ses_ed6ee4f72ffehA4jJS3C6dm3so) implement + fix; @oracle independent review (ses_ed6aec615ffeyLR6B0Bak72yBV) verdict "commit yes / production no" (F1 Low introduced; F2 Low pre-existing); focused re-review "F1/F2 closed; commit yes". Orchestrator gofmt/build/vet/tests/race/e2e green on the committed snapshot.
+Behavior: runtime source validation (new Registry.ValidateSources: config requirements + plugin CheckContract) is separated from fixture-based behavioral/determinism verification (VerifyContracts/PreflightContracts, now test-only). preflight no longer requires a fixture for git/calendar/agent sources; git mode:local passes preflight offline without a GitHub credential or network. The source check is renamed contracts -> configuration (RUN_PREFLIGHT_CONFIGURATION_INVALID); --deep validates ALL configured sources (disabled reported skipped) without fixtures; disabled sources never block (the credential loop now skips them) while enabled sources stay fail-closed. Skill workflow, CLI help, and docs are aligned to configuration semantics; preflight does not claim live source availability.
+Open findings and disposition: F1/F2 closed. Carried Info: F3 (--deep reports a disabled unknown-type source as skipped, by design); F4 (skill/CLI parity is structural; wording hand-maintained); F5 (this record resolves the earlier stale ledger note - the dead run.GitSourceEnabled was removed in this slice). No fixtures added to production examples.
+Commit and publication status: committed locally 4589598; NOT pushed, no PR, no merge.
+Vault sync status: complete - project note and daily note updated.
+Next gate and blockers: none pending; production submission remains blocked (a pilot requires a separately approved exact daily plan). Live source availability remains unverified and is exercised by review, not preflight.
+```
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
