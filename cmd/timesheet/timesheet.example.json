@@ -18,7 +18,8 @@
         "type": "git",
         "enabled": true,
         "config": {
-          "repos": ".",
+          "mode": "local",
+          "local_repos": ".",
           "author": "you@example.com"
         }
       }

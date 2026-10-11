@@ -77,8 +77,8 @@ func (r *Runner) Preflight(ctx context.Context, opts PreflightOptions) (Prefligh
 	if err != nil {
 		fail("git_credential", gitErrorCode(err), "git credential resolution failed")
 		terminal = true
-	} else if token == "" && r.gitSourceEnabled() {
-		fail("git_credential", CodeGitCredentialMissing, "no GitHub credential resolved for an enabled git source")
+	} else if token == "" && r.gitRemoteSourceEnabled() {
+		fail("git_credential", CodeGitCredentialMissing, "no GitHub credential resolved for an enabled remote git source")
 		terminal = true
 	}
 	if terminal {
@@ -132,7 +132,8 @@ func allPassed(checks []Check) bool {
 
 // GitSourceEnabled reports whether any enabled source needs a git credential. It
 // covers the evidence git kinds AND the registered git plugin type
-// (plugins.TypeGit), so a real config's git source is never missed.
+// (plugins.TypeGit), so a real config's git source is never missed. It is
+// type-based; use GitRemoteSourceEnabled for the credential decision.
 func GitSourceEnabled(sources []evidence.SourceConfig) bool {
 	for _, s := range sources {
 		if !s.Enabled {
@@ -146,8 +147,33 @@ func GitSourceEnabled(sources []evidence.SourceConfig) bool {
 	return false
 }
 
-// gitSourceEnabled reports whether this runner's config needs a git credential.
-func (r *Runner) gitSourceEnabled() bool { return GitSourceEnabled(r.cfg.Evidence.Sources) }
+// GitRemoteSourceEnabled reports whether any enabled source needs a REMOTE
+// (GitHub) credential. It is MODE-AWARE for the git plugin type: a git source
+// whose mode is "local" needs no remote credential, while an absent mode
+// (default "both"), "remote", or "both" does. The bare evidence git kinds keep
+// their historical type-based behavior.
+func GitRemoteSourceEnabled(sources []evidence.SourceConfig) bool {
+	for _, s := range sources {
+		if !s.Enabled {
+			continue
+		}
+		switch s.Type {
+		case evidence.SourceLocalGit, evidence.SourceRemotePR:
+			return true
+		case plugins.TypeGit:
+			if plugins.GitModeRequiresRemote(s) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// gitRemoteSourceEnabled reports whether this runner's config needs a remote git
+// credential.
+func (r *Runner) gitRemoteSourceEnabled() bool {
+	return GitRemoteSourceEnabled(r.cfg.Evidence.Sources)
+}
 
 // gitErrorCode maps a git credential resolution error to an accurate, secret-free
 // code: a Keychain operating error keeps its own code; anything else is a plain

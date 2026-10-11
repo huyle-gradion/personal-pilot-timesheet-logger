@@ -19,10 +19,46 @@ const TypeGit evidence.SourceKind = "git"
 
 // Git config keys.
 const (
-	GitConfigRepos      = "repos"
-	GitConfigAuthor     = "author"
+	// GitConfigRepos is a comma-separated list of REMOTE owner/repo slugs. It is
+	// required only when mode includes remote.
+	GitConfigRepos = "repos"
+	// GitConfigAuthor optionally filters local commits by author.
+	GitConfigAuthor = "author"
+	// GitConfigProjectMap is a JSON object of repo -> project.
 	GitConfigProjectMap = "project_map"
-	GitConfigFixture    = "fixture"
+	// GitConfigFixture is the fixed contract-mode input path.
+	GitConfigFixture = "fixture"
+	// GitConfigMode selects the collected sub-sources: "local", "remote", or
+	// "both" (the default when absent).
+	GitConfigMode = "mode"
+	// GitConfigLocalRepos is a comma-separated list of explicit LOCAL CHECKOUT
+	// PATHS. It defaults to "." when absent (preserving the historical CWD
+	// behavior). A filesystem path is never used as repository identity.
+	GitConfigLocalRepos = "local_repos"
+)
+
+// Git modes.
+const (
+	GitModeLocal  = "local"
+	GitModeRemote = "remote"
+	GitModeBoth   = "both"
+)
+
+// Stable git contract-check codes and secret-free collection warnings. Callers
+// branch on these, never on message text. Warnings never contain a path or
+// secret.
+const (
+	CodeGitReposRequired     = "GIT_REPOS_REQUIRED"
+	CodeGitProjectMapInvalid = "GIT_PROJECT_MAP_INVALID"
+	CodeGitModeInvalid       = "GIT_MODE_INVALID"
+	// WarningGitRemoteFetchFailed marks a remote sub-source failure. Local
+	// evidence from the same collection is retained and the source is partial.
+	WarningGitRemoteFetchFailed = "GIT_REMOTE_FETCH_FAILED"
+	// WarningGitLocalFetchFailed marks a local sub-source fetch failure.
+	WarningGitLocalFetchFailed = "GIT_LOCAL_FETCH_FAILED"
+	// WarningGitLocalIdentityUnresolved marks a local checkout whose repository
+	// identity could not be resolved. The checkout path is deliberately omitted.
+	WarningGitLocalIdentityUnresolved = "GIT_LOCAL_IDENTITY_UNRESOLVED"
 )
 
 // GitHubPRSource fetches remote commits and pull requests for one repo/day. The
@@ -54,6 +90,11 @@ func (a GitHubClientAdapter) FetchRemoteDayActivity(ctx context.Context, repo st
 // never from a branch name.
 type LocalGitSource interface {
 	CurrentBranch(ctx context.Context) string
+	// RepoName returns the local checkout's repository identity: "owner/repo"
+	// from remote.origin.url when present, else the checkout basename. It is a
+	// non-secret provenance value; the checkout path itself is never used as
+	// identity.
+	RepoName(ctx context.Context) string
 	FetchDayCommits(ctx context.Context, author string, date time.Time) ([]git.GitHubCommit, error)
 	DiscoverPRReferences(commits []git.GitHubCommit) map[int][]git.GitHubCommit
 }
@@ -69,6 +110,14 @@ func (a LocalGitCollectorAdapter) CurrentBranch(ctx context.Context) string {
 		return ""
 	}
 	return a.Collector.CurrentBranch(ctx)
+}
+
+// RepoName implements LocalGitSource.
+func (a LocalGitCollectorAdapter) RepoName(ctx context.Context) string {
+	if a.Collector == nil {
+		return ""
+	}
+	return a.Collector.RepoName(ctx)
 }
 
 // FetchDayCommits implements LocalGitSource.
@@ -90,7 +139,12 @@ func (a LocalGitCollectorAdapter) DiscoverPRReferences(commits []git.GitHubCommi
 // GitPlugin collects local commits and remote PR activity with deduplication.
 type GitPlugin struct {
 	GitHub GitHubPRSource
-	Local  LocalGitSource
+	// Local is the local source used for the configured path ".". It is the
+	// historical injection seam and is used when Local non-nil.
+	Local LocalGitSource
+	// LocalFactory builds a per-path local source for explicit local_repos paths.
+	// A nil factory falls back to git.NewLocalGitCollector(path).
+	LocalFactory func(path string) LocalGitSource
 }
 
 // NewGitPlugin returns a git plugin over the injected sources. The GitHub source
@@ -100,12 +154,38 @@ func NewGitPlugin(github GitHubPRSource, local LocalGitSource) *GitPlugin {
 	return &GitPlugin{GitHub: github, Local: local}
 }
 
+// hasLocalSource reports whether any local capability was injected. When neither
+// Local nor LocalFactory is set, the plugin has no local source to collect from
+// and does not fabricate one, so a synthetic remote-only plugin instance cannot
+// spawn a git subprocess in the process working directory.
+func (p *GitPlugin) hasLocalSource() bool {
+	return p.Local != nil || p.LocalFactory != nil
+}
+
+// localFor resolves the local source for one configured checkout path. A "." path
+// uses the injected Local (the historical seam); otherwise the factory, else the
+// default git.NewLocalGitCollector(path).
+func (p *GitPlugin) localFor(path string) LocalGitSource {
+	if path == "" {
+		path = "."
+	}
+	if path == "." && p.Local != nil {
+		return p.Local
+	}
+	if p.LocalFactory != nil {
+		return p.LocalFactory(path)
+	}
+	return LocalGitCollectorAdapter{Collector: git.NewLocalGitCollector(path)}
+}
+
 // Type implements evidence.Plugin.
 func (p *GitPlugin) Type() evidence.SourceKind { return TypeGit }
 
-// RequiredConfig implements evidence.Plugin.
+// RequiredConfig implements evidence.Plugin. The repos key is declared but not
+// unconditionally required: it is required only when mode includes remote, and
+// that conditional requirement is enforced by CheckContract.
 func (p *GitPlugin) RequiredConfig() []evidence.ConfigRequirement {
-	return []evidence.ConfigRequirement{{Key: GitConfigRepos, Secret: false, Required: true}}
+	return []evidence.ConfigRequirement{{Key: GitConfigRepos, Secret: false, Required: false}}
 }
 
 // DeclaredEvidenceKinds implements evidence.Plugin.
@@ -113,34 +193,69 @@ func (p *GitPlugin) DeclaredEvidenceKinds() []evidence.SourceKind {
 	return []evidence.SourceKind{evidence.SourceRemotePR, evidence.SourceLocalGit}
 }
 
-// CheckContract implements evidence.Plugin. It verifies at least one repository
-// is configured and that any project map is valid JSON.
+// CheckContract implements evidence.Plugin. It enforces mode-appropriate config
+// with stable codes: an invalid mode fails; mode remote/both requires at least
+// one repos slug; mode local/both requires at least one local path (the default
+// "." satisfies it); any project map must be valid JSON.
 func (p *GitPlugin) CheckContract(_ context.Context, cfg evidence.SourceConfig) []evidence.ContractCheck {
-	if len(splitList(cfg.Config[GitConfigRepos])) == 0 {
+	mode, ok := gitModeOf(cfg)
+	if !ok {
 		return []evidence.ContractCheck{{
-			Name:   "git_repos",
+			Name:   "git_mode",
 			Passed: false,
-			Code:   "GIT_REPOS_REQUIRED",
-			Detail: "at least one repository is required",
+			Code:   CodeGitModeInvalid,
+			Detail: "mode must be one of local, remote, both",
 		}}
 	}
+
+	var checks []evidence.ContractCheck
+
+	if modeIncludesRemote(mode) {
+		if len(splitList(cfg.Config[GitConfigRepos])) == 0 {
+			checks = append(checks, evidence.ContractCheck{
+				Name:   "git_repos",
+				Passed: false,
+				Code:   CodeGitReposRequired,
+				Detail: "at least one repository is required when mode includes remote",
+			})
+		} else {
+			checks = append(checks, evidence.ContractCheck{Name: "git_repos", Passed: true})
+		}
+	}
+
+	if modeIncludesLocal(mode) {
+		// An absent/empty local_repos defaults to ".", so "at least one local
+		// path" is always satisfied: there is no reachable failure for this
+		// requirement. The check is recorded as passing for observability.
+		checks = append(checks, evidence.ContractCheck{Name: "git_local_repos", Passed: true})
+	}
+
 	if _, err := parseProjectMap(cfg.Config[GitConfigProjectMap]); err != nil {
-		return []evidence.ContractCheck{{
+		checks = append(checks, evidence.ContractCheck{
 			Name:   "git_project_map",
 			Passed: false,
-			Code:   "GIT_PROJECT_MAP_INVALID",
+			Code:   CodeGitProjectMapInvalid,
 			Detail: "project_map must be a JSON object of repo -> project",
-		}}
+		})
+	} else {
+		checks = append(checks, evidence.ContractCheck{Name: "git_project_map", Passed: true})
 	}
-	return []evidence.ContractCheck{{Name: "git_repos", Passed: true}}
+
+	return checks
 }
 
 // Collect implements evidence.Plugin. It deduplicates commits and PRs: a commit
 // claimed by a PR is folded into the PR record (counts once, both refs retained);
 // an unclaimed commit is a standalone local_git record. It never infers a PR
 // number from a branch name.
+//
+// A remote sub-source failure does NOT abort collection: local evidence is
+// retained and the source is reported as StatusPartial with a stable warning, so
+// a partial collection is never presented as complete and its evidence is never
+// dropped. Only an unreadable project map or an invalid target date fails the
+// source outright.
 func (p *GitPlugin) Collect(ctx context.Context, cfg evidence.SourceConfig, req evidence.CollectRequest) (evidence.CollectResult, error) {
-	activities, err := p.gather(ctx, cfg, req)
+	activities, warnings, partial, err := p.gather(ctx, cfg, req)
 	if err != nil {
 		return evidence.CollectResult{}, err
 	}
@@ -154,9 +269,17 @@ func (p *GitPlugin) Collect(ctx context.Context, cfg evidence.SourceConfig, req 
 		return evidence.CollectResult{}, err
 	}
 
+	status := evidence.StatusComplete
+	if partial {
+		status = evidence.StatusPartial
+	}
 	return evidence.CollectResult{
 		Evidence: evs,
-		Result:   evidence.SourceResult{Status: evidence.StatusComplete, EvidenceCount: len(evs)},
+		Result: evidence.SourceResult{
+			Status:        status,
+			EvidenceCount: len(evs),
+			Warnings:      warnings,
+		},
 	}, nil
 }
 
@@ -169,43 +292,110 @@ type gitRepoActivity struct {
 }
 
 // gather collects raw activity per configured repository. Contract mode uses a
-// fixed fixture; live mode uses the injected sources and never touches a source
-// twice.
-func (p *GitPlugin) gather(ctx context.Context, cfg evidence.SourceConfig, req evidence.CollectRequest) ([]gitRepoActivity, error) {
+// fixed fixture; live mode honors the configured mode:
+//
+//   - mode includes remote: fetch GitHub activity. A fetch error is recorded as a
+//     warning and collection continues with local (never aborts).
+//   - mode includes local: collect from each configured local checkout path.
+//   - mode == local: GitHub is never called at all.
+//
+// Activities are grouped by canonical repo key, so a remote slug and a local
+// checkout that resolve to the same identity are folded together. The returned
+// partial flag is true when any configured sub-source failed.
+func (p *GitPlugin) gather(ctx context.Context, cfg evidence.SourceConfig, req evidence.CollectRequest) ([]gitRepoActivity, []string, bool, error) {
 	if req.IsContract() {
-		return loadGitFixture(cfg.Config[GitConfigFixture])
+		acts, err := loadGitFixture(cfg.Config[GitConfigFixture])
+		return acts, nil, false, err
 	}
 
+	mode, ok := gitModeOf(cfg)
+	if !ok {
+		return nil, nil, false, errors.New("git: invalid mode")
+	}
 	date, err := parseDate(req.Date)
 	if err != nil {
-		return nil, errors.New("git: invalid target date")
+		return nil, nil, false, errors.New("git: invalid target date")
 	}
 	author := strings.TrimSpace(cfg.Config[GitConfigAuthor])
 
-	var out []gitRepoActivity
-	for _, repo := range splitList(cfg.Config[GitConfigRepos]) {
-		repoKey := evidence.CanonicalRepoKey(repo, repo)
-		if repoKey == "" {
-			return nil, fmt.Errorf("git: repository %q has no valid identity", repo)
+	var order []string
+	byKey := map[string]*gitRepoActivity{}
+	activity := func(key string) *gitRepoActivity {
+		if a, ok := byKey[key]; ok {
+			return a
 		}
-		act := gitRepoActivity{RepoKey: repoKey}
-		if p.GitHub != nil {
+		a := &gitRepoActivity{RepoKey: key}
+		byKey[key] = a
+		order = append(order, key)
+		return a
+	}
+
+	var warnings []string
+	seenWarning := map[string]bool{}
+	addWarning := func(code string) {
+		if seenWarning[code] {
+			return
+		}
+		seenWarning[code] = true
+		warnings = append(warnings, code)
+	}
+	partial := false
+
+	if modeIncludesRemote(mode) {
+		for _, repo := range splitList(cfg.Config[GitConfigRepos]) {
+			repoKey := evidence.CanonicalRepoKey(repo, repo)
+			if repoKey == "" {
+				return nil, nil, false, fmt.Errorf("git: repository %q has no valid identity", repo)
+			}
+			act := activity(repoKey)
+			if p.GitHub == nil {
+				continue
+			}
 			commits, prs, fetchErr := p.GitHub.FetchRemoteDayActivity(ctx, repo, date)
 			if fetchErr != nil {
-				return nil, errors.New("git: remote fetch failed")
+				// A remote failure never aborts collection: local evidence is
+				// retained and the failure is reported via a stable warning
+				// (deduplicated across failing repos).
+				addWarning(WarningGitRemoteFetchFailed)
+				partial = true
+				continue
 			}
 			act.Commits = append(act.Commits, commits...)
 			act.PRs = append(act.PRs, prs...)
 		}
-		if p.Local != nil {
-			commits, fetchErr := p.Local.FetchDayCommits(ctx, author, date)
+	}
+
+	if modeIncludesLocal(mode) && p.hasLocalSource() {
+		locals := splitList(cfg.Config[GitConfigLocalRepos])
+		if len(locals) == 0 {
+			locals = []string{"."}
+		}
+		for _, path := range locals {
+			local := p.localFor(path)
+			name := ""
+			if local != nil {
+				name = local.RepoName(ctx)
+			}
+			// Derive identity from the checkout itself; the path is never used.
+			// With no resolvable identity the failures are visible, secret-free,
+			// and the path is never leaked.
+			repoKey := evidence.CanonicalRepoKey(name, cfg.ID)
+			if repoKey == "" {
+				addWarning(WarningGitLocalIdentityUnresolved)
+				partial = true
+				continue
+			}
+			act := activity(repoKey)
+			commits, fetchErr := local.FetchDayCommits(ctx, author, date)
 			if fetchErr != nil {
-				return nil, errors.New("git: local fetch failed")
+				addWarning(WarningGitLocalFetchFailed)
+				partial = true
+				continue
 			}
 			act.Commits = append(act.Commits, commits...)
-			act.Branch = p.Local.CurrentBranch(ctx)
+			act.Branch = local.CurrentBranch(ctx)
 
-			groups := p.Local.DiscoverPRReferences(commits)
+			groups := local.DiscoverPRReferences(commits)
 			nums := make([]int, 0, len(groups))
 			for n := range groups {
 				nums = append(nums, n)
@@ -222,9 +412,45 @@ func (p *GitPlugin) gather(ctx context.Context, cfg evidence.SourceConfig, req e
 				act.PRs = append(act.PRs, pr)
 			}
 		}
-		out = append(out, act)
 	}
-	return out, nil
+
+	out := make([]gitRepoActivity, 0, len(order))
+	for _, key := range order {
+		out = append(out, *byKey[key])
+	}
+	return out, warnings, partial, nil
+}
+
+// gitModeOf parses the configured mode. An absent mode defaults to "both"
+// (backward compatible). An unrecognized mode is invalid.
+func gitModeOf(cfg evidence.SourceConfig) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(cfg.Config[GitConfigMode])) {
+	case "":
+		return GitModeBoth, true
+	case GitModeLocal:
+		return GitModeLocal, true
+	case GitModeRemote:
+		return GitModeRemote, true
+	case GitModeBoth:
+		return GitModeBoth, true
+	default:
+		return "", false
+	}
+}
+
+func modeIncludesRemote(mode string) bool { return mode == GitModeRemote || mode == GitModeBoth }
+func modeIncludesLocal(mode string) bool  { return mode == GitModeLocal || mode == GitModeBoth }
+
+// GitModeRequiresRemote reports whether a git source config requires a remote
+// (GitHub) credential. It is false ONLY for an explicit "local" mode. An absent
+// mode defaults to "both" and requires a credential; an unrecognized mode is
+// treated conservatively as requiring one (CheckContract fails it regardless).
+func GitModeRequiresRemote(cfg evidence.SourceConfig) bool {
+	mode, ok := gitModeOf(cfg)
+	if !ok {
+		return true
+	}
+	return modeIncludesRemote(mode)
 }
 
 // buildGitEvidence folds commits into PRs and emits standalone commits, with a

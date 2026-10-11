@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,17 +27,35 @@ func (f *fakeGitHub) FetchRemoteDayActivity(context.Context, string, time.Time) 
 
 // fakeLocal returns fixed local activity and a current branch.
 type fakeLocal struct {
-	branch  string
-	commits []git.GitHubCommit
-	refs    map[int][]git.GitHubCommit
+	repoName string
+	branch   string
+	commits  []git.GitHubCommit
+	refs     map[int][]git.GitHubCommit
 }
 
 func (f *fakeLocal) CurrentBranch(context.Context) string { return f.branch }
+func (f *fakeLocal) RepoName(context.Context) string      { return f.repoName }
 func (f *fakeLocal) FetchDayCommits(context.Context, string, time.Time) ([]git.GitHubCommit, error) {
 	return f.commits, nil
 }
 func (f *fakeLocal) DiscoverPRReferences([]git.GitHubCommit) map[int][]git.GitHubCommit {
 	return f.refs
+}
+
+// countingGitHub counts remote calls and returns no activity.
+type countingGitHub struct{ calls int }
+
+func (f *countingGitHub) FetchRemoteDayActivity(context.Context, string, time.Time) ([]git.GitHubCommit, []git.GitHubPR, error) {
+	f.calls++
+	return nil, nil, nil
+}
+
+// errGitHub fails every remote call.
+type errGitHub struct{ calls int }
+
+func (f *errGitHub) FetchRemoteDayActivity(context.Context, string, time.Time) ([]git.GitHubCommit, []git.GitHubPR, error) {
+	f.calls++
+	return nil, nil, errors.New("remote down")
 }
 
 func gitConfig(repos string) evidence.SourceConfig {
@@ -375,5 +394,200 @@ func TestLocalGitCollectorAdapter_UsesMessageReferencesOnly(t *testing.T) {
 	}
 	if ev[0].TopicHint == nil || ev[0].TopicHint.PRNumber != 42 {
 		t.Errorf("expected PR 42 evidence, got %+v", ev[0].TopicHint)
+	}
+}
+
+// TestGitPlugin_LocalOnlyNeverCallsGitHub proves mode=local collects local
+// evidence and never contacts the remote (GitHub is never called).
+func TestGitPlugin_LocalOnlyNeverCallsGitHub(t *testing.T) {
+	gh := &countingGitHub{}
+	local := &fakeLocal{
+		repoName: "acme/app",
+		branch:   "main",
+		commits:  []git.GitHubCommit{{SHA: "l1", Message: "local one", Timestamp: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)}},
+	}
+	reg := evidence.NewRegistry()
+	reg.Register(NewGitPlugin(gh, local))
+
+	cfg := gitConfig("")
+	cfg.Config[GitConfigMode] = GitModeLocal
+	cfg.Config[GitConfigLocalRepos] = "."
+
+	ev, summary, err := reg.CollectDay(context.Background(), []evidence.SourceConfig{cfg}, evidence.CollectRequest{Date: "2026-10-06"})
+	if err != nil {
+		t.Fatalf("CollectDay: %v", err)
+	}
+	if gh.calls != 0 {
+		t.Fatalf("mode=local must never call GitHub, got %d call(s)", gh.calls)
+	}
+	if !summary.Complete {
+		t.Fatalf("a local-only success must be complete, got %+v", summary)
+	}
+	if len(ev) != 1 || ev[0].Kind != evidence.SourceLocalGit {
+		t.Fatalf("want 1 local_git evidence item, got %+v", ev)
+	}
+}
+
+// TestGitPlugin_RemoteFailureRetainsLocalEvidence proves a remote failure does
+// NOT abort collection: local evidence is retained and the source is partial with
+// a stable, secret-free warning naming the remote failure.
+func TestGitPlugin_RemoteFailureRetainsLocalEvidence(t *testing.T) {
+	gh := &errGitHub{}
+	local := &fakeLocal{
+		repoName: "acme/app",
+		branch:   "main",
+		commits:  []git.GitHubCommit{{SHA: "l1", Message: "local one", Timestamp: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)}},
+	}
+	reg := evidence.NewRegistry()
+	reg.Register(NewGitPlugin(gh, local))
+
+	cfg := gitConfig("acme/app") // mode defaults to both
+
+	ev, summary, err := reg.CollectDay(context.Background(), []evidence.SourceConfig{cfg}, evidence.CollectRequest{Date: "2026-10-06"})
+	if err != nil {
+		t.Fatalf("CollectDay: %v", err)
+	}
+	if summary.Complete {
+		t.Fatal("a remote failure must not be reported as complete")
+	}
+	if len(ev) != 1 || ev[0].Kind != evidence.SourceLocalGit {
+		t.Fatalf("local evidence must be retained on remote failure, got %+v", ev)
+	}
+	if len(summary.Sources) != 1 {
+		t.Fatalf("want one source result, got %+v", summary.Sources)
+	}
+	sr := summary.Sources[0]
+	if sr.Status != evidence.StatusPartial {
+		t.Fatalf("want StatusPartial (evidence retained), got %q", sr.Status)
+	}
+	if !containsString(sr.Warnings, WarningGitRemoteFetchFailed) {
+		t.Fatalf("want the remote-failure warning, got %v", sr.Warnings)
+	}
+}
+
+// TestGitPlugin_CheckContractModeRequirements proves mode-appropriate contract
+// enforcement with stable codes.
+func TestGitPlugin_CheckContractModeRequirements(t *testing.T) {
+	p := NewGitPlugin(nil, nil)
+
+	invalid := gitConfig("acme/app")
+	invalid.Config[GitConfigMode] = "sideways"
+	if !hasFailedCheck(p.CheckContract(context.Background(), invalid), CodeGitModeInvalid) {
+		t.Fatalf("an invalid mode must fail with %s", CodeGitModeInvalid)
+	}
+
+	remoteNoRepos := gitConfig("")
+	remoteNoRepos.Config[GitConfigMode] = GitModeRemote
+	if !hasFailedCheck(p.CheckContract(context.Background(), remoteNoRepos), CodeGitReposRequired) {
+		t.Fatalf("mode=remote without repos must fail with %s", CodeGitReposRequired)
+	}
+
+	localNoRepos := gitConfig("")
+	localNoRepos.Config[GitConfigMode] = GitModeLocal
+	for _, c := range p.CheckContract(context.Background(), localNoRepos) {
+		if !c.Passed {
+			t.Fatalf("mode=local without repos must pass (default local path), got %+v", c)
+		}
+	}
+}
+
+func hasFailedCheck(checks []evidence.ContractCheck, code string) bool {
+	for _, c := range checks {
+		if !c.Passed && c.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// F5 (CONFIG-COLLECT-1): dedup/provenance holds when the local checkout's
+// RepoName canonicalizes to the configured repos slug. The same commit SHA on
+// both sides is emitted ONCE (folded into the PR record), and every SourceRef
+// carries the canonical repository key.
+func TestGitPlugin_DedupWhenLocalMatchesConfiguredSlug(t *testing.T) {
+	sha := "sha-dedup"
+	ts := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	gh := &fakeGitHub{
+		commits: []git.GitHubCommit{{SHA: sha, Message: "remote copy", Timestamp: ts}},
+		prs:     []git.GitHubPR{{Number: 9, Title: "PR nine", Branch: "feature/nine", Commits: []string{sha}}},
+	}
+	local := &fakeLocal{
+		repoName: "acme/app", // canonicalizes to the configured slug
+		branch:   "feature/nine",
+		commits:  []git.GitHubCommit{{SHA: sha, Message: "local copy", Timestamp: ts}},
+	}
+	reg := evidence.NewRegistry()
+	reg.Register(NewGitPlugin(gh, local))
+
+	cfg := gitConfig("acme/app") // default mode = both
+	ev, summary, err := reg.CollectDay(context.Background(), []evidence.SourceConfig{cfg}, evidence.CollectRequest{Date: "2026-10-06"})
+	if err != nil {
+		t.Fatalf("CollectDay: %v", err)
+	}
+	if !summary.Complete {
+		t.Fatalf("want a complete collection, got %+v", summary)
+	}
+	if len(ev) != 1 {
+		t.Fatalf("the same SHA on both sides must be emitted once, got %d: %+v", len(ev), ev)
+	}
+	if ev[0].Kind != evidence.SourceRemotePR {
+		t.Fatalf("want the folded PR record, got %q", ev[0].Kind)
+	}
+	wantKey := evidence.CanonicalRepoKey("acme/app", "acme/app")
+	for _, ref := range ev[0].SourceRefs {
+		if ref.Repository != wantKey {
+			t.Errorf("SourceRef.Repository = %q, want canonical %q", ref.Repository, wantKey)
+		}
+	}
+	var remoteRefs, localRefs int
+	for _, ref := range ev[0].SourceRefs {
+		switch ref.Kind {
+		case evidence.SourceRemotePR:
+			remoteRefs++
+		case evidence.SourceLocalGit:
+			localRefs++
+		}
+	}
+	if remoteRefs != 1 || localRefs != 1 {
+		t.Fatalf("want 1 remote_pr + 1 folded local_git ref, got %d/%d", remoteRefs, localRefs)
+	}
+}
+
+// F6 (CONFIG-COLLECT-1): identical remote-failure warnings are deduplicated, so a
+// warning appears once even when several configured repos fail.
+func TestGitPlugin_RemoteFailureWarningDeduplicated(t *testing.T) {
+	gh := &errGitHub{}
+	local := &fakeLocal{
+		repoName: "acme/app",
+		commits:  []git.GitHubCommit{{SHA: "l1", Message: "local", Timestamp: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)}},
+	}
+	reg := evidence.NewRegistry()
+	reg.Register(NewGitPlugin(gh, local))
+
+	cfg := gitConfig("acme/app,acme/lib") // two remote repos, both fail
+	_, summary, err := reg.CollectDay(context.Background(), []evidence.SourceConfig{cfg}, evidence.CollectRequest{Date: "2026-10-06"})
+	if err != nil {
+		t.Fatalf("CollectDay: %v", err)
+	}
+	if len(summary.Sources) != 1 {
+		t.Fatalf("want one source result, got %+v", summary.Sources)
+	}
+	count := 0
+	for _, w := range summary.Sources[0].Warnings {
+		if w == WarningGitRemoteFetchFailed {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("want exactly one deduplicated remote-failure warning, got %d (%v)", count, summary.Sources[0].Warnings)
 	}
 }

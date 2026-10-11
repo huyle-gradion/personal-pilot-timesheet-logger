@@ -236,10 +236,11 @@ func buildRunner(ctx context.Context, cfg cliConfig, store workflow.Store, offli
 }
 
 func buildDeps(ctx context.Context, cfg cliConfig, store workflow.Store, offline, editorialEnabled bool) (run.Deps, bool, error) {
-	// The git credential is resolved LAZILY: only when a git source is enabled. A
-	// read-only subcommand (e.g. export) must never abort on a Keychain error.
+	// The git credential is resolved LAZILY: only when a git source needs a
+	// REMOTE credential (a mode:"local" git source does not). A read-only
+	// subcommand (e.g. export) must never abort on a Keychain error.
 	gitToken := ""
-	if run.GitSourceEnabled(cfg.Evidence.Sources) {
+	if run.GitRemoteSourceEnabled(cfg.Evidence.Sources) {
 		tok, err := git.ResolveAuthToken(ctx, "")
 		if err != nil {
 			return run.Deps{}, false, fmt.Errorf("git credential: %w", err)
@@ -284,10 +285,16 @@ func buildRegistry(gitToken string) *evidence.Registry {
 	reg := evidence.NewRegistry()
 	reg.Register(plugins.NewCalendarPlugin())
 	reg.Register(plugins.NewAgentPlugin())
-	reg.Register(plugins.NewGitPlugin(
+	gitPlugin := plugins.NewGitPlugin(
 		plugins.GitHubClientAdapter{Client: git.NewGitHubClient(gitToken, githubTimeout)},
+		// The historical single local collector covers the default "." path.
 		plugins.LocalGitCollectorAdapter{Collector: git.NewLocalGitCollector(".")},
-	))
+	)
+	// Explicit local_repos paths beyond "." get a per-path collector.
+	gitPlugin.LocalFactory = func(path string) plugins.LocalGitSource {
+		return plugins.LocalGitCollectorAdapter{Collector: git.NewLocalGitCollector(path)}
+	}
+	reg.Register(gitPlugin)
 	return reg
 }
 
@@ -420,10 +427,20 @@ func cmdReview(ctx context.Context, r *run.Runner, cfg cliConfig, editorActive b
 		// registry persists the day's record with an empty collection summary, so an
 		// empty draft is durable and `review` is consistent for every date. Collect
 		// preserves user decisions (the merge is an upsert).
-		if _, err := r.Collect(ctx, d); err != nil {
+		collectRes, err := r.Collect(ctx, d)
+		if err != nil {
 			fmt.Fprintf(stderr, "timesheet: collect %s: %v\n", d, err)
 			return exitError
 		}
+		// Explicitly report the no-configured-source condition (empty source list
+		// or every source disabled) so "nothing is configured" is never confused
+		// with "configured sources returned no evidence".
+		if collectRes.NoSourcesConfigured {
+			fmt.Fprintf(stdout, "%s: No evidence sources configured.\n", d)
+		}
+		// Surface every enabled source that is not complete/skipped, so a remote
+		// failure or an incomplete collection is visible.
+		printSourceStatus(stdout, collectRes.Summary)
 		prop, err := r.Propose(ctx, d)
 		if err != nil {
 			fmt.Fprintf(stderr, "timesheet: propose %s: %v\n", d, err)
@@ -465,6 +482,30 @@ func cmdReview(ctx context.Context, r *run.Runner, cfg cliConfig, editorActive b
 		fmt.Fprintf(stdout, "%s: review applied\n", d)
 	}
 	return exitOK
+}
+
+// printSourceStatus prints one concise line for every enabled source that is not
+// complete or skipped, so a partial or failed collection is visible. Details are
+// drawn from the stable error code, else the propagated registry warnings, else
+// the message; none of these ever contains a secret.
+func printSourceStatus(w io.Writer, sum evidence.CollectionSummary) {
+	for _, sr := range sum.Sources {
+		if sr.Status == evidence.StatusComplete || sr.Status == evidence.StatusSkipped {
+			continue
+		}
+		detail := sr.ErrorCode
+		if detail == "" {
+			detail = strings.Join(sr.Warnings, ", ")
+		}
+		if detail == "" {
+			detail = sr.Message
+		}
+		line := fmt.Sprintf("source %s: %s", sr.SourceID, sr.Status)
+		if detail != "" {
+			line += " (" + detail + ")"
+		}
+		fmt.Fprintln(w, line)
+	}
 }
 
 func cmdExport(ctx context.Context, r *run.Runner, date, from, to string, stdout, stderr io.Writer) int {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence/plugins"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 )
 
@@ -99,6 +100,70 @@ func TestPreflight_MissingGitCredentialRefused(t *testing.T) {
 	}
 	if res.OK || !hasCheck(res.Checks, "git_credential", CodeGitCredentialMissing) {
 		t.Fatalf("want a missing git credential failure, got %+v", res.Checks)
+	}
+}
+
+// F2 (CONFIG-COLLECT-1): a mode:"local" git source needs NO remote credential.
+// An absent GitHub credential must not fail the git_credential check for it, and
+// preflight must still pass (contracts are satisfied by the injected plugin).
+func TestPreflight_LocalGitModeNeedsNoCredential(t *testing.T) {
+	store := newStore(t)
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PATH", t.TempDir())
+	restore := keychain.SetDefaultResolver(&fakeKeychain{})
+	t.Cleanup(restore)
+
+	reg := evidence.NewRegistry()
+	reg.Register(&fakePlugin{kind: plugins.TypeGit}) // nil checks -> contract passes
+	sources := []evidence.SourceConfig{{
+		ID: "git", Type: plugins.TypeGit, Enabled: true,
+		Config: map[string]string{plugins.GitConfigMode: plugins.GitModeLocal},
+	}}
+	r := newRunner(t, Deps{Store: store, Registry: reg, Keychain: &fakeKeychain{}}, Config{
+		Evidence: evidence.Config{Timezone: "UTC", Sources: sources},
+	})
+	r.deps.GitToken = "" // force resolution to fall through to an absent credential
+
+	res, err := r.Preflight(ctx, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if hasCheck(res.Checks, "git_credential", CodeGitCredentialMissing) {
+		t.Fatalf("a mode:local git source must not require a credential, got %+v", res.Checks)
+	}
+	if !res.OK {
+		t.Fatalf("want OK for a local-only git source, got %+v", res.Checks)
+	}
+}
+
+// F2 (CONFIG-COLLECT-1): a default/both git source still requires a remote
+// credential (the remote path must not be weakened).
+func TestPreflight_RemoteGitModeStillNeedsCredential(t *testing.T) {
+	store := newStore(t)
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PATH", t.TempDir())
+	restore := keychain.SetDefaultResolver(&fakeKeychain{})
+	t.Cleanup(restore)
+
+	reg := evidence.NewRegistry()
+	reg.Register(&fakePlugin{kind: plugins.TypeGit})
+	sources := []evidence.SourceConfig{{
+		ID: "git", Type: plugins.TypeGit, Enabled: true,
+		Config: map[string]string{plugins.GitConfigRepos: "acme/app"}, // default mode = both
+	}}
+	r := newRunner(t, Deps{Store: store, Registry: reg, Keychain: &fakeKeychain{}}, Config{
+		Evidence: evidence.Config{Timezone: "UTC", Sources: sources},
+	})
+	r.deps.GitToken = ""
+
+	res, err := r.Preflight(ctx, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if res.OK || !hasCheck(res.Checks, "git_credential", CodeGitCredentialMissing) {
+		t.Fatalf("a default/both git source must still require a credential, got %+v", res.Checks)
 	}
 }
 

@@ -53,6 +53,7 @@ type fakePlugin struct {
 	kind     evidence.SourceKind
 	required []evidence.ConfigRequirement
 	ev       []evidence.Evidence
+	err      error
 
 	liveCalls     int
 	contractCalls int
@@ -73,6 +74,9 @@ func (p *fakePlugin) Collect(ctx context.Context, cfg evidence.SourceConfig, req
 		p.contractCalls++
 	} else {
 		p.liveCalls++
+	}
+	if p.err != nil {
+		return evidence.CollectResult{}, p.err
 	}
 	return evidence.CollectResult{
 		Evidence: p.ev,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/editorial"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence/plugins"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/export"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/run"
@@ -368,6 +369,32 @@ func TestRunCLI_ExportDoesNotResolveGitCredential(t *testing.T) {
 	code, _, stderr := runArgs(t, "export", "--config", cfgPath, "--storage-dir", storage, "--date", testDate)
 	if code != exitOK {
 		t.Fatalf("export must not resolve a git credential: %d (%s)", code, stderr)
+	}
+}
+
+// F2 (CONFIG-COLLECT-1): buildDeps must NOT resolve a git credential for a
+// mode:"local" git source, so a terminal Keychain failure cannot abort a
+// read-only subcommand.
+func TestRunCLI_LocalGitModeDoesNotResolveCredential(t *testing.T) {
+	restore := keychain.SetDefaultResolver(terminalResolver{})
+	t.Cleanup(restore)
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	vault := filepath.Join(dir, "vault")
+	cfg := cliConfig{Vault: vault, DailyDir: "Daily"}
+	cfg.Evidence.Sources = []evidence.SourceConfig{{
+		ID: "git-work", Type: plugins.TypeGit, Enabled: true,
+		Config: map[string]string{plugins.GitConfigMode: plugins.GitModeLocal},
+	}}
+	cfgPath := writeConfig(t, dir, cfg)
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) { *rec = readyRecord(testDate) })
+
+	code, _, stderr := runArgs(t, "export", "--config", cfgPath, "--storage-dir", storage, "--date", testDate)
+	if code != exitOK {
+		t.Fatalf("a mode:local git source must not resolve a credential: %d (%s)", code, stderr)
 	}
 }
 
@@ -728,5 +755,51 @@ func TestRunCLI_ResolveAdopts(t *testing.T) {
 	rec := loadRecord(t, storage, testDate)
 	if len(rec.Outcomes) != 1 || rec.Outcomes[0].Status != workflow.OutcomeConfirmed {
 		t.Fatalf("want a confirmed outcome, got %+v", rec.Outcomes)
+	}
+}
+
+// CONFIG-COLLECT-1 Finding A: `review` with NO configured sources must print the
+// exact no-sources line and still produce an empty draft.
+func TestRunCLI_ReviewReportsNoEvidenceSources(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{}) // NO sources
+
+	code, stdout, stderr := runArgs(t, "review", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--no-editorial")
+	if code != exitOK {
+		t.Fatalf("review: %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stdout, testDate+": No evidence sources configured.") {
+		t.Fatalf("want the exact no-sources line, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "proposal (reviewed=0 blocks") {
+		t.Fatalf("an empty day must still produce an empty draft, got:\n%s", stdout)
+	}
+}
+
+// CONFIG-COLLECT-1 visibility: printSourceStatus prints a line for every source
+// that is not complete/skipped, and nothing for the rest.
+func TestPrintSourceStatus_ShowsOnlyNonCompleteSources(t *testing.T) {
+	var buf bytes.Buffer
+	sum := evidence.CollectionSummary{
+		Date: testDate,
+		Sources: []evidence.SourceResult{
+			{SourceID: "ok", Status: evidence.StatusComplete},
+			{SourceID: "off", Status: evidence.StatusSkipped},
+			{SourceID: "git", Status: evidence.StatusPartial, Warnings: []string{"GIT_REMOTE_FETCH_FAILED"}},
+			{SourceID: "cal", Status: evidence.StatusIncomplete, ErrorCode: "SOURCE_ERROR"},
+		},
+	}
+	printSourceStatus(&buf, sum)
+	out := buf.String()
+	if !strings.Contains(out, "source git: partial (GIT_REMOTE_FETCH_FAILED)") {
+		t.Errorf("want the partial source line, got:\n%s", out)
+	}
+	if !strings.Contains(out, "source cal: incomplete (SOURCE_ERROR)") {
+		t.Errorf("want the incomplete source line, got:\n%s", out)
+	}
+	if strings.Contains(out, "source ok:") || strings.Contains(out, "source off:") {
+		t.Errorf("complete/skipped sources must not be printed, got:\n%s", out)
 	}
 }
