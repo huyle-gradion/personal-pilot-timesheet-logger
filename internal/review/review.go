@@ -34,6 +34,7 @@ var (
 	ErrInvalidInterval        = errors.New("review: invalid interval")
 	ErrLinkedEvidenceNotFound = errors.New("review: linked evidence not found")
 	ErrLinkedEvidenceCycle    = errors.New("review: linked evidence cycle")
+	ErrInvalidClassification  = errors.New("review: classification id is required")
 )
 
 // Stable exclusion reasons.
@@ -188,6 +189,44 @@ func ResolveProject(r *workflow.Record, blockID, project string) error {
 		return fmt.Errorf("%w: %s", ErrBlockNotFound, blockID)
 	}
 	ci.Project = strings.TrimSpace(project)
+	return nil
+}
+
+// SetDescription sets a confirmed block's user-authored description. It is a
+// pure action over an existing confirmed interval: the description is the user's
+// own text and never source-derived. An empty description clears it (the plan
+// then carries an empty description rather than a fabricated one).
+func SetDescription(r *workflow.Record, blockID, text string) error {
+	if r == nil {
+		return ErrNilRecord
+	}
+	ci := findConfirmed(r, blockID)
+	if ci == nil {
+		return fmt.Errorf("%w: %s", ErrBlockNotFound, blockID)
+	}
+	ci.Description = strings.TrimSpace(text)
+	return nil
+}
+
+// SetClassification sets a confirmed block's explicit Gradion classification and
+// the activity type DERIVED by the server for that classification. A non-empty
+// classification id is required: there is no default and no resolver auto-fill,
+// so an empty choice is refused rather than silently left unset. ActivityType is
+// display/validation only and is never sent to a remote write.
+func SetClassification(r *workflow.Record, blockID, classificationID, activityType string) error {
+	if r == nil {
+		return ErrNilRecord
+	}
+	id := strings.TrimSpace(classificationID)
+	if id == "" {
+		return fmt.Errorf("%w: %s", ErrInvalidClassification, blockID)
+	}
+	ci := findConfirmed(r, blockID)
+	if ci == nil {
+		return fmt.Errorf("%w: %s", ErrBlockNotFound, blockID)
+	}
+	ci.ClassificationID = id
+	ci.ActivityType = strings.TrimSpace(activityType)
 	return nil
 }
 

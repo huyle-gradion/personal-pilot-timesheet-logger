@@ -208,7 +208,10 @@ func TestApplyReview_ParityForAllActions(t *testing.T) {
 }
 
 // directDecisions is the interactive-equivalent sequence of internal/review calls,
-// including the same proposal-block → confirmed-interval resolution.
+// mirroring production applyDecisions: Trim/Project/Description/Classification are
+// applied BEFORE Join (so a joined interval inherits them), every decision reaches
+// EVERY fragment of a split block, and a manual decision with Confirm also
+// confirms its materialized block(s).
 func directDecisions(rec *workflow.Record, r *Runner, date string, d ReviewDecisions) error {
 	prop, err := review.CurrentProposal(*rec, r.proposalOptions(date))
 	if err != nil {
@@ -216,35 +219,30 @@ func directDecisions(rec *workflow.Record, r *Runner, date string, d ReviewDecis
 	}
 	blocks := proposalBlocksByID(prop)
 
-	blockToConfirmed := make(map[string]string, len(d.Confirm))
+	blockToConfirmed := make(map[string][]string, len(d.Confirm))
 	for _, c := range d.Confirm {
-		before := confirmedIDSet(rec)
-		if err := review.ConfirmProposed(rec, blocks[c.BlockID], review.ConfirmOptions{Project: c.Project, Attendance: c.Attendance, Now: r.now()}); err != nil {
+		ids, err := confirmProposedBlock(rec, blocks[c.BlockID], review.ConfirmOptions{Project: c.Project, Attendance: c.Attendance, Now: r.now()})
+		if err != nil {
 			return err
 		}
-		for _, ci := range rec.Confirmed {
-			if !before[ci.ID] {
-				blockToConfirmed[c.BlockID] = ci.ID
-			}
+		blockToConfirmed[c.BlockID] = ids
+	}
+	resolveAll := func(id string) []string {
+		if _, ok := findConfirmedID(rec, id); ok {
+			return []string{id}
 		}
+		if ids, ok := blockToConfirmed[id]; ok && len(ids) > 0 {
+			return ids
+		}
+		return []string{id}
 	}
 	resolve := func(id string) string {
-		if _, ok := findConfirmedID(rec, id); ok {
-			return id
-		}
-		if confirmedID, ok := blockToConfirmed[id]; ok {
-			return confirmedID
-		}
-		return id
+		ids := resolveAll(id)
+		return ids[len(ids)-1]
 	}
 
 	for _, ex := range d.Exclude {
 		if err := review.ExcludeEvidence(rec, ex.EvidenceID, ex.Reason); err != nil {
-			return err
-		}
-	}
-	for _, j := range d.Join {
-		if err := review.JoinCollision(rec, resolve(j.WorkBlockID), j.MeetingEvID); err != nil {
 			return err
 		}
 	}
@@ -258,10 +256,35 @@ func directDecisions(rec *workflow.Record, r *Runner, date string, d ReviewDecis
 			return err
 		}
 	}
-	for _, m := range d.Manual {
-		if err := review.AddManualInterval(rec, review.ManualInterval{UUID: m.UUID, StartAt: m.Start, EndAt: m.End, Project: m.Project, Description: m.Description, Now: r.now()}); err != nil {
+	for _, ds := range d.Description {
+		for _, id := range resolveAll(ds.BlockID) {
+			if err := review.SetDescription(rec, id, ds.Text); err != nil {
+				return err
+			}
+		}
+	}
+	for _, cs := range d.Classification {
+		for _, id := range resolveAll(cs.BlockID) {
+			if err := review.SetClassification(rec, id, cs.ClassificationID, cs.ActivityType); err != nil {
+				return err
+			}
+		}
+	}
+	for _, j := range d.Join {
+		if err := review.JoinCollision(rec, resolve(j.WorkBlockID), j.MeetingEvID); err != nil {
 			return err
 		}
+	}
+	for _, m := range d.Manual {
+		if err := review.AddManualInterval(rec, review.ManualInterval{
+			UUID: m.UUID, StartAt: m.Start, EndAt: m.End, Project: m.Project,
+			Description: m.Description, EvidenceIDs: m.EvidenceIDs, Now: r.now(),
+		}); err != nil {
+			return err
+		}
+	}
+	if err := r.confirmManualDecisions(rec, date, d.Manual); err != nil {
+		return err
 	}
 	if len(d.Acknowledge) > 0 {
 		if err := review.AcknowledgeSources(rec, d.Acknowledge); err != nil {

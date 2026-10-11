@@ -1,0 +1,1132 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/run"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
+)
+
+// --- fakes ------------------------------------------------------------------
+
+// fakePrompter drives the REAL guided orchestration with scripted answers. An
+// exhausted queue returns errAborted, so a test that under-scripts a scenario
+// aborts instead of silently choosing.
+type fakePrompter struct {
+	choose   []int
+	inputs   []string
+	multi    [][]int
+	confirms []bool
+
+	ci, ii, mi, co int
+	chooseTitles   []string
+	confirmTitles  []string
+}
+
+func (f *fakePrompter) Choose(_ context.Context, title string, options []promptOption, def int) (int, error) {
+	f.chooseTitles = append(f.chooseTitles, title)
+	if f.ci >= len(f.choose) {
+		return 0, errAborted
+	}
+	v := f.choose[f.ci]
+	f.ci++
+	if v < 0 {
+		return 0, errAborted
+	}
+	if v >= len(options) {
+		return 0, fmt.Errorf("fakePrompter: choice %d out of range (%d options)", v, len(options))
+	}
+	return v, nil
+}
+
+func (f *fakePrompter) MultiChoose(_ context.Context, _ string, _ []promptOption) ([]int, error) {
+	if f.mi >= len(f.multi) {
+		return nil, nil
+	}
+	v := f.multi[f.mi]
+	f.mi++
+	return v, nil
+}
+
+func (f *fakePrompter) Input(_ context.Context, title, _, initial string) (string, error) {
+	if f.ii >= len(f.inputs) {
+		return "", errAborted
+	}
+	v := f.inputs[f.ii]
+	f.ii++
+	// Match BOTH real prompters: a blank answer keeps the initial value.
+	if strings.TrimSpace(v) == "" {
+		return initial, nil
+	}
+	return v, nil
+}
+
+func (f *fakePrompter) Confirm(_ context.Context, title string, _ bool) (bool, error) {
+	f.confirmTitles = append(f.confirmTitles, title)
+	if f.co >= len(f.confirms) {
+		return false, errAborted
+	}
+	v := f.confirms[f.co]
+	f.co++
+	return v, nil
+}
+
+// stubCatalog installs a hermetic live catalog for the guided classification
+// step, reusing the classify test's fake fetcher.
+func stubCatalog(t *testing.T, opts ...gradion.ClassificationOption) {
+	t.Helper()
+	withCatalogFetcher(t, &fakeCatalogFetcher{catalog: gradion.Catalog{
+		Complete: true, ObservedAt: time.Now().UTC(), Options: opts,
+	}})
+}
+
+func guidedTestConfig() cliConfig {
+	cfg := cliConfig{}
+	cfg.Evidence.Timezone = "Asia/Ho_Chi_Minh"
+	cfg.Classifications = map[string]string{"Proj": "cls-1"}
+	return cfg
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+func newGuidedRunner(t *testing.T, storage string, remote run.Remote, cfg cliConfig) (*run.Runner, workflow.Store) {
+	t.Helper()
+	store, err := workflow.NewJSONFileStore(storage)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	r, err := run.New(run.Deps{
+		Store:    store,
+		Registry: evidence.NewRegistry(),
+		Remote:   remote,
+		Now:      func() time.Time { return time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC) },
+	}, cfg.Config)
+	if err != nil {
+		t.Fatalf("run.New: %v", err)
+	}
+	return r, store
+}
+
+// --- mode precedence --------------------------------------------------------
+
+func TestResolveMode_Precedence(t *testing.T) {
+	cases := []struct {
+		name    string
+		req     guidedRequest
+		want    interactionMode
+		wantErr bool
+	}{
+		{"default is scripted", guidedRequest{}, modeScripted, false},
+		{"decisions file forces scripted", guidedRequest{Interactive: true, Decisions: true, StdinTTY: true, StdoutTTY: true}, modeScripted, false},
+		{"non-interactive forces scripted", guidedRequest{Interactive: true, NonInteractive: true, StdinTTY: true, StdoutTTY: true}, modeScripted, false},
+		{"plain is allowed on a pipe", guidedRequest{Plain: true}, modePlain, false},
+		{"plain wins over interactive", guidedRequest{Interactive: true, Plain: true, StdinTTY: true, StdoutTTY: true}, modePlain, false},
+		{"interactive with both ttys is tui", guidedRequest{Interactive: true, StdinTTY: true, StdoutTTY: true}, modeTUI, false},
+		{"interactive on a pipe refuses", guidedRequest{Interactive: true, StdinTTY: false, StdoutTTY: true}, modeScripted, true},
+		{"interactive on a piped stdout refuses", guidedRequest{Interactive: true, StdinTTY: true, StdoutTTY: false}, modeScripted, true},
+		{"interactive under CI refuses", guidedRequest{Interactive: true, StdinTTY: true, StdoutTTY: true, CI: true}, modeScripted, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveMode(tc.req)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want an error, got mode %v", got)
+				}
+				if !strings.Contains(err.Error(), "--plain") || !strings.Contains(err.Error(), "--decisions") {
+					t.Fatalf("the refusal must point at --plain/--decisions, got %q", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("want mode %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestGuided_InteractiveOnPipeRefuses(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, guidedTestConfig())
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithIO(context.Background(),
+		[]string{"run", "--interactive", "--config", cfgPath, "--storage-dir", filepath.Join(dir, "records"), "--date", testDate},
+		strings.NewReader(""), &stdout, &stderr, false, false)
+	if code != exitUsage {
+		t.Fatalf("want a usage exit, got %d (%s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--plain") {
+		t.Fatalf("the refusal must mention --plain, got:\n%s", stderr.String())
+	}
+}
+
+func TestGuided_InteractiveUnderCIRefuses(t *testing.T) {
+	t.Setenv("CI", "true")
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, guidedTestConfig())
+	var stdout, stderr bytes.Buffer
+	// Both descriptors are reported as terminals, but CI forbids a TUI.
+	code := runCLIWithIO(context.Background(),
+		[]string{"run", "--interactive", "--config", cfgPath, "--storage-dir", filepath.Join(dir, "records"), "--date", testDate},
+		strings.NewReader(""), &stdout, &stderr, true, true)
+	if code != exitUsage {
+		t.Fatalf("want a usage exit under CI, got %d (%s)", code, stderr.String())
+	}
+}
+
+// --- the real plain CLI path ------------------------------------------------
+
+// plainScenarioStdin scripts the review of ONE git work block: edit it (index 2),
+// set a real span and project, answer no to missing work, pick catalog option 1,
+// and confirm the review.
+const plainScenarioStdin = "3\n16:00\n17:00\nProj\ndid work\nn\n1\ny\n"
+
+func TestGuided_PlainRealPath_AppliesReviewAndPreviews(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "Gradion Intern Academy 2026", ActivityType: "internal project"})
+
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, guidedTestConfig())
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithIO(context.Background(),
+		[]string{"run", "--plain", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--no-editorial"},
+		strings.NewReader(plainScenarioStdin), &stdout, &stderr, false, false)
+	if code != exitOK {
+		t.Fatalf("guided run: %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 {
+		t.Fatalf("want 1 confirmed interval, got %+v", rec.Confirmed)
+	}
+	ci := rec.Confirmed[0]
+	if ci.Project != "Proj" {
+		t.Errorf("want project Proj, got %q", ci.Project)
+	}
+	if ci.Description != "did work" {
+		t.Errorf("want description %q, got %q", "did work", ci.Description)
+	}
+	if ci.ClassificationID != "cls-1" || ci.ActivityType != "internal project" {
+		t.Errorf("want the chosen classification + derived activity type, got %q / %q", ci.ClassificationID, ci.ActivityType)
+	}
+	if ci.StartTime != "16:00" || ci.EndTime != "17:00" {
+		t.Errorf("want the edited span 16:00-17:00, got %s-%s", ci.StartTime, ci.EndTime)
+	}
+	if rec.Review == nil || !rec.Review.Reviewed {
+		t.Fatalf("want the day reviewed, got %+v", rec.Review)
+	}
+	if len(rec.Approvals) != 0 {
+		t.Fatalf("the guided run must create NO approval, got %+v", rec.Approvals)
+	}
+
+	out := stdout.String()
+	for _, want := range []string{"date: " + testDate, "timezone: Asia/Ho_Chi_Minh", "plan_id: ", "operations: 1", "total: 1h 0m across 1 operation(s)", "next step: timesheet approve --plan "} {
+		if !strings.Contains(out, want) {
+			t.Errorf("guided stdout missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "timesheet submit") {
+		t.Errorf("the guided run must NOT instruct a submission:\n%s", out)
+	}
+}
+
+func TestGuided_PlainEOFAborts(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, guidedTestConfig())
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+	before := loadRecord(t, storage, testDate)
+
+	var stdout, stderr bytes.Buffer
+	// A blank stdin aborts at the FIRST prompt.
+	code := runCLIWithIO(context.Background(),
+		[]string{"run", "--plain", "--config", cfgPath, "--storage-dir", storage, "--date", testDate, "--no-editorial"},
+		strings.NewReader(""), &stdout, &stderr, false, false)
+	if code == exitOK {
+		t.Fatalf("an EOF must abort, got ok\n%s", stdout.String())
+	}
+	after := loadRecord(t, storage, testDate)
+	if len(after.Confirmed) != len(before.Confirmed) {
+		t.Fatalf("an abort must not confirm work:\n before=%+v\n after=%+v", before.Confirmed, after.Confirmed)
+	}
+	if after.Review != nil && after.Review.Reviewed {
+		t.Fatalf("an abort must not mark the day reviewed, got %+v", after.Review)
+	}
+	if len(after.Approvals) != 0 {
+		t.Fatalf("an abort must not create an approval, got %+v", after.Approvals)
+	}
+}
+
+// --- guided vs scripted parity ----------------------------------------------
+
+func TestGuided_ParityWithScriptedReview(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "Gradion Intern Academy 2026", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+
+	// Guided.
+	gd := t.TempDir()
+	gStorage := filepath.Join(gd, "records")
+	seedRecord(t, gStorage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+	gr, gstore := newGuidedRunner(t, gStorage, nil, cfg)
+	var out, errb bytes.Buffer
+	p := &fakePrompter{
+		choose:   []int{2, 0},
+		inputs:   []string{"16:00", "17:00", "Proj", "did work"},
+		confirms: []bool{false, true},
+	}
+	if code := cmdRunGuided(context.Background(), gr, cfg, gstore, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	guidedRec := loadRecord(t, gStorage, testDate)
+
+	// Scripted equivalent: the SAME block decisions applied through the core.
+	sd := t.TempDir()
+	sStorage := filepath.Join(sd, "records")
+	seedRecord(t, sStorage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+	sr, _ := newGuidedRunner(t, sStorage, nil, cfg)
+	prop, err := sr.Propose(context.Background(), testDate)
+	if err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+	if len(prop.Work) != 1 {
+		t.Fatalf("want 1 work block, got %+v", prop.Work)
+	}
+	blockID := prop.Work[0].ID
+	decisions := run.ReviewDecisions{
+		Confirm:        []run.ConfirmDecision{{BlockID: blockID, Project: "Proj"}},
+		Trim:           []run.TrimDecision{{BlockID: blockID, NewStart: "16:00", NewEnd: "17:00"}},
+		Description:    []run.DescriptionDecision{{BlockID: blockID, Text: "did work"}},
+		Classification: []run.ClassificationDecision{{BlockID: blockID, ClassificationID: "cls-1", ActivityType: "internal project"}},
+	}
+	if err := sr.ApplyReview(context.Background(), testDate, decisions); err != nil {
+		t.Fatalf("scripted apply: %v", err)
+	}
+	scriptedRec := loadRecord(t, sStorage, testDate)
+
+	if len(guidedRec.Confirmed) != len(scriptedRec.Confirmed) {
+		t.Fatalf("confirmed counts differ: guided=%+v scripted=%+v", guidedRec.Confirmed, scriptedRec.Confirmed)
+	}
+	for i := range guidedRec.Confirmed {
+		g, s := guidedRec.Confirmed[i], scriptedRec.Confirmed[i]
+		if g.ID != s.ID || g.Project != s.Project || g.Description != s.Description || g.ClassificationID != s.ClassificationID || g.ActivityType != s.ActivityType {
+			t.Fatalf("guided and scripted reviews differ:\n guided=%+v\n scripted=%+v", g, s)
+		}
+	}
+}
+
+// --- abort on a TUI error ---------------------------------------------------
+
+// tuiErrorPrompter returns errAborted from the first prompt, simulating a huh
+// form error / ctrl-c.
+type tuiErrorPrompter struct{}
+
+func (tuiErrorPrompter) Choose(context.Context, string, []promptOption, int) (int, error) {
+	return 0, errAborted
+}
+func (tuiErrorPrompter) MultiChoose(context.Context, string, []promptOption) ([]int, error) {
+	return nil, errAborted
+}
+func (tuiErrorPrompter) Input(context.Context, string, string, string) (string, error) {
+	return "", errAborted
+}
+func (tuiErrorPrompter) Confirm(context.Context, string, bool) (bool, error) {
+	return false, errAborted
+}
+
+func TestGuided_TUIErrorAborts(t *testing.T) {
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+	cfg := guidedTestConfig()
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+	var out, errb bytes.Buffer
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, tuiErrorPrompter{}, &out, &errb)
+	if code == exitOK {
+		t.Fatalf("a TUI error must abort, got ok")
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Review != nil && rec.Review.Reviewed {
+		t.Fatalf("a TUI error must not mark the day reviewed")
+	}
+}
+
+// --- empty days -------------------------------------------------------------
+
+func TestGuided_EmptyDayReviewedEmpty(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	vault := filepath.Join(dir, "vault")
+	cfg := guidedTestConfig()
+	cfg.Vault = vault
+	cfg.DailyDir = "Daily"
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	p := &fakePrompter{confirms: []bool{false, true}} // no missing work, confirm review
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("empty guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Review == nil || !rec.Review.Reviewed || !rec.Review.Empty {
+		t.Fatalf("want a reviewed-empty day, got %+v", rec.Review)
+	}
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("an empty day must invent no entries, got %+v", rec.Confirmed)
+	}
+}
+
+func TestGuided_EmptyRefreshPreservesConfirmed(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate) // one confirmed interval, reviewed
+	})
+	before := loadRecord(t, storage, testDate)
+
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+	var out, errb bytes.Buffer
+	// Existing interval is "kept" (index 0); no missing work; confirm review.
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	after := loadRecord(t, storage, testDate)
+	if len(after.Confirmed) != 1 || after.Confirmed[0].ID != before.Confirmed[0].ID || after.Confirmed[0].Description != before.Confirmed[0].Description {
+		t.Fatalf("existing confirmed work must be preserved:\n before=%+v\n after=%+v", before.Confirmed, after.Confirmed)
+	}
+	if after.Review != nil && after.Review.Empty {
+		t.Fatalf("a day with existing confirmed work must never be marked empty")
+	}
+}
+
+// --- incomplete sources -----------------------------------------------------
+
+func incompleteCollection() *evidence.CollectionSummary {
+	return &evidence.CollectionSummary{
+		Date:     testDate,
+		Complete: false,
+		Sources:  []evidence.SourceResult{{SourceID: "cal-work", Type: evidence.SourceCalendar, Status: evidence.StatusIncomplete, ErrorCode: "SOURCE_ERROR"}},
+	}
+}
+
+func TestGuided_IncompleteSourceAckUnblocks(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Collection = incompleteCollection()
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// keep existing (0), acknowledge incomplete (true), no missing work, confirm review.
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{true, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Review == nil || len(rec.Review.AcknowledgedSources) != 1 || rec.Review.AcknowledgedSources[0] != "cal-work" {
+		t.Fatalf("want cal-work acknowledged, got %+v", rec.Review)
+	}
+	if strings.Contains(out.String(), "incomplete_collection") {
+		t.Fatalf("an acknowledged incomplete source must not block the preview:\n%s", out.String())
+	}
+}
+
+func TestGuided_IncompleteSourceNotAckedBlocks(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Collection = incompleteCollection()
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// keep existing (0), do NOT acknowledge (false), no missing work, confirm review.
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, false, true}}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
+	if code != exitBlocked {
+		t.Fatalf("want a blocked preview, got %d\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "incomplete_collection") {
+		t.Fatalf("want incomplete_collection in the block reasons:\n%s", out.String())
+	}
+}
+
+// --- classification authority + suggestions ---------------------------------
+
+func TestGuided_ClassificationSuggestionNeverApplied(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig() // config map suggests Proj -> cls-1
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// confirm the block (0), no missing work, LEAVE classification unset (last option),
+	// confirm the review.
+	p := &fakePrompter{choose: []int{2, 3}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
+	// The plan blocks on the unresolved classification, but the review IS applied.
+	if code != exitBlocked {
+		t.Fatalf("want a blocked preview for an unset classification, got %d\n%s", code, out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 {
+		t.Fatalf("want 1 confirmed interval, got %+v", rec.Confirmed)
+	}
+	if rec.Confirmed[0].ClassificationID != "" {
+		t.Fatalf("a suggestion must NEVER be auto-applied, got %q", rec.Confirmed[0].ClassificationID)
+	}
+	if !strings.Contains(out.String(), "suggestion (unapplied)") {
+		t.Fatalf("want the suggestion shown as unapplied:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "unresolved_classification") {
+		t.Fatalf("want the preview to block on unresolved_classification:\n%s", out.String())
+	}
+}
+
+// --- journal narratives + manual linkage ------------------------------------
+
+func journalEvidence() evidence.Evidence {
+	start := time.Date(2026, 10, 6, 3, 0, 0, 0, time.UTC)
+	return evidence.Evidence{
+		ID:          "j1",
+		Kind:        evidence.SourceJournal,
+		Title:       "Shipped the parser fix",
+		Description: "Shipped the parser fix",
+		SourceRefs: []evidence.SourceRef{{
+			Kind: evidence.SourceJournal, SourceID: "journal-work",
+			NotePath: "02 - Daily & Logs/2026-10-06.md", HeadingPath: "Work / Gradion", Section: "Work",
+			LineStart: 12, LineEnd: 14, StatedDate: "2026-10-06",
+		}},
+		ObservedAt: start,
+	}
+}
+
+func TestGuided_JournalNarrativeLinkedToManualInterval(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, journalEvidence())
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// narrative: skip (0); missing work: yes; manual interval inputs; link the journal (multi [0]);
+	// add another? no; classification: option 1; confirm review.
+	p := &fakePrompter{
+		choose:   []int{0, 0}, // narrative skip, classification option 0
+		inputs:   []string{"09:00", "10:00", "Proj", "did journal work"},
+		multi:    [][]int{{0}},
+		confirms: []bool{true, false, true}, // missing=yes, add-another=no, final=yes
+	}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 {
+		t.Fatalf("want 1 confirmed manual interval, got %+v", rec.Confirmed)
+	}
+	ci := rec.Confirmed[0]
+	if !ci.Manual {
+		t.Fatalf("want a manual confirmed interval, got %+v", ci)
+	}
+	if len(ci.EvidenceIDs) != 2 {
+		t.Fatalf("want the manual id + the linked journal id, got %v", ci.EvidenceIDs)
+	}
+	if !containsString(ci.EvidenceIDs, "j1") {
+		t.Fatalf("want the journal id linked, got %v", ci.EvidenceIDs)
+	}
+	// Exactly one manual evidence item, and its own duration is authoritative
+	// (60 minutes), not doubled by the linked journal item.
+	manuals := 0
+	for _, e := range rec.CollectedEvidence {
+		if e.Kind == evidence.SourceManual {
+			manuals++
+			if !containsString(e.LinkedEvidenceIDs, "j1") {
+				t.Fatalf("want the manual evidence to carry the link, got %+v", e.LinkedEvidenceIDs)
+			}
+		}
+	}
+	if manuals != 1 {
+		t.Fatalf("want exactly 1 manual evidence item, got %d", manuals)
+	}
+	if ci.StartTime != "09:00" || ci.EndTime != "10:00" {
+		t.Fatalf("want the user-timed span preserved, got %s-%s", ci.StartTime, ci.EndTime)
+	}
+	if !strings.Contains(out.String(), "duration=unknown") {
+		t.Fatalf("the narrative must be shown with an explicit unknown duration:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "stated=2026-10-06") {
+		t.Fatalf("the note's OWN stated date must be shown as quoted provenance:\n%s", out.String())
+	}
+}
+
+func TestGuided_MissingWorkQuestionAskedOnce(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	p := &fakePrompter{choose: []int{2, 0}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	n := 0
+	for _, title := range p.confirmTitles {
+		if strings.Contains(title, "work missing") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the missing-work question must be asked exactly once, got %d (%v)", n, p.confirmTitles)
+	}
+}
+
+// --- zero remote writes + no hidden credential retrieval --------------------
+
+func TestGuided_ZeroRemoteWrites(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+	remote := &submitFakeRemote{}
+	r, store := newGuidedRunner(t, storage, remote, cfg)
+
+	var out, errb bytes.Buffer
+	p := &fakePrompter{choose: []int{2, 0}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if remote.writes != 0 {
+		t.Fatalf("the guided run must make ZERO remote writes, got %d", remote.writes)
+	}
+}
+
+// recordingResolver fails on every lookup and records the services asked for.
+type recordingResolver struct{ calls []string }
+
+func (r *recordingResolver) Lookup(_ context.Context, service, _ string) (string, error) {
+	r.calls = append(r.calls, service)
+	return "", &keychain.OperatingError{Outcome: keychain.OutcomeNotFound, Code: "KEYCHAIN_ERR_NOT_FOUND", Message: "absent"}
+}
+
+func TestGuided_NoHiddenCredentialRetrieval(t *testing.T) {
+	rec := &recordingResolver{}
+	restore := keychain.SetDefaultResolver(rec)
+	t.Cleanup(restore)
+	// A resolved git token lets preflight pass WITHOUT any Keychain lookup.
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig() // no sources, no remote, no keychain refs
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	p := &fakePrompter{confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("a no-source guided run must not touch the Keychain: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if len(rec.calls) != 0 {
+		t.Fatalf("the guided run must not resolve any credential, got lookups %v", rec.calls)
+	}
+}
+
+// --- collision join: counts once --------------------------------------------
+
+func manualEvidenceAt(id, project string, start, end time.Time) evidence.Evidence {
+	return evidence.Evidence{
+		ID: id, Kind: evidence.SourceManual, Title: "manual", Description: "manual work",
+		Start: start, End: end, Duration: evidence.KnownDuration(int(end.Sub(start).Minutes())),
+		SourceRefs:   []evidence.SourceRef{{Kind: evidence.SourceManual}},
+		ProjectHints: []string{project}, ObservedAt: start,
+	}
+}
+
+func meetingEvidenceAt(id string, start, end time.Time) evidence.Evidence {
+	return evidence.Evidence{
+		ID: id, Kind: evidence.SourceCalendar, Title: "Meeting", Start: start, End: end,
+		Status: evidence.EventStatusConfirmed, Invitation: evidence.InvitationAccepted,
+		Duration: evidence.KnownDuration(int(end.Sub(start).Minutes())), ObservedAt: start,
+	}
+}
+
+func TestGuided_CollisionJoinCountsOnce(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence,
+			manualEvidenceAt("m1", "Proj", time.Date(2026, 10, 6, 9, 0, 0, 0, loc), time.Date(2026, 10, 6, 10, 0, 0, 0, loc)),
+			meetingEvidenceAt("cal1", time.Date(2026, 10, 6, 9, 30, 0, 0, loc), time.Date(2026, 10, 6, 10, 30, 0, 0, loc)),
+		)
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// manual block confirm (0), meeting join (4), classification (0);
+	// no missing work, confirm review.
+	p := &fakePrompter{choose: []int{0, 4, 0}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 {
+		t.Fatalf("a join must count ONCE, got %d intervals: %+v", len(rec.Confirmed), rec.Confirmed)
+	}
+	ci := rec.Confirmed[0]
+	if ci.Kind != "joint" {
+		t.Fatalf("want a joint interval, got %+v", ci)
+	}
+	if !containsString(ci.EvidenceIDs, "m1") || !containsString(ci.EvidenceIDs, "cal1") {
+		t.Fatalf("the joint must carry both evidence ids, got %v", ci.EvidenceIDs)
+	}
+	if ci.StartTime != "09:00" || ci.EndTime != "10:30" {
+		t.Fatalf("want the union span 09:00-10:30, got %s-%s", ci.StartTime, ci.EndTime)
+	}
+	if ci.ClassificationID != "cls-1" {
+		t.Fatalf("the joint must inherit the classification, got %q", ci.ClassificationID)
+	}
+}
+
+// --- cancel after choices preserves prior state -----------------------------
+
+func TestGuided_CancelAfterChoicesPreservesPriorState(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Review.AcknowledgedSources = []string{"cal"}
+		rec.Approvals = []workflow.Approval{{ApprovalID: "a1", PlanID: "p1", Date: testDate}}
+	})
+	before := loadRecord(t, storage, testDate)
+
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+	var out, errb bytes.Buffer
+	// keep existing (0); no missing work; then CANCEL at the final confirmation.
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, false}}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
+	if code == exitOK {
+		t.Fatalf("a cancelled final confirmation must not succeed")
+	}
+	after := loadRecord(t, storage, testDate)
+	if len(after.Confirmed) != len(before.Confirmed) || after.Confirmed[0].Description != before.Confirmed[0].Description {
+		t.Fatalf("prior confirmed work must be preserved:\n before=%+v\n after=%+v", before.Confirmed, after.Confirmed)
+	}
+	if len(after.Approvals) != 1 || after.Approvals[0].InvalidatedAt != nil || after.Approvals[0].Superseded {
+		t.Fatalf("a prior approval must be preserved untouched, got %+v", after.Approvals)
+	}
+	if after.Review == nil || len(after.Review.AcknowledgedSources) != 1 || after.Review.AcknowledgedSources[0] != "cal" {
+		t.Fatalf("prior review selections must be preserved, got %+v", after.Review)
+	}
+}
+
+// --- plain cancellation never accepts a default -----------------------------
+
+func TestPlainPrompter_CancelledContextAborts(t *testing.T) {
+	var out bytes.Buffer
+	p := newPlainPrompter(strings.NewReader("1\ny\n"), &out)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := p.Choose(ctx, "t", []promptOption{{Label: "a"}}, 0); !errors.Is(err, errAborted) {
+		t.Fatalf("a cancelled Choose must abort, got %v", err)
+	}
+	if _, err := p.Confirm(ctx, "t", true); !errors.Is(err, errAborted) {
+		t.Fatalf("a cancelled Confirm must abort (never the default), got %v", err)
+	}
+	if _, err := p.Input(ctx, "t", "", "default"); !errors.Is(err, errAborted) {
+		t.Fatalf("a cancelled Input must abort (never the default), got %v", err)
+	}
+	if _, err := p.MultiChoose(ctx, "t", []promptOption{{Label: "a"}}); !errors.Is(err, errAborted) {
+		t.Fatalf("a cancelled MultiChoose must abort, got %v", err)
+	}
+}
+
+func TestPlainPrompter_EOFFromEmptyReaderAborts(t *testing.T) {
+	var out bytes.Buffer
+	p := newPlainPrompter(strings.NewReader(""), &out)
+	if _, err := p.Choose(context.Background(), "t", []promptOption{{Label: "a"}}, 0); !errors.Is(err, errAborted) {
+		t.Fatalf("an EOF must abort, got %v", err)
+	}
+}
+
+// --- retained existing classification is explicit, not silent ---------------
+
+func TestGuided_RetainedClassificationFollowup(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) { *rec = readyRecord(testDate) })
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "keep their existing classification") || !strings.Contains(out.String(), "classify select") {
+		t.Fatalf("a retained classification must be disclosed with an actionable followup:\n%s", out.String())
+	}
+}
+
+// TestGuidedOfflineHarness is the named, hermetic guided-run harness. It drives
+// the REAL orchestration offline (no credential, no remote, no live service) with
+// a sanitized journal note plus local git evidence, and asserts the persisted
+// record. Run it with:
+//
+//	go test ./cmd/timesheet -run TestGuidedOfflineHarness -v
+func TestGuidedOfflineHarness(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "Intern Academy", ActivityType: "internal project"})
+
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig() // Asia/Ho_Chi_Minh, no sources, no remote
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, journalEvidence())
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// journal: skip (0); missing work: yes; manual 09:00-10:00 linked to the note;
+	// add another: no; classification: option 0; confirm review.
+	p := &fakePrompter{
+		choose:   []int{0, 0},
+		inputs:   []string{"09:00", "10:00", "Proj", "reviewed the parser fix"},
+		multi:    [][]int{{0}},
+		confirms: []bool{true, false, true},
+	}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("offline harness: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 {
+		t.Fatalf("harness: want 1 confirmed interval, got %+v", rec.Confirmed)
+	}
+	if rec.Confirmed[0].ClassificationID != "cls-1" {
+		t.Fatalf("harness: want cls-1, got %q", rec.Confirmed[0].ClassificationID)
+	}
+	if len(rec.Approvals) != 0 {
+		t.Fatalf("harness: the guided run must not approve")
+	}
+	t.Logf("offline guided harness OK: %d interval(s), total %s-%s, plan %s",
+		len(rec.Confirmed), rec.Confirmed[0].StartTime, rec.Confirmed[0].EndTime, valueAfter(out.String(), "plan_id:"))
+}
+
+// --- existing confirmed work is editable via staged actions -----------------
+
+func TestGuided_ExistingConfirmedEditable(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) { *rec = readyRecord(testDate) })
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// edit the existing interval (1): keep times/project, set a new description.
+	p := &fakePrompter{choose: []int{1}, inputs: []string{"", "", "", "edited description"}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || rec.Confirmed[0].ID != "c1" {
+		t.Fatalf("want the same confirmed interval, got %+v", rec.Confirmed)
+	}
+	if rec.Confirmed[0].Description != "edited description" {
+		t.Fatalf("an existing interval must be editable, got %q", rec.Confirmed[0].Description)
+	}
+}
+
+// --- B6: explicit --ack is staged, validated, and applied only on confirm ----
+
+func TestGuided_ExplicitAckStagedNoPrompt(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Collection = incompleteCollection()
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// keep existing (0); NO ack prompt (already staged); no missing work; confirm.
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "cal-work", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Review == nil || len(rec.Review.AcknowledgedSources) != 1 || rec.Review.AcknowledgedSources[0] != "cal-work" {
+		t.Fatalf("the explicit --ack must be staged and applied, got %+v", rec.Review)
+	}
+	if strings.Contains(out.String(), "Acknowledge these incomplete sources") {
+		t.Fatalf("an explicit --ack must NOT prompt again:\n%s", out.String())
+	}
+}
+
+func TestGuided_UnknownAckReportedAndSkipped(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Collection = incompleteCollection()
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// keep existing (0); the unknown ack is skipped so the real prompt appears;
+	// acknowledge it (true); no missing work; confirm.
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{true, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "bogus", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(errb.String(), "bogus") {
+		t.Fatalf("an unknown --ack id must be reported, got:\n%s", errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Review == nil || len(rec.Review.AcknowledgedSources) != 1 || rec.Review.AcknowledgedSources[0] != "cal-work" {
+		t.Fatalf("want only cal-work acknowledged, got %+v", rec.Review)
+	}
+}
+
+func TestGuided_ExplicitAckNotAppliedOnAbort(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Collection = incompleteCollection()
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// keep existing (0); no missing work; CANCEL at the final confirmation.
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, false}}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "cal-work", testDate, p, &out, &errb)
+	if code == exitOK {
+		t.Fatalf("a cancelled final confirmation must not succeed")
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Review != nil && len(rec.Review.AcknowledgedSources) != 0 {
+		t.Fatalf("an aborted run must not apply the staged --ack, got %+v", rec.Review)
+	}
+}
+
+// --- B7: terminal detection uses the PASSED writer's actual descriptor --------
+
+func TestWriterIsTTY_RejectsBufferAndPipe(t *testing.T) {
+	if writerIsTTY(&bytes.Buffer{}) {
+		t.Fatalf("a buffer is not a terminal")
+	}
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+	if writerIsTTY(pw) {
+		t.Fatalf("a pipe is not a terminal")
+	}
+}
+
+func TestGuided_RedirectedWriterRefusesTUI(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, guidedTestConfig())
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+	var stderr bytes.Buffer
+	// stdin is reported as a terminal, but the PASSED stdout is a pipe -> refuse.
+	code := runCLIWithIO(context.Background(),
+		[]string{"run", "--interactive", "--config", cfgPath, "--storage-dir", filepath.Join(dir, "records"), "--date", testDate},
+		strings.NewReader(""), pw, &stderr, true, writerIsTTY(pw))
+	if code != exitUsage {
+		t.Fatalf("a redirected stdout must refuse the TUI, got %d (%s)", code, stderr.String())
+	}
+}
+
+// --- B8: an invalid time edit is re-prompted, never silently dropped ---------
+
+func TestGuided_ExistingEditInvalidTimeReprompts(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) { *rec = readyRecord(testDate) })
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// edit existing (1); an invalid start, then a valid 09:30-10:30; keep project;
+	// new description; no missing work; confirm.
+	p := &fakePrompter{
+		choose:   []int{1},
+		inputs:   []string{"9am", "09:30", "10:30", "", "edited"},
+		confirms: []bool{false, true},
+	}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "invalid time") {
+		t.Fatalf("an invalid time must be reported:\n%s", out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].StartTime != "09:30" || rec.Confirmed[0].EndTime != "10:30" {
+		t.Fatalf("want the corrected span 09:30-10:30, got %s-%s", rec.Confirmed[0].StartTime, rec.Confirmed[0].EndTime)
+	}
+	if rec.Confirmed[0].Description != "edited" {
+		t.Fatalf("want the description applied, got %q", rec.Confirmed[0].Description)
+	}
+}
+
+func TestGuided_ProposedEditInvalidTimeReprompts(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// edit the proposed block (2); an invalid end, then a valid pair; project; desc;
+	// no missing work; classification; confirm.
+	p := &fakePrompter{
+		choose:   []int{2, 0},
+		inputs:   []string{"16:00", "25:00", "17:00", "Proj", "work"},
+		confirms: []bool{false, true},
+	}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "invalid time") {
+		t.Fatalf("an invalid time must be reported:\n%s", out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].StartTime != "16:00" || rec.Confirmed[0].EndTime != "17:00" {
+		t.Fatalf("want the corrected span 16:00-17:00, got %s-%s", rec.Confirmed[0].StartTime, rec.Confirmed[0].EndTime)
+	}
+}
+
+func TestGuided_EOFFollowingInvalidTimePreservesPriorState(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Approvals = []workflow.Approval{{ApprovalID: "a1", PlanID: "p1", Date: testDate}}
+	})
+	before := loadRecord(t, storage, testDate)
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// edit existing (1); an invalid start, then EOF (the fake runs out).
+	p := &fakePrompter{choose: []int{1}, inputs: []string{"9am"}}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
+	if code == exitOK {
+		t.Fatalf("an EOF after an invalid time must abort")
+	}
+	after := loadRecord(t, storage, testDate)
+	if len(after.Confirmed) != len(before.Confirmed) || after.Confirmed[0].StartTime != before.Confirmed[0].StartTime {
+		t.Fatalf("an abort must preserve the confirmed interval:\n before=%+v\n after=%+v", before.Confirmed, after.Confirmed)
+	}
+	if len(after.Approvals) != 1 || after.Approvals[0].InvalidatedAt != nil {
+		t.Fatalf("an abort must preserve the approval, got %+v", after.Approvals)
+	}
+}

@@ -51,6 +51,12 @@ The standalone CLI and agent skill call one deterministic Go workflow. The CLI m
 
 Default to today in the configured timezone. Allow a date or date range, but review and approve each day independently. Split confirmed intervals at local midnight without losing minutes. One process at a time may modify or submit a day's record; a second writer stops clearly. Collection may proceed independently.
 
+The guided terminal interaction that implements this table (interactive review,
+authoritative classification, deliberate local-review confirmation, exact preview)
+is specified in [the guided workflow note](agents/guided-workflow.md). Approval
+and submission remain separate explicit commands; the guided run never approves or
+submits.
+
 ## Evidence and proposal rules
 
 ### Calendar

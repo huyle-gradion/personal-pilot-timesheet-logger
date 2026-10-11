@@ -50,7 +50,10 @@ const (
 	keychainRefPref = "keychain:"
 )
 
-func main() { os.Exit(runCLI(context.Background(), os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	os.Exit(runCLIWithIO(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr,
+		isTerminalFD(os.Stdin.Fd()), writerIsTTY(os.Stdout)))
+}
 
 // cliConfig is the CLI's non-secret configuration document (stdlib JSON). It
 // embeds run.Config (the evidence config + optional date) and adds the storage,
@@ -83,6 +86,22 @@ func (c cliConfig) storageDir() string {
 }
 
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runCLIWithIO(ctx, args, os.Stdin, stdout, stderr,
+		isTerminalFD(os.Stdin.Fd()), writerIsTTY(stdout))
+}
+
+// writerIsTTY reports whether the PASSED writer is a terminal, by inspecting its
+// ACTUAL descriptor when it is an *os.File. A redirected buffer, pipe, or any
+// non-file writer is NOT a terminal, so a caller that redirects stdout never
+// selects the TUI on the strength of the process's global os.Stdout.
+func writerIsTTY(w io.Writer) bool {
+	if f, ok := w.(*os.File); ok {
+		return isTerminalFD(f.Fd())
+	}
+	return false
+}
+
+func runCLIWithIO(ctx context.Context, args []string, in io.Reader, stdout, stderr io.Writer, stdinTTY, stdoutTTY bool) int {
 	if len(args) == 0 {
 		printUsage(stderr)
 		return exitUsage
@@ -108,24 +127,30 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("timesheet "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		date          = fs.String("date", "", "target date YYYY-MM-DD (default: today in the configured timezone)")
-		from          = fs.String("from", "", "range start YYYY-MM-DD")
-		to            = fs.String("to", "", "range end YYYY-MM-DD")
-		configPath    = fs.String("config", "", "path to the JSON config document")
-		storageDir    = fs.String("storage-dir", "", "workflow record directory (overrides config)")
-		offline       = fs.Bool("offline", false, "skip the Gradion remote; source fetches (e.g. calendar ICS) still run")
-		deep          = fs.Bool("deep", false, "validate ALL configured sources (including disabled) during preflight")
-		editorialOn   = fs.Bool("editorial", true, "enable the optional editorial agent when configured")
-		noEditorial   = fs.Bool("no-editorial", false, "disable the editorial agent (deterministic text only)")
-		decisionsPath = fs.String("decisions", "", "path to a decisions JSON file ({date} is substituted per day)")
-		_             = fs.Bool("non-interactive", false, "never prompt (the CLI is always non-interactive)")
-		ack           = fs.String("ack", "", "comma-separated source ids to acknowledge")
-		planID        = fs.String("plan", "", "plan id to approve (approve)")
-		approvalID    = fs.String("approval", "", "approval id to submit (must match the active approval)")
-		vault         = fs.String("vault", "", "vault root for the managed export (overrides config)")
-		dailyDir      = fs.String("daily-dir", "", "daily-note directory, relative to the vault (overrides config)")
+		date           = fs.String("date", "", "target date YYYY-MM-DD (default: today in the configured timezone)")
+		from           = fs.String("from", "", "range start YYYY-MM-DD")
+		to             = fs.String("to", "", "range end YYYY-MM-DD")
+		configPath     = fs.String("config", "", "path to the JSON config document")
+		storageDir     = fs.String("storage-dir", "", "workflow record directory (overrides config)")
+		offline        = fs.Bool("offline", false, "skip the Gradion remote; source fetches (e.g. calendar ICS) still run")
+		deep           = fs.Bool("deep", false, "validate ALL configured sources (including disabled) during preflight")
+		editorialOn    = fs.Bool("editorial", true, "enable the optional editorial agent when configured")
+		noEditorial    = fs.Bool("no-editorial", false, "disable the editorial agent (deterministic text only)")
+		decisionsPath  = fs.String("decisions", "", "path to a decisions JSON file ({date} is substituted per day)")
+		nonInteractive = fs.Bool("non-interactive", false, "never prompt (force the scripted path)")
+		interactive    = fs.Bool("interactive", false, "start the guided run (needs a terminal on stdin and stdout)")
+		plain          = fs.Bool("plain", false, "guided run with safe line-based prompts (no TUI)")
+		ack            = fs.String("ack", "", "comma-separated source ids to acknowledge")
+		planID         = fs.String("plan", "", "plan id to approve (approve)")
+		approvalID     = fs.String("approval", "", "approval id to submit (must match the active approval)")
+		vault          = fs.String("vault", "", "vault root for the managed export (overrides config)")
+		dailyDir       = fs.String("daily-dir", "", "daily-note directory, relative to the vault (overrides config)")
 	)
 	if err := fs.Parse(args[1:]); err != nil {
+		return exitUsage
+	}
+	if (*interactive || *plain) && sub != "run" {
+		fmt.Fprintln(stderr, "timesheet: --interactive/--plain apply to `run` only")
 		return exitUsage
 	}
 
@@ -176,7 +201,33 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "resolve":
 		return cmdResolve(ctx, runner, *date, *decisionsPath, stdout, stderr)
 	case "run":
-		return cmdRun(ctx, runner, cfg, editorActive, *deep, *decisionsPath, *ack, *date, *from, *to, stdout, stderr)
+		mode, modeErr := resolveMode(guidedRequest{
+			Interactive:    *interactive,
+			Plain:          *plain,
+			NonInteractive: *nonInteractive,
+			Decisions:      strings.TrimSpace(*decisionsPath) != "",
+			StdinTTY:       stdinTTY,
+			StdoutTTY:      stdoutTTY,
+			CI:             ciDetected(),
+		})
+		if modeErr != nil {
+			fmt.Fprintln(stderr, "timesheet:", modeErr)
+			return exitUsage
+		}
+		if mode == modeScripted {
+			return cmdRun(ctx, runner, cfg, editorActive, *deep, *decisionsPath, *ack, *date, *from, *to, stdout, stderr)
+		}
+		if strings.TrimSpace(*from) != "" || strings.TrimSpace(*to) != "" {
+			fmt.Fprintln(stderr, "timesheet: the guided run reviews one day at a time; use --date, or the scripted path, for a range")
+			return exitUsage
+		}
+		var p prompter
+		if mode == modeTUI {
+			p = newTUIPrompter(in, stdout)
+		} else {
+			p = newPlainPrompter(in, stderr)
+		}
+		return cmdRunGuided(ctx, runner, cfg, store, editorActive, *deep, *ack, *date, p, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "timesheet: unknown subcommand %q\n", sub)
 		printUsage(stderr)
@@ -195,7 +246,7 @@ Subcommands:
   approve     bind an approval to a plan: approve --plan <PLANID>
   submit      execute the record's ACTIVE approval: submit --date D [--approval <APPROVALID>]
   resolve     reconcile unresolved operations from --decisions
-  run         preflight + collect + review + export convenience
+  run         preflight + collect + review + export convenience (--interactive for a guided run)
   classify    classification catalog: classify list | classify select
   metrics     token usage + durations (metrics import|aggregate|report|compare|run)
 
@@ -208,7 +259,9 @@ Flags:
   --deep                   validate ALL configured sources (including disabled) during preflight
   --editorial/--no-editorial  toggle the optional editorial agent
   --decisions FILE         decisions JSON ({date} substituted per day)
-  --non-interactive        never prompt (the CLI is always non-interactive)
+  --non-interactive        never prompt (force the scripted path)
+  --interactive            guided run (needs a terminal on stdin AND stdout)
+  --plain                  guided run with safe line-based prompts (no TUI)
   --ack SOURCE,...         acknowledge incomplete sources
   --plan PLANID            plan id to approve
   --approval APPROVALID    approval id to submit (must match the active approval)
@@ -902,6 +955,17 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// ciDetected reports whether a CI environment is present. A TUI is never started
+// under CI even if a pseudo-terminal exists.
+func ciDetected() bool {
+	for _, k := range []string{"CI", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "CIRCLECI", "TEAMCITY_VERSION", "JENKINS_URL"} {
+		if strings.TrimSpace(os.Getenv(k)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func printProposal(w io.Writer, date string, prop proposal.Proposal) {

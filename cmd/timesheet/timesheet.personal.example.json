@@ -1,0 +1,34 @@
+{
+  "evidence": {
+    "id": "personal",
+    "timezone": "Asia/Ho_Chi_Minh",
+    "sources": [
+      {
+        "id": "journal-work",
+        "type": "journal",
+        "enabled": true,
+        "config": {
+          "vault": "/Users/you/vault",
+          "daily_dir": "02 - Daily & Logs"
+        }
+      },
+      {
+        "id": "git-local",
+        "type": "git",
+        "enabled": true,
+        "config": {
+          "mode": "local",
+          "local_repos": ".",
+          "author": "you@example.com"
+        }
+      }
+    ]
+  },
+  "storage_dir": "/Users/you/.timesheet/records",
+  "vault": "/Users/you/vault",
+  "daily_dir": "02 - Daily & Logs",
+  "editorial": {
+    "enabled": false,
+    "adapter": "none"
+  }
+}

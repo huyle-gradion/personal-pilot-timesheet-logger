@@ -9,9 +9,14 @@ Sanitized templates:
 - `cmd/timesheet/timesheet.example.json` (calendar + local-only git)
 - `cmd/timesheet/timesheet.local-git.example.json` (local + remote git)
 - `cmd/timesheet/timesheet.journal.example.json` (optional local read-only journal + local git)
+- `cmd/timesheet/timesheet.personal.example.json` (personal offline: journal + local-only git, no credential, no remote)
 
-Both templates use `keychain:<service>` references and contain **no** secret
+All templates use `keychain:<service>` references and contain **no** secret
 values. A user's own config is separate and must never be overwritten.
+
+The guided terminal `run` (`timesheet run --interactive`, `--plain`) and its
+review contract are documented in
+[the guided workflow note](guided-workflow.md).
 
 The optional local read-only **journal** source (`"type": "journal"`) reads the
 Obsidian daily note as narrative evidence. Its keys, path confinement, identity,

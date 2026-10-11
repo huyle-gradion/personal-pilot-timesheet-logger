@@ -3,25 +3,62 @@ package run
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/editorial"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/proposal"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/review"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/selection"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
 // ReviewDecisions is the serializable decision set the CLI and the skill both
 // apply. It is the parity seam between interactive review and a scripted review.
+//
+// Description and Classification are ADDITIVE (omitempty): a decision set that
+// omits them behaves exactly as before. A Description or Classification decision
+// may reference EITHER a proposal block id or a confirmed interval id, like
+// Trim/Project/Join.
 type ReviewDecisions struct {
-	Confirm     []ConfirmDecision `json:"confirm,omitempty"`
-	Exclude     []ExcludeDecision `json:"exclude,omitempty"`
-	Join        []JoinDecision    `json:"join,omitempty"`
-	Trim        []TrimDecision    `json:"trim,omitempty"`
-	Project     []ProjectDecision `json:"project,omitempty"`
-	Manual      []ManualDecision  `json:"manual,omitempty"`
-	MarkEmpty   bool              `json:"mark_empty,omitempty"`
-	Acknowledge []string          `json:"acknowledge,omitempty"`
+	Confirm        []ConfirmDecision        `json:"confirm,omitempty"`
+	Exclude        []ExcludeDecision        `json:"exclude,omitempty"`
+	Join           []JoinDecision           `json:"join,omitempty"`
+	Trim           []TrimDecision           `json:"trim,omitempty"`
+	Project        []ProjectDecision        `json:"project,omitempty"`
+	Description    []DescriptionDecision    `json:"description,omitempty"`
+	Classification []ClassificationDecision `json:"classification,omitempty"`
+	Manual         []ManualDecision         `json:"manual,omitempty"`
+	MarkEmpty      bool                     `json:"mark_empty,omitempty"`
+	Acknowledge    []string                 `json:"acknowledge,omitempty"`
+}
+
+// AuthoritativeClassification resolves a classification id against a catalog
+// using the shared selection contract (selection.ResolveToken) and returns the
+// AUTHORITATIVE id together with the activity type the catalog DERIVES for it. A
+// declared activity type that disagrees with the catalog's derived type is
+// refused, and an id that does not resolve is refused. It never invents an id or
+// an activity type.
+//
+// This is a CALLER-side validator: the guided UI calls it before staging a
+// choice, so an inconsistent pair is refused there. ApplyReview itself consults
+// NO catalog: a scripted decisions file may carry its own ClassificationID /
+// ActivityType, and Runner.Submit is the mandatory gate that re-validates the
+// classification id (and the activity type) against a FRESH catalog before any
+// write. ActivityType is display/validation only and is never sent.
+func AuthoritativeClassification(cat gradion.Catalog, classificationID, declaredActivityType string) (string, string, error) {
+	opt, err := selection.ResolveToken(cat, classificationID)
+	if err != nil {
+		return "", "", fmt.Errorf("run: classification %q: %w", classificationID, err)
+	}
+	declared := strings.TrimSpace(declaredActivityType)
+	if declared != "" && opt.ActivityType != "" && !strings.EqualFold(declared, opt.ActivityType) {
+		return "", "", fmt.Errorf("run: classification %q declares activity type %q but the catalog derives %q",
+			opt.ID, declared, opt.ActivityType)
+	}
+	return opt.ID, opt.ActivityType, nil
 }
 
 // ConfirmDecision confirms one proposed block.
@@ -56,7 +93,35 @@ type ProjectDecision struct {
 	Project string `json:"project"`
 }
 
-// ManualDecision adds or updates a manual interval (keyed by UUID).
+// DescriptionDecision sets a confirmed block's user-authored description. It is
+// ADDITIVE: it is applied after Confirm so it may reference a proposal block id
+// or a confirmed interval id.
+type DescriptionDecision struct {
+	BlockID string `json:"block_id"`
+	Text    string `json:"text"`
+}
+
+// ClassificationDecision sets a confirmed block's EXPLICIT Gradion classification
+// and the activity type. It is ADDITIVE. The guided caller resolves the choice
+// through the catalog and stores the DERIVED activity type; a scripted decisions
+// file may supply its own ClassificationID/ActivityType, which ApplyReview does
+// NOT validate against a catalog. Runner.Submit re-validates the classification
+// id (and the activity type) against a FRESH catalog before any write, and only
+// the id is ever sent. Applying a classification decision invalidates a prior
+// approval for the date, so a stale approval cannot survive a change.
+type ClassificationDecision struct {
+	BlockID          string `json:"block_id"`
+	ClassificationID string `json:"classification_id"`
+	ActivityType     string `json:"activity_type,omitempty"`
+}
+
+// ManualDecision adds or updates a manual interval (keyed by UUID). When Confirm
+// is set, the interval's materialized proposed block is ALSO confirmed in the
+// same ApplyReview, so an explicitly user-timed activity needs no second pass.
+// ClassificationID/ActivityType are applied to the confirmed manual block(s). The
+// guided caller derives the activity type from a catalog option; ApplyReview does
+// not validate the pair, and Runner.Submit re-validates the id against a fresh
+// catalog before any write.
 type ManualDecision struct {
 	UUID        string    `json:"uuid,omitempty"`
 	Start       time.Time `json:"start"`
@@ -66,6 +131,10 @@ type ManualDecision struct {
 	// EvidenceIDs links the manual activity to supporting source records. They
 	// add no minutes; the manual interval's own span is authoritative.
 	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	// Confirm confirms the materialized manual block(s) in this same ApplyReview.
+	Confirm          bool   `json:"confirm,omitempty"`
+	ClassificationID string `json:"classification_id,omitempty"`
+	ActivityType     string `json:"activity_type,omitempty"`
 }
 
 // CurrentProposal re-derives the proposal honoring the record's review decisions
@@ -112,35 +181,39 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 	}
 	blocks := proposalBlocksByID(prop)
 
-	// Confirm first, recording which confirmed interval each proposal block
-	// produced, so Trim/Project/Join decisions may reference EITHER a proposal
-	// block id or the confirmed interval id.
-	blockToConfirmed := make(map[string]string, len(d.Confirm))
+	// Confirm first, recording EVERY confirmed interval each proposal block
+	// produced (in creation order). Trim/Project/Join then reference EITHER a
+	// proposal block id or the confirmed interval id; Description/Classification
+	// reach EVERY fragment of a split block.
+	blockToConfirmed := make(map[string][]string, len(d.Confirm))
 	for _, c := range d.Confirm {
 		block, ok := blocks[c.BlockID]
 		if !ok {
 			return fmt.Errorf("run: confirm: unknown block %q", c.BlockID)
 		}
-		before := confirmedIDSet(rec)
-		if err := review.ConfirmProposed(rec, block, review.ConfirmOptions{
+		ids, err := confirmProposedBlock(rec, block, review.ConfirmOptions{
 			Project: c.Project, Attendance: c.Attendance, Now: r.now(), Location: r.loc,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
-		for _, ci := range rec.Confirmed {
-			if !before[ci.ID] {
-				blockToConfirmed[c.BlockID] = ci.ID
-			}
+		blockToConfirmed[c.BlockID] = ids
+	}
+	// resolveAll returns EVERY confirmed interval a decision targets (all
+	// fragments of a split block). resolve returns a SINGLE id and keeps the
+	// historical "last fragment" behavior for the single-target actions.
+	resolveAll := func(id string) []string {
+		if _, ok := findConfirmedID(rec, id); ok {
+			return []string{id}
 		}
+		if ids, ok := blockToConfirmed[id]; ok && len(ids) > 0 {
+			return ids
+		}
+		return []string{id}
 	}
 	resolve := func(id string) string {
-		if _, ok := findConfirmedID(rec, id); ok {
-			return id
-		}
-		if confirmedID, ok := blockToConfirmed[id]; ok {
-			return confirmedID
-		}
-		return id
+		ids := resolveAll(id)
+		return ids[len(ids)-1]
 	}
 
 	for _, ex := range d.Exclude {
@@ -148,11 +221,9 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 			return err
 		}
 	}
-	for _, j := range d.Join {
-		if err := review.JoinCollision(rec, resolve(j.WorkBlockID), j.MeetingEvID); err != nil {
-			return err
-		}
-	}
+	// Trim/Project/Description/Classification are applied BEFORE Join, so a work
+	// interval that is later joined carries every edit (and its classification)
+	// into the joint interval, which JoinCollision copies from it.
 	for _, t := range d.Trim {
 		if err := review.TrimWork(rec, resolve(t.BlockID), t.NewStart, t.NewEnd); err != nil {
 			return err
@@ -160,6 +231,25 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 	}
 	for _, p := range d.Project {
 		if err := review.ResolveProject(rec, resolve(p.BlockID), p.Project); err != nil {
+			return err
+		}
+	}
+	for _, ds := range d.Description {
+		for _, id := range resolveAll(ds.BlockID) {
+			if err := review.SetDescription(rec, id, ds.Text); err != nil {
+				return err
+			}
+		}
+	}
+	for _, cs := range d.Classification {
+		for _, id := range resolveAll(cs.BlockID) {
+			if err := review.SetClassification(rec, id, cs.ClassificationID, cs.ActivityType); err != nil {
+				return err
+			}
+		}
+	}
+	for _, j := range d.Join {
+		if err := review.JoinCollision(rec, resolve(j.WorkBlockID), j.MeetingEvID); err != nil {
 			return err
 		}
 	}
@@ -172,6 +262,9 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 			return err
 		}
 	}
+	if err := r.confirmManualDecisions(rec, date, d.Manual); err != nil {
+		return err
+	}
 	if len(d.Acknowledge) > 0 {
 		if err := review.AcknowledgeSources(rec, d.Acknowledge); err != nil {
 			return err
@@ -181,11 +274,137 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 	if d.MarkEmpty {
 		return review.MarkReviewedEmpty(rec)
 	}
+
+	// Any decision that changes the user-reviewed schedule invalidates a prior
+	// approval for the date (mirroring `classify select`), so a stale approval
+	// cannot survive an edit. This is EAGER: submit also blocks via the plan's
+	// LocalFingerprint, but the approval is marked invalidated here as well.
+	// Acknowledge alone does not invalidate (it does not change the schedule), and
+	// collection never calls ApplyReview, so an unchanged approved day stays valid.
+	if scheduleAffecting(d) {
+		invalidateApprovalsForDate(rec, date, r.now())
+	}
+
 	final, err := r.appliedProposal(rec, date)
 	if err != nil {
 		return err
 	}
 	return review.MarkReviewed(rec, review.ProposalHash(final))
+}
+
+// scheduleAffecting reports whether a decision set contains any action that can
+// change the user-reviewed schedule (and therefore the plan content).
+func scheduleAffecting(d ReviewDecisions) bool {
+	return len(d.Confirm) > 0 || len(d.Exclude) > 0 || len(d.Join) > 0 ||
+		len(d.Trim) > 0 || len(d.Project) > 0 || len(d.Description) > 0 ||
+		len(d.Classification) > 0 || len(d.Manual) > 0
+}
+
+// confirmProposedBlock confirms one proposed block and returns the confirmed
+// interval ids it created (in creation order), so a later decision can reach
+// every fragment.
+func confirmProposedBlock(rec *workflow.Record, block proposal.ProposedTimeBlock, opts review.ConfirmOptions) ([]string, error) {
+	before := confirmedIDSet(rec)
+	if err := review.ConfirmProposed(rec, block, opts); err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, ci := range rec.Confirmed {
+		if !before[ci.ID] {
+			ids = append(ids, ci.ID)
+		}
+	}
+	return ids, nil
+}
+
+// confirmManualDecisions confirms the materialized proposed manual block(s) for
+// every ManualDecision with Confirm set, in THIS pass, so an explicitly
+// user-timed activity needs no second review pass. It requires an explicit UUID
+// so the materialized evidence id (and therefore the block) is identifiable. A
+// classification carried on the decision is applied to every confirmed fragment.
+func (r *Runner) confirmManualDecisions(rec *workflow.Record, date string, manuals []ManualDecision) error {
+	any := false
+	for _, m := range manuals {
+		if m.Confirm {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return nil
+	}
+	prop, err := r.appliedProposal(rec, date)
+	if err != nil {
+		return err
+	}
+	for _, m := range manuals {
+		if !m.Confirm {
+			continue
+		}
+		uuid := strings.TrimSpace(m.UUID)
+		if uuid == "" {
+			return fmt.Errorf("run: manual confirm: an explicit uuid is required")
+		}
+		evID := evidence.ManualID(manualEvidenceDate(rec, m), uuid)
+		for _, b := range proposalBlocksOf(prop) {
+			if b.Kind != proposal.BlockManual || !containsString(b.EvidenceIDs, evID) {
+				continue
+			}
+			ids, err := confirmProposedBlock(rec, b, review.ConfirmOptions{
+				Project: m.Project, Now: r.now(), Location: r.loc,
+			})
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(m.ClassificationID) != "" {
+				for _, id := range ids {
+					if err := review.SetClassification(rec, id, m.ClassificationID, m.ActivityType); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// manualEvidenceDate mirrors review.AddManualInterval's date choice so the
+// materialized manual evidence id is reproducible.
+func manualEvidenceDate(rec *workflow.Record, m ManualDecision) string {
+	if d := strings.TrimSpace(rec.Date); d != "" {
+		return d
+	}
+	return m.Start.Format("2006-01-02")
+}
+
+// proposalBlocksOf returns every proposed block (work, meetings, manual).
+func proposalBlocksOf(prop proposal.Proposal) []proposal.ProposedTimeBlock {
+	out := make([]proposal.ProposedTimeBlock, 0, len(prop.Work)+len(prop.Meetings)+len(prop.Manual))
+	out = append(out, prop.Work...)
+	out = append(out, prop.Meetings...)
+	out = append(out, prop.Manual...)
+	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// invalidateApprovalsForDate marks every not-yet-invalidated approval for the
+// date invalidated, so a change to the reviewed content cannot leave a stale
+// approval active.
+func invalidateApprovalsForDate(rec *workflow.Record, date string, now time.Time) {
+	for i := range rec.Approvals {
+		if rec.Approvals[i].Date != date || rec.Approvals[i].InvalidatedAt != nil {
+			continue
+		}
+		workflow.InvalidateApproval(rec, rec.Approvals[i].ApprovalID, "review_selection", now)
+	}
 }
 
 func confirmedIDSet(rec *workflow.Record) map[string]bool {
