@@ -721,6 +721,20 @@ Verification honesty: the full `go test ./...` suite is FAILED solely on the pre
 Next gate and blockers: release readiness remains blocked by the pre-existing internal/git load-sensitive test (out of scope; needs separate disposition). Production submission remains blocked.
 ```
 
+```text
+2026-10-11 / GIT-PREFLIGHT-TEST-1 / authorized -> investigating -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: owner-authorized bounded test-hardening slice (internal/git preflight tests + the smallest test seam); local commit; vault update. Not authorized: live services, credentials, Keychain changes, remote writes, push/merge. F2 (submit.Execute pre-validation) explicitly out of scope.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 75c54ad (parent b265b53) / 2 files, +308/-36: internal/git/preflight.go, internal/git/preflight_test.go. md5s matched the accepted fix1 manifest (.../opencode/git-preflight-test-1-fix1-manifest.txt).
+Worker/reviewer report references and verification level: @fixer (ses_ed5d5d5b4ffesn2R5xp5hZeDuU) implement + fix; @oracle independent review (ses_ed5cae28fffeAb6UnVSmQU9nw5) verdict "commit yes / release not established" (F1-F6 informational), focused re-review "F3/F5/F6 closed; commit yes".
+Root cause: TestResolveAuthToken_KeychainMissFallsThrough spawned a real `gh` subprocess inside probeGHAuthToken's 2s bound; under full-suite parallel load the spawn exceeded the bound, the process group was killed, and probeGHAuthToken discarded cmd.Wait()'s error, returning ("", nil) — so the test saw an empty token and failed. It depended on real `gh` execution and host scheduling.
+Fix: one minimal seam. defaultRunGH holds the real exec body and now PROPAGATES the ctx/Wait error (a killed/timed-out probe can no longer masquerade as an empty success); probeGHAuthToken routes through the unexported var runGH and keeps the production 2s bound. Preflight tests are rewritten to inject runGH (no PATH tricks, no subprocess). New hermetic tests prove: Keychain NotFound invokes the probe; a non-NotFound failure never does; the full credential precedence (explicit > GITHUB_TOKEN > GH_TOKEN > Keychain > probe); timeout/cancellation/error/empty via controlled dependencies. Production 2s bound, process-group kill, precedence, and redaction are preserved; only a genuine NotFound falls through.
+Open findings and disposition: F3/F5/F6 closed. Carried: F1 (the real defaultRunGH kill path has no automated coverage — inherent to hermeticity; documented limit); F2 (the error-propagation change is contained — only the caller ResolveAuthToken, which treats a probe error as no-token); F4 (root-cause narrative precision: the old test used a fake `gh` shell script on an overridden PATH, not the real binary; the dependency was subprocess spawn + PATH + the swallowed Wait error).
+Verification (honest): focused preflight tests `-count=100` and `-race -count=100` green; the FULL UNCACHED suite `go test -count=1 ./...` was GREEN across 6/6 repeated runs (25/25 packages) on the implementer's runs and 3/3 on the reviewer's runs; gofmt/build/vet/`git diff --check` clean. The previously reported load-sensitive internal/git failure is eliminated.
+Commit and publication status: committed locally 75c54ad; NOT pushed, no PR, no merge.
+Vault sync status: complete - project note and daily note updated.
+Next gate and blockers: F2 (submit.Execute pre-validation runtime gate) remains a separate pending assessment. Production submission remains blocked.
+```
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
