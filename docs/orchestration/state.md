@@ -648,6 +648,17 @@ Vault sync status: complete.
 Next gate and blockers: none pending; a production pilot requires a separately approved exact daily plan and live write authority. Production submission remains blocked.
 ```
 
+```text
+2026-10-11 / S8-FOLLOWUP-2 / submission-preview detail rendering -> independent review ACCEPTED -> hardening (S8F2-1/S8F2-2/doc/tests) ACCEPTED -> committed
+Owner authority reference: direct-dispatch session grant; local commits of accepted slices only.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 8820895 (parent 06c25e6) / cmd/timesheet/main.go(+test); md5s matched the accepted manifest before commit (main.go 5e503b9ad9733f6476b5ee8424e2936a, main_test.go a868a45ccf87fda05395b17a3adc4311).
+Evidence: @oracle independent review (ses_eda5e6395ffex0M34vLGCR7hYR) ACCEPTED (no introduced defects; S8F2-1..4 Low/Info); focused re-review ACCEPTED (S8F2-1, S8F2-2, doc nit, S8F2-4 closed; no new defects). Orchestrator CLI confirmation (rebuilt from the working tree): a 2-interval day (09:00-10:30 + 13:00-17:30) with `classifications {Proj: cls-1}` printed both `create … Proj <description>` lines and `total: 6h 0m across 2 operation(s)`; an unresolved-project day printed `preview blocked: unresolved_classification:c9` (exit 3). `plan_id:`/`operations:` remain byte-identical (e2e line-scan unaffected).
+Open findings and disposition: S8F2-1 (label could mislabel when the classification map is non-injective) closed by labelling from the confirmed interval's own project via the plan op LocalID; S8F2-2 (unsanitized description) closed via oneLine; doc nit closed; S8F2-4 test gaps (edit suffix, (unclassified), midnight total) closed. S8F2-3 (`remote complete: false` unreachable in a non-blocked preview) carried as informational. Note: the preview `total` is the total of the plan operations (creates/edits); an interval already identical remotely is a no-op and excluded.
+Commit and publication status: committed locally 8820895; NOT pushed, no PR, no merge.
+Vault sync status: complete.
+Next gate and blockers: none pending; a production pilot requires a separately approved exact daily plan and live write authority. Production submission remains blocked.
+```
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
