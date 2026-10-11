@@ -735,6 +735,20 @@ Vault sync status: complete - project note and daily note updated.
 Next gate and blockers: F2 (submit.Execute pre-validation runtime gate) remains a separate pending assessment. Production submission remains blocked.
 ```
 
+```text
+2026-10-11 / F2-ASSESSMENT (submit.Execute pre-validation boundary) / review-only -> recorded
+Owner authority reference: owner-authorized review-only assessment; repository documentation update + local docs commit; vault update. Not authorized: implementation, tests, credential retrieval, live access, Keychain changes, remote writes, push/merge/publication.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 7df197a / NO source changes (review-only). Inspected-file md5s recorded by the reviewer.
+Worker/reviewer report references and verification level: orchestrator trace plus independent read-only @oracle assessment (ses_ed5a6a2d1ffe9XO0X91loCKTX6); go build/vet and targeted Catalog/Classification/ZeroWrite/Boundary tests green at HEAD; exhaustive caller enumeration.
+Disposition: F2 is a CARRIED NON-BLOCKING maintainability risk, not a correctness defect. No reachable validation bypass exists at reviewed HEAD 7df197a. The real writers gradion.CreateEntry/EditEntry are reached only through submit.Execute -> dispatch, and Execute's sole production caller is run.Runner.Submit, which fails closed on a missing or stale catalog and on a per-op unknown/unverified/incompatible classification BEFORE Execute. Enforcement therefore depends on (a) the sole production caller, (b) catalog validation (including bounded read-only targeted re-validation and the activity-type comparison), and (c) the executor's approval/hash re-validation (ValidateApproval: PlanHash + LocalFingerprint) under the exclusive day lock. Missing-plan behavior remains fail-closed through Execute (BlockPlanMissing, zero writes).
+Residual (non-blocking): Execute is exported and its signature carries no proof that validation ran; the pre-validation contract is documented, not structurally enforced, so a future in-module caller could reintroduce a bypass. Independent nuance: run.Submit's validation is conditionally applied (skipped when the plan is absent) and its soundness rests on Execute's approval re-validation.
+Unscheduled follow-ups (no dates assigned): (1) Structural caller-boundary protection - prefer AST-aware checking over brittle substring or comment-presence assertions; source scanning is a tripwire, not proof of semantic safety. (2) Hermetic coverage of the defaultRunGH process-group cancellation using a controlled local helper, which is possible without credentials or network access.
+Verification history preserved: previously resolved Keychain, B5, and B6 findings are NOT reopened (no new evidence). Verified live READS (MCP initialize/tools-list/capability verification; get_my_week structured entries; the get_classifications catalog) remain distinct from the UNVERIFIED live create/edit write semantics. The residual remote race and the absence of server-side idempotency keys and conditional updates remain documented, not closed. No slice acceptance and no documentation update authorizes production submission.
+Commit and publication status: documentation-only commit locally; NOT pushed, no PR, no merge.
+Vault sync status: complete - project note and daily note updated.
+Next gate and blockers: production submission remains blocked (live-authority verification and an owner-approved exact daily plan are still required). F2 does not independently block source acceptance or release readiness.
+```
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
