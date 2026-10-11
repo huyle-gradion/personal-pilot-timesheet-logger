@@ -101,7 +101,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		configPath    = fs.String("config", "", "path to the JSON config document")
 		storageDir    = fs.String("storage-dir", "", "workflow record directory (overrides config)")
 		offline       = fs.Bool("offline", false, "never contact the remote (no reads or writes)")
-		deep          = fs.Bool("deep", false, "run the deeper contract verification during preflight")
+		deep          = fs.Bool("deep", false, "validate ALL configured sources (including disabled) during preflight")
 		editorialOn   = fs.Bool("editorial", true, "enable the optional editorial agent when configured")
 		noEditorial   = fs.Bool("no-editorial", false, "disable the editorial agent (deterministic text only)")
 		decisionsPath = fs.String("decisions", "", "path to a decisions JSON file ({date} is substituted per day)")
@@ -175,7 +175,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprint(w, `timesheet <subcommand> [flags]
 
 Subcommands:
-  preflight   validate timezone, credentials, source contracts, and MCP capabilities
+  preflight   validate timezone, credentials, source configuration, and MCP capabilities
   review      collect + propose (+ editorial) and apply --decisions, or print the proposal
   export      write the managed daily-note section (never contacts the remote)
   preview     build and persist the submission plan (zero remote writes)
@@ -190,7 +190,7 @@ Flags:
   --config FILE            JSON config document
   --storage-dir DIR        workflow record directory (default: ~/.timesheet/records)
   --offline                never contact the remote
-  --deep                   deeper contract verification during preflight
+  --deep                   validate ALL configured sources (including disabled) during preflight
   --editorial/--no-editorial  toggle the optional editorial agent
   --decisions FILE         decisions JSON ({date} substituted per day)
   --non-interactive        never prompt (the CLI is always non-interactive)

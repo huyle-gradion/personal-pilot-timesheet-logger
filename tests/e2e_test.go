@@ -389,7 +389,7 @@ END:VCALENDAR`)
 	if err != nil || code != 0 {
 		t.Fatalf("timesheet preflight failed with code %d: %v\nstderr: %s", code, err, preErr)
 	}
-	if !strings.Contains(preOut, "timezone") || !strings.Contains(preOut, "contracts") {
+	if !strings.Contains(preOut, "timezone") || !strings.Contains(preOut, "configuration") {
 		t.Fatalf("preflight output missing checks: %s", preOut)
 	}
 

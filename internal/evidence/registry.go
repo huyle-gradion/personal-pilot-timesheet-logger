@@ -298,11 +298,14 @@ func (r *Registry) collectSource(ctx context.Context, s SourceConfig, req Collec
 	return res.Evidence, result
 }
 
-// VerifyContracts runs the pre-enablement contract checks for each configured
+// VerifyContracts runs FIXTURE-BASED behavioral verification for each configured
 // source in CONTRACT mode against FIXED input, including the determinism check
-// that requires two Collect invocations. It never runs during live collection.
-// Each source yields one SourceResult; a failed check yields incomplete with a
-// stable code. An already-canceled context is the only function-level error.
+// that requires two Collect invocations. The fixture is a TEST INPUT, not runtime
+// configuration: this path is for contract/behavioral tests and pre-enablement
+// verification of a plugin, NOT for the runtime preflight source check (see
+// ValidateSources). It never runs during live collection. Each source yields one
+// SourceResult; a failed check yields incomplete with a stable code. An
+// already-canceled context is the only function-level error.
 func (r *Registry) VerifyContracts(ctx context.Context, sources []SourceConfig) ([]SourceResult, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -316,10 +319,12 @@ func (r *Registry) VerifyContracts(ctx context.Context, sources []SourceConfig) 
 	return results, nil
 }
 
-// PreflightContracts runs contract verification for the ENABLED sources and
-// returns per-source results. A caller must refuse enablement of any source whose
-// status is not StatusComplete. Disabled sources are not included. An
-// already-canceled context is the only function-level error.
+// PreflightContracts runs FIXTURE-BASED contract verification for the ENABLED
+// sources and returns per-source results. It is a TEST/contract-only path: it
+// requires a fixture and is NOT used for the runtime preflight source check (see
+// ValidateSources). A caller must refuse enablement of any source whose status is
+// not StatusComplete. Disabled sources are not included. An already-canceled
+// context is the only function-level error.
 func (r *Registry) PreflightContracts(ctx context.Context, sources []SourceConfig) ([]SourceResult, error) {
 	enabled := make([]SourceConfig, 0, len(sources))
 	for _, s := range sources {
@@ -328,6 +333,74 @@ func (r *Registry) PreflightContracts(ctx context.Context, sources []SourceConfi
 		}
 	}
 	return r.VerifyContracts(ctx, enabled)
+}
+
+// ValidateSources performs RUNTIME source validation for each configured source:
+// it checks config requirements and the plugin's declared contract (CheckContract)
+// WITHOUT running a fixture-based Collect, without a determinism re-run, and
+// without any network or filesystem-availability claim. A disabled source is
+// skipped; an unknown type fails; a failed check yields incomplete with a stable
+// code; otherwise the source is complete with zero evidence.
+//
+// Fixture-based behavioral/determinism verification (VerifyContracts /
+// PreflightContracts) is a TEST input, NOT runtime configuration: a fixture is
+// never required to validate a source at runtime. An already-canceled context is
+// the only function-level error.
+func (r *Registry) ValidateSources(ctx context.Context, sources []SourceConfig) ([]SourceResult, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	results := make([]SourceResult, 0, len(sources))
+	for _, s := range sources {
+		results = append(results, r.validateSource(ctx, s))
+	}
+	return results, nil
+}
+
+// validateSource is the runtime validation path for one configured source. It
+// runs the config requirements and the plugin's own CheckContract, and never
+// collects (no fixture, no live fetch, no filesystem-availability claim).
+func (r *Registry) validateSource(ctx context.Context, s SourceConfig) SourceResult {
+	now := time.Now().UTC()
+	result := SourceResult{SourceID: s.ID, Type: s.Type, StartedAt: now}
+
+	if !s.Enabled {
+		return skipResult(result)
+	}
+
+	p, ok := r.lookup(s.Type)
+	if !ok {
+		return failResult(result, nil, CodeUnknownPluginType, "unknown plugin type; not enabled or executed")
+	}
+
+	checks := r.preCollectChecks(ctx, p, s)
+	if code, name := firstFailure(checks); code != "" {
+		return failResult(result, checks, code, "configuration check failed: "+name)
+	}
+
+	result.Status = StatusComplete
+	result.EvidenceCount = 0
+	result.Checks = checks
+	result.FinishedAt = time.Now().UTC()
+	return result
+}
+
+// SourcesConfigured reports whether every ENABLED source result is complete, for
+// the runtime ValidateSources path. A skipped (disabled) source never blocks. It
+// deliberately does NOT change ContractsComplete, which treats every
+// non-complete result as a failure and is used by the fixture-based paths.
+func SourcesConfigured(results []SourceResult) bool {
+	for _, r := range results {
+		if r.Status == StatusSkipped {
+			continue
+		}
+		if r.Status != StatusComplete {
+			return false
+		}
+	}
+	return true
 }
 
 // ContractsComplete reports whether every result is complete, so a caller can

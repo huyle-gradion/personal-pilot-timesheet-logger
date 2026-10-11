@@ -3,6 +3,9 @@ package run
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence/plugins"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/git"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/review"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
@@ -315,5 +319,94 @@ func TestCollect_RemoteFailureBlocksUntilAcknowledged(t *testing.T) {
 	}
 	if rd2 := review.Readiness(*rec2); rd2.Blocked {
 		t.Fatalf("after acknowledgment readiness must clear, got %v", rd2.Reasons)
+	}
+}
+
+// PREFLIGHT-RUNTIME-1: end-to-end local git without fixtures or credentials.
+// A temp repo with one commit dated for the target day: preflight (offline) must
+// pass WITHOUT a fixture/credential, and collect must then pick up the commit.
+func TestPreflightAndCollect_LocalGitTempRepoOffline(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	const date = "2026-10-06"
+
+	// A PATH with `git` but WITHOUT `gh`, so credential resolution cannot reach a
+	// real `gh auth token`; a fake default resolver keeps the Keychain untouched.
+	binDir := t.TempDir()
+	if err := os.Symlink(gitPath, filepath.Join(binDir, "git")); err != nil {
+		t.Fatalf("symlink git: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	restore := keychain.SetDefaultResolver(&fakeKeychain{})
+	t.Cleanup(restore)
+
+	dir := t.TempDir()
+	runGitDated(t, dir, date, "init", "-q")
+	runGitDated(t, dir, date, "config", "user.email", "test@example.com")
+	runGitDated(t, dir, date, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGitDated(t, dir, date, "add", ".")
+	runGitDated(t, dir, date, "commit", "-q", "-m", "local work")
+
+	reg := evidence.NewRegistry()
+	gp := plugins.NewGitPlugin(nil, nil) // NO fixture, NO network
+	gp.LocalFactory = func(path string) plugins.LocalGitSource {
+		return plugins.LocalGitCollectorAdapter{Collector: git.NewLocalGitCollector(path)}
+	}
+	reg.Register(gp)
+
+	sources := []evidence.SourceConfig{{
+		ID: "git", Type: plugins.TypeGit, Enabled: true,
+		Config: map[string]string{
+			plugins.GitConfigMode:       plugins.GitModeLocal,
+			plugins.GitConfigLocalRepos: dir,
+		},
+	}}
+	r := newRunner(t, Deps{Store: newStore(t), Registry: reg}, Config{
+		Evidence: evidence.Config{Timezone: "UTC", Sources: sources},
+	})
+	r.deps.GitToken = "" // force credential resolution to fall through to absent
+
+	// Preflight (offline) passes without a fixture or credential.
+	pre, err := r.Preflight(ctx, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if !pre.OK {
+		t.Fatalf("local git preflight must pass offline without a fixture/credential, got %+v", pre.Checks)
+	}
+
+	// Collect then picks up the local commit.
+	res, err := r.Collect(ctx, date)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(res.Evidence) == 0 {
+		t.Fatalf("local collection must find the commit, got no evidence: %+v", res.Summary)
+	}
+	if !res.Summary.Complete {
+		t.Fatalf("a local-only collection must be complete, got %+v", res.Summary)
+	}
+}
+
+// runGitDated runs a git command in dir with author/committer dates pinned to the
+// given day so a commit lands inside that day's window. It never touches the
+// network.
+func runGitDated(t *testing.T, dir, date string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_DATE="+date+"T09:00:00Z",
+		"GIT_COMMITTER_DATE="+date+"T09:00:00Z",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
 }

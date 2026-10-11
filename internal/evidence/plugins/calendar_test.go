@@ -166,6 +166,32 @@ func TestCalendarPlugin_ContractDeterminism(t *testing.T) {
 	}
 }
 
+// PREFLIGHT-RUNTIME-1: runtime validation of a calendar source passes WITHOUT a
+// fixture when url_ref is present, and fails when it is missing.
+func TestCalendarPlugin_RuntimeValidationNoFixture(t *testing.T) {
+	reg := evidence.NewRegistry()
+	reg.Register(NewCalendarPlugin())
+	ctx := context.Background()
+
+	ok := calendarConfig() // url_ref present (keychain ref), no fixture
+	res, err := reg.ValidateSources(ctx, []evidence.SourceConfig{ok})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if res[0].Status != evidence.StatusComplete {
+		t.Fatalf("calendar with url_ref must validate complete without a fixture, got %+v", res[0])
+	}
+
+	missing := evidence.SourceConfig{ID: "cal", Type: evidence.SourceCalendar, Enabled: true}
+	res, err = reg.ValidateSources(ctx, []evidence.SourceConfig{missing})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if res[0].Status != evidence.StatusIncomplete || res[0].ErrorCode != evidence.CodeConfigRequiredMissing {
+		t.Fatalf("a missing url_ref must fail %s, got %+v", evidence.CodeConfigRequiredMissing, res[0])
+	}
+}
+
 // TestCalendarPlugin_RejectsUnsafeSourceID proves the contract check refuses a
 // source id that looks like a URL or filesystem path, so identity can never be a
 // secret feed URL or a path.

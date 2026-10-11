@@ -21,8 +21,9 @@ type Check struct {
 
 // PreflightOptions tunes Preflight.
 type PreflightOptions struct {
-	// Deep additionally runs the full VerifyContracts over ALL configured sources
-	// (including disabled ones), not just the enabled-source preflight.
+	// Deep validates ALL configured sources (including disabled ones, reported
+	// skipped) via ValidateSources. It performs NO fixture-based verification and
+	// NO network or filesystem-availability check.
 	Deep bool
 }
 
@@ -33,11 +34,17 @@ type PreflightResult struct {
 	Sources []evidence.SourceResult `json:"sources,omitempty"`
 }
 
-// Preflight validates the timezone, resolves credential references, verifies
-// source contracts, and (when a Remote is configured) initializes and verifies
-// MCP capabilities. It REFUSES on incomplete contracts and never falls back to
-// REST. A non-NotFound Keychain failure is terminal. No secret is ever placed in
-// the result.
+// Preflight validates the timezone, resolves credential references, validates the
+// source CONFIGURATION (config requirements + each plugin's declared contract, via
+// ValidateSources), and (when a Remote is configured) initializes and verifies MCP
+// capabilities. It REFUSES on a genuine credential or configuration failure and
+// never falls back to REST. A non-NotFound Keychain failure is terminal. No secret
+// is ever placed in the result.
+//
+// Preflight does NOT prove live source availability: it performs no calendar or
+// git network fetch. Fixture-based determinism verification is a TEST input, not
+// runtime configuration, and is not run here. Live availability is exercised by
+// the collect/review path.
 func (r *Runner) Preflight(ctx context.Context, opts PreflightOptions) (PreflightResult, error) {
 	res := PreflightResult{}
 	fail := func(name, code, detail string) {
@@ -54,10 +61,14 @@ func (r *Runner) Preflight(ctx context.Context, opts PreflightOptions) (Prefligh
 		pass("timezone")
 	}
 
-	// Credentials: resolve every keychain: reference in the source configs. A
-	// non-NotFound failure is terminal and stops the run before any remote call.
+	// Credentials: resolve every keychain: reference in the ENABLED source
+	// configs. A disabled source is skipped and never blocks. A non-NotFound
+	// failure is terminal and stops the run before any remote call.
 	terminal := false
 	for _, s := range r.cfg.Evidence.Sources {
+		if !s.Enabled {
+			continue
+		}
 		for key, val := range s.Config {
 			service, ok := keychainService(val)
 			if !ok {
@@ -87,23 +98,28 @@ func (r *Runner) Preflight(ctx context.Context, opts PreflightOptions) (Prefligh
 	}
 	pass("credentials")
 
-	// Source contracts. Refuse enablement when any enabled source is not complete.
-	results, err := r.deps.Registry.PreflightContracts(ctx, r.cfg.Evidence.Sources)
+	// Source configuration. Runtime validation checks config requirements and each
+	// plugin's declared contract; it performs NO fixture-based collect and makes no
+	// availability claim. Refuse enablement when any enabled source is not complete.
+	enabled := enabledSources(r.cfg.Evidence.Sources)
+	results, err := r.deps.Registry.ValidateSources(ctx, enabled)
 	if err != nil {
 		return res, err
 	}
 	if opts.Deep {
-		deep, derr := r.deps.Registry.VerifyContracts(ctx, r.cfg.Evidence.Sources)
+		// Deep validates ALL configured sources (disabled ones reported skipped),
+		// still without fixtures.
+		all, derr := r.deps.Registry.ValidateSources(ctx, r.cfg.Evidence.Sources)
 		if derr != nil {
 			return res, derr
 		}
-		results = mergeSourceResults(results, deep)
+		results = mergeSourceResults(results, all)
 	}
 	res.Sources = results
-	if !evidence.ContractsComplete(results) {
-		fail("contracts", CodeContractsIncomplete, "one or more enabled sources failed contract verification")
+	if !evidence.SourcesConfigured(results) {
+		fail("configuration", CodeConfigurationInvalid, "one or more enabled sources failed configuration validation")
 	} else {
-		pass("contracts")
+		pass("configuration")
 	}
 
 	// Remote capabilities. There is NO REST fallback: a failure refuses the run.
@@ -130,21 +146,17 @@ func allPassed(checks []Check) bool {
 	return true
 }
 
-// GitSourceEnabled reports whether any enabled source needs a git credential. It
-// covers the evidence git kinds AND the registered git plugin type
-// (plugins.TypeGit), so a real config's git source is never missed. It is
-// type-based; use GitRemoteSourceEnabled for the credential decision.
-func GitSourceEnabled(sources []evidence.SourceConfig) bool {
+// enabledSources returns only the enabled source configs. Used by the non-deep
+// runtime configuration check, which (like the former PreflightContracts) reports
+// enabled sources only.
+func enabledSources(sources []evidence.SourceConfig) []evidence.SourceConfig {
+	enabled := make([]evidence.SourceConfig, 0, len(sources))
 	for _, s := range sources {
-		if !s.Enabled {
-			continue
-		}
-		switch s.Type {
-		case evidence.SourceLocalGit, evidence.SourceRemotePR, plugins.TypeGit:
-			return true
+		if s.Enabled {
+			enabled = append(enabled, s)
 		}
 	}
-	return false
+	return enabled
 }
 
 // GitRemoteSourceEnabled reports whether any enabled source needs a REMOTE

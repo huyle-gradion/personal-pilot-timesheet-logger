@@ -30,7 +30,7 @@ const (
 	CodeTimezoneInvalid      = "RUN_PREFLIGHT_TIMEZONE_INVALID"
 	CodeKeychainTerminal     = "RUN_PREFLIGHT_KEYCHAIN_TERMINAL"
 	CodeKeychainMissing      = "RUN_PREFLIGHT_KEYCHAIN_MISSING"
-	CodeContractsIncomplete  = "RUN_PREFLIGHT_CONTRACTS_INCOMPLETE"
+	CodeConfigurationInvalid = "RUN_PREFLIGHT_CONFIGURATION_INVALID"
 	CodeRemoteUnavailable    = "RUN_PREFLIGHT_REMOTE_UNAVAILABLE"
 	CodeGitCredential        = "RUN_PREFLIGHT_GIT_CREDENTIAL"
 	CodeGitCredentialMissing = "RUN_PREFLIGHT_GIT_CREDENTIAL_MISSING"

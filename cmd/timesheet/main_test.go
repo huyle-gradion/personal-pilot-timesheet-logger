@@ -144,10 +144,25 @@ func TestRunCLI_PreflightOK(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("want ok, got %d (%s)", code, stderr)
 	}
-	for _, want := range []string{"timezone", "credentials", "contracts"} {
+	for _, want := range []string{"timezone", "credentials", "configuration"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("want %q in the preflight output:\n%s", want, stdout)
 		}
+	}
+}
+
+// F1 (PREFLIGHT-RUNTIME-1): the `--deep` flag description must mirror the usage
+// line (the flag package prints it on any parse error).
+func TestRunCLI_DeepFlagDescriptionAligned(t *testing.T) {
+	code, _, stderr := runArgs(t, "preflight", "--bogus")
+	if code != exitUsage {
+		t.Fatalf("want a usage exit, got %d", code)
+	}
+	if !strings.Contains(stderr, "validate ALL configured sources (including disabled) during preflight") {
+		t.Fatalf("the -deep flag description must match the usage line, got:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "deeper contract verification") {
+		t.Fatalf("the stale -deep description must be gone, got:\n%s", stderr)
 	}
 }
 
@@ -801,5 +816,60 @@ func TestPrintSourceStatus_ShowsOnlyNonCompleteSources(t *testing.T) {
 	}
 	if strings.Contains(out, "source ok:") || strings.Contains(out, "source off:") {
 		t.Errorf("complete/skipped sources must not be printed, got:\n%s", out)
+	}
+}
+
+// stubResolver returns fixed values for known keychain services.
+type stubResolver struct{ values map[string]string }
+
+func (s stubResolver) Lookup(ctx context.Context, service, account string) (string, error) {
+	if v, ok := s.values[service]; ok {
+		return v, nil
+	}
+	return "", &keychain.OperatingError{Outcome: keychain.OutcomeNotFound, Code: "KEYCHAIN_ERR_NOT_FOUND", Message: "absent"}
+}
+
+// PREFLIGHT-RUNTIME-1: the SHIPPED example configs validate their source
+// configuration without any fixture. External deps are mocked: a fake Keychain
+// resolver, a GitToken for the mode:"both" example, and no Remote (offline).
+func TestShippedExamples_PreflightConfigurationPasses(t *testing.T) {
+	kc := stubResolver{values: map[string]string{
+		"calendar_feed_url":        "https://example.invalid/feed.ics",
+		"gradion.workspace.ApiKey": "test-token",
+	}}
+	for _, name := range []string{"timesheet.example.json", "timesheet.local-git.example.json"} {
+		cfg, err := loadConfig(name)
+		if err != nil {
+			t.Fatalf("%s: loadConfig: %v", name, err)
+		}
+		store, err := workflow.NewJSONFileStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("%s: store: %v", name, err)
+		}
+		r, err := run.New(run.Deps{
+			Store:    store,
+			Registry: buildRegistry("test-git-token"),
+			Keychain: kc,
+			GitToken: "test-git-token",
+		}, cfg.Config)
+		if err != nil {
+			t.Fatalf("%s: run.New: %v", name, err)
+		}
+		res, err := r.Preflight(context.Background(), run.PreflightOptions{})
+		if err != nil {
+			t.Fatalf("%s: Preflight: %v", name, err)
+		}
+		if !res.OK {
+			t.Fatalf("%s: shipped example must pass preflight configuration, got %+v", name, res.Checks)
+		}
+		found := false
+		for _, c := range res.Checks {
+			if c.Name == "configuration" && c.Passed {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s: want a passing configuration check, got %+v", name, res.Checks)
+		}
 	}
 }

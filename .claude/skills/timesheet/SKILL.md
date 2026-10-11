@@ -53,6 +53,10 @@ either deterministic Go code (`[Script]`) or the optional, bounded editorial age
 6. **Step 6: `[Script]` Approval** (`timesheet approve --plan`)
 7. **Step 7: `[Script]` Submit and export** (`timesheet submit`)
 
+Preflight validates source **configuration** (not live availability) and runs no
+fixtures; a `mode:"local"` git source passes offline with no GitHub credential.
+See [workflow.md](workflow.md) for the exact per-step contract.
+
 ## Configuration
 
 Pass a JSON config document with `--config` (see

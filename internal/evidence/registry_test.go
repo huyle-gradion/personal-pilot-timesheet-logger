@@ -554,3 +554,108 @@ func TestRegistry_WarningsPreservedOnContractPath(t *testing.T) {
 		t.Errorf("warnings dropped on the contract path: %v", results[0].Warnings)
 	}
 }
+
+// --- ValidateSources: runtime configuration validation ----------------------
+
+// TestRegistry_ValidateSourcesRuntime proves the runtime path validates a valid
+// config WITHOUT a fixture and never collects.
+func TestRegistry_ValidateSourcesRuntime(t *testing.T) {
+	reg := NewRegistry()
+	good := &testPlugin{kind: SourceManual, declared: []SourceKind{SourceManual}}
+	reg.Register(good)
+
+	results, err := reg.ValidateSources(context.Background(), []SourceConfig{
+		source("ok", SourceManual, true, nil),
+	})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != StatusComplete {
+		t.Fatalf("a valid config must validate complete without a fixture, got %+v", results)
+	}
+	if results[0].EvidenceCount != 0 {
+		t.Errorf("runtime validation must report zero evidence, got %d", results[0].EvidenceCount)
+	}
+	if good.calls.Load() != 0 {
+		t.Errorf("runtime validation must not collect, got %d collect call(s)", good.calls.Load())
+	}
+	if !SourcesConfigured(results) {
+		t.Error("a complete runtime result must be configured")
+	}
+}
+
+// TestRegistry_ValidateSourcesUnknownTypeFails proves an unknown plugin type
+// fails runtime validation.
+func TestRegistry_ValidateSourcesUnknownTypeFails(t *testing.T) {
+	reg := NewRegistry()
+	results, err := reg.ValidateSources(context.Background(), []SourceConfig{source("bad", "nope", true, nil)})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != StatusIncomplete || results[0].ErrorCode != CodeUnknownPluginType {
+		t.Fatalf("expected incomplete/%s, got %+v", CodeUnknownPluginType, results)
+	}
+	if SourcesConfigured(results) {
+		t.Error("an unknown type must not be configured")
+	}
+}
+
+// TestRegistry_ValidateSourcesMissingConfigFails proves a missing required config
+// key fails runtime validation (fail-closed).
+func TestRegistry_ValidateSourcesMissingConfigFails(t *testing.T) {
+	reg := NewRegistry()
+	p := &testPlugin{kind: SourceManual, declared: []SourceKind{SourceManual}, reqs: []ConfigRequirement{{Key: "token", Secret: true, Required: true}}}
+	reg.Register(p)
+
+	results, err := reg.ValidateSources(context.Background(), []SourceConfig{source("s", SourceManual, true, nil)})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if results[0].Status != StatusIncomplete || results[0].ErrorCode != CodeConfigRequiredMissing {
+		t.Fatalf("expected incomplete/%s, got %+v", CodeConfigRequiredMissing, results[0])
+	}
+}
+
+// TestRegistry_ValidateSourcesCheckContractFailureFails proves the plugin's own
+// CheckContract failure fails runtime validation with the check's code.
+func TestRegistry_ValidateSourcesCheckContractFailureFails(t *testing.T) {
+	reg := NewRegistry()
+	p := &testPlugin{
+		kind:     SourceManual,
+		declared: []SourceKind{SourceManual},
+		check: func(context.Context, SourceConfig) []ContractCheck {
+			return []ContractCheck{{Name: "custom", Passed: false, Code: "CUSTOM_BAD", Detail: "nope"}}
+		},
+	}
+	reg.Register(p)
+
+	results, err := reg.ValidateSources(context.Background(), []SourceConfig{source("s", SourceManual, true, nil)})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if results[0].Status != StatusIncomplete || results[0].ErrorCode != "CUSTOM_BAD" {
+		t.Fatalf("expected incomplete/CUSTOM_BAD, got %+v", results[0])
+	}
+}
+
+// TestRegistry_ValidateSourcesDisabledSkippedNonBlocking proves a disabled source
+// is skipped and non-blocking, and that SourcesConfigured (unlike ContractsComplete)
+// ignores skipped results.
+func TestRegistry_ValidateSourcesDisabledSkippedNonBlocking(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(&testPlugin{kind: SourceManual, declared: []SourceKind{SourceManual}})
+
+	results, err := reg.ValidateSources(context.Background(), []SourceConfig{source("off", SourceManual, false, nil)})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if results[0].Status != StatusSkipped {
+		t.Fatalf("expected skipped, got %+v", results[0])
+	}
+	if !SourcesConfigured(results) {
+		t.Error("a disabled source must not block the runtime configuration check")
+	}
+	if ContractsComplete(results) {
+		t.Error("ContractsComplete semantics must be unchanged: skipped is not complete")
+	}
+}

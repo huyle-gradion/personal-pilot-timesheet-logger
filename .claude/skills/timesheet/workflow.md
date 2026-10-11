@@ -17,18 +17,25 @@ target specific days. `--offline` never contacts the remote.
 
 ## Step 1: `[Script]` Preflight
 
-Validate the timezone, resolve credential references (Keychain in memory), verify
-the enabled source contracts, and (when configured) initialize and verify the
-Gradion MCP capabilities. A non-NotFound Keychain failure, an incomplete contract,
-or a missing git credential is **terminal**: the run refuses and makes zero remote
-requests. There is no REST fallback.
+Validate the timezone, resolve credential references (Keychain in memory), and
+validate the enabled sources' **configuration** (required config keys, secret
+references, and each plugin's declared contract). Fixture-based verification is a
+**test input**, not runtime configuration: `preflight` runs **no** fixtures and
+does **not** prove live source availability (the fetch happens in Step 2). A
+`mode:"local"` git source passes offline with no GitHub credential. A non-NotFound
+Keychain failure, an invalid configuration, or a missing remote git credential is
+**terminal**: the run refuses and makes zero remote requests. There is no REST
+fallback.
+
+`--deep` additionally validates ALL configured sources (including disabled ones,
+reported skipped).
 
 ```bash
 $TS preflight --config "$CFG"
 ```
 
-**Output Seam**: a per-check `ok`/`FAIL` list with stable codes. Exit code `3` when
-refused.
+**Output Seam**: a per-check `ok`/`FAIL` list with stable codes (the source check
+is named `configuration`). Exit code `3` when refused.
 
 ---
 

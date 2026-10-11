@@ -591,3 +591,60 @@ func TestGitPlugin_RemoteFailureWarningDeduplicated(t *testing.T) {
 		t.Fatalf("want exactly one deduplicated remote-failure warning, got %d (%v)", count, summary.Sources[0].Warnings)
 	}
 }
+
+// PREFLIGHT-RUNTIME-1: runtime validation of a git source passes WITHOUT a
+// fixture, and mode-appropriate config is still enforced.
+func TestGitPlugin_RuntimeValidationNoFixture(t *testing.T) {
+	reg := evidence.NewRegistry()
+	reg.Register(NewGitPlugin(nil, nil))
+	ctx := context.Background()
+
+	// local-only passes without a fixture.
+	local := gitConfig("")
+	local.Config[GitConfigMode] = GitModeLocal
+	res, err := reg.ValidateSources(ctx, []evidence.SourceConfig{local})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if res[0].Status != evidence.StatusComplete {
+		t.Fatalf("local-only must validate complete without a fixture, got %+v", res[0])
+	}
+
+	// mode=remote without repos fails.
+	remote := gitConfig("")
+	remote.Config[GitConfigMode] = GitModeRemote
+	res, err = reg.ValidateSources(ctx, []evidence.SourceConfig{remote})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if res[0].Status != evidence.StatusIncomplete || res[0].ErrorCode != CodeGitReposRequired {
+		t.Fatalf("mode=remote without repos must fail %s, got %+v", CodeGitReposRequired, res[0])
+	}
+
+	// an invalid mode fails.
+	invalid := gitConfig("acme/app")
+	invalid.Config[GitConfigMode] = "sideways"
+	res, err = reg.ValidateSources(ctx, []evidence.SourceConfig{invalid})
+	if err != nil {
+		t.Fatalf("ValidateSources: %v", err)
+	}
+	if res[0].ErrorCode != CodeGitModeInvalid {
+		t.Fatalf("an invalid mode must fail %s, got %+v", CodeGitModeInvalid, res[0])
+	}
+}
+
+// PREFLIGHT-RUNTIME-1: fixture-based verification is UNCHANGED. VerifyContracts
+// still requires a fixture (fixtures are TEST inputs, not runtime config).
+func TestGitPlugin_VerifyContractsRequiresFixture(t *testing.T) {
+	reg := evidence.NewRegistry()
+	reg.Register(NewGitPlugin(nil, nil))
+
+	cfg := gitConfig("acme/app") // no fixture
+	results, err := reg.VerifyContracts(context.Background(), []evidence.SourceConfig{cfg})
+	if err != nil {
+		t.Fatalf("VerifyContracts: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != evidence.StatusIncomplete {
+		t.Fatalf("VerifyContracts must require a fixture, got %+v", results)
+	}
+}

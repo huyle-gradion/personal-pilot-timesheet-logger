@@ -24,7 +24,7 @@ The git source is one entry in `evidence.sources` with `"type": "git"` and a
 | `repos` | Comma-separated **host-less `owner/repo` slugs** for the remote (GitHub) source, e.g. `acme/app,acme/lib`. Required only when `mode` includes `remote`. |
 | `author` | Optional local commit author filter (email or name). |
 | `project_map` | Optional JSON object of `owner/repo` → project name. |
-| `fixture` | Contract-mode fixed input path (verification only). |
+| `fixture` | **Test-only** fixed input path for fixture-based contract/determinism verification. NEVER required at runtime; not needed by `preflight`. |
 
 Rules:
 
@@ -129,7 +129,7 @@ $ go run ./cmd/timesheet help
 timesheet <subcommand> [flags]
 
 Subcommands:
-  preflight   validate timezone, credentials, source contracts, and MCP capabilities
+  preflight   validate timezone, credentials, source configuration, and MCP capabilities
   review      collect + propose (+ editorial) and apply --decisions, or print the proposal
   export      write the managed daily-note section (never contacts the remote)
   preview     build and persist the submission plan (zero remote writes)
@@ -144,7 +144,7 @@ Flags:
   --config FILE            JSON config document
   --storage-dir DIR        workflow record directory (default: ~/.timesheet/records)
   --offline                never contact the remote
-  --deep                   deeper contract verification during preflight
+  --deep                   validate ALL configured sources (including disabled) during preflight
   --editorial/--no-editorial  toggle the optional editorial agent
   --decisions FILE         decisions JSON ({date} substituted per day)
   --non-interactive        never prompt (the CLI is always non-interactive)
@@ -177,8 +177,9 @@ go run ./cmd/timesheet export --config ./timesheet.json --date 2026-10-06
 
 ### Remote sequence (mode `remote`/`both`; requires a GitHub credential)
 
-When `mode` includes remote, validate credentials and contracts first, then
-approve and submit:
+When `mode` includes remote, validate the credentials and the source
+configuration first (`preflight` checks configuration, not live availability —
+the fetch itself happens in `review`), then approve and submit:
 
 ```bash
 go run ./cmd/timesheet preflight --config ./timesheet.json
@@ -204,12 +205,28 @@ Notes:
 - `preview`/`submit` remain blocked with `incomplete_collection` until an
   incomplete source is acknowledged.
 
-### Known limitation (pre-existing, not fixed here)
+## Preflight semantics
 
-Git CONTRACT mode requires a `fixture` path (`config.fixture`). `preflight` runs
-contract verification for every enabled source, so a real git source **without** a
-`fixture` fails the `contracts` check even though live collection would succeed.
-This predates the `mode`/`local_repos` change and is **not** fixed here. The
-local-only sequence above therefore does not depend on `preflight`; when a
-`fixture` is not configured, run `review` directly (live collection does not use
-the fixture).
+`preflight` separates RUNTIME source validation from fixture-based behavioral
+testing:
+
+- **Runtime validation** (`preflight`, and the `run` convenience) checks each
+  enabled source's CONFIGURATION: required config keys, secret references, and
+  each plugin's declared contract (git `mode`/`repos`/`project_map`, calendar id,
+  agent path, ...). It performs **no** fixture-based collect, **no** determinism
+  re-run, and **no** network or filesystem-availability check. It does NOT prove
+  live source availability — that is exercised by `review` (which actually
+  fetches). The check is named `configuration` (stable code
+  `RUN_PREFLIGHT_CONFIGURATION_INVALID` on failure).
+- **`--deep`** validates ALL configured sources, including disabled ones (reported
+  `skipped`), still without fixtures.
+- **Fixtures are TEST inputs.** Fixture-based determinism/behavioral verification
+  (`VerifyContracts`/`PreflightContracts`) requires a `fixture` and is used by
+  contract tests, not by `preflight`. A git/calendar/agent source needs NO fixture
+  to run.
+- A **`mode:"local"`** git source passes `preflight` offline with NO GitHub
+  credential and NO fixture (and the checkout path is not stat'd).
+- Genuine failures still BLOCK (fail-closed): a malformed config, an invalid
+  source mode, a missing required input (calendar `url_ref`, git `repos` when mode
+  includes remote), an invalid `project_map`, an unknown plugin type, or a
+  terminal credential failure. There is no REST fallback.
