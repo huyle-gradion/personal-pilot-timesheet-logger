@@ -637,6 +637,17 @@ Vault sync status: complete - project and daily notes updated with the release d
 Next gate and blockers: none pending; a production pilot requires a separately approved exact daily plan and live write authority. Production submission remains blocked.
 ```
 
+```text
+2026-10-11 / S8-FOLLOWUP-1 / empty-day review draft -> independent review ACCEPTED -> hardening (F2 + tests) ACCEPTED -> committed
+Owner authority reference: direct-dispatch session grant; local commits of accepted slices only.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 0e3010d (parent fd58948) / internal/run/{propose,collect}.go(+tests), cmd/timesheet/main.go(+test); md5s matched the accepted manifest before commit.
+Evidence: @oracle independent review (ses_ed733d357ffeCnUwSOm2Epf0cc) ACCEPTED (no introduced defects); focused re-review ACCEPTED (F2/F4/F5/F6 closed, no new defects). Orchestrator CLI confirmation (rebuilt from the working tree, fresh store): two SEPARATE single-date invocations - `review --date 2026-10-10` and `review --date 2026-10-08` - each printed a 0-block proposal (exit 0) with no sources; `--date 2026-10-7` was still rejected (invalid format); mark_empty + export wrote a reviewed-empty note. (Correction: the two dates were separate invocations, not a slash range; and after the F2 hardening a no-source day leaves Collection == nil - it no longer fabricates an empty Complete summary.)
+Open findings and disposition: F2 closed (Collect writes the summary only when sources are configured); F4/F5/F6 test gaps closed; F1 (bare review persists a record per date) intended; F3 (mark_empty does not validate Confirmed empty) pre-existing, carried.
+Commit and publication status: committed locally 0e3010d; NOT pushed, no PR.
+Vault sync status: complete.
+Next gate and blockers: none pending; a production pilot requires a separately approved exact daily plan and live write authority. Production submission remains blocked.
+```
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
