@@ -122,3 +122,52 @@ project→classification map. Raw secrets are never placed in it.
 ICS, git, journal) still run. Source keys and boundaries live in
 [collection configuration](../../../docs/agents/collection-config.md) and
 [journal source](../../../docs/agents/journal-source.md).
+
+### Guided setup (`timesheet config`)
+
+When no config exists yet — or the user wants to change one — the skill offers the
+**supported configuration flow** instead of hand-writing JSON:
+
+```bash
+$TS config init                                    # guided TUI (needs a terminal on stdin AND stdout)
+$TS config init --interactive                      # the explicit alias of the SAME guided mode (identical gate)
+$TS config init --plain --out "$CFG"               # line-based prompts (safe on a pipe; EOF aborts)
+$TS config init --answers answers.json --out "$CFG"   # non-interactive: validate + write a config document
+$TS config edit --config "$CFG"                    # load an existing config, prefill, edit in place
+```
+
+`--interactive` is only the explicit form of the default guided mode: it does
+**not** change the terminal/CI gate (the TUI still needs a real terminal on stdin
+AND stdout). A guided **edit** preserves values it does not prompt for (the
+editorial tuning fields and existing classification entries), but rebuilds each
+source's `config` from the collected keys only — author keys the flow does not
+prompt for (e.g. a `fixture`) via `--answers`.
+
+The agent/harness asks the **SAME questions in chat**, then delegates the write and
+validation to `timesheet config`. Ask them in this order, applying the same
+answers the flow would (blank keeps the shown default):
+
+1. **Evidence id** — a non-secret label (default `default`).
+2. **Timezone** — an IANA name (e.g. `UTC`, `America/Los_Angeles`).
+3. **Enabled evidence sources** — any of calendar, git, journal, agent.
+4. **Per-source config** — the documented keys only: calendar `url_ref`
+   (`keychain:<service>`), `user_email`, `timezone`; git `mode`
+   (`local`/`remote`/`both`), `local_repos`, `repos` (host-less `owner/repo`,
+   required when `mode` includes remote), `author`, `project_map`; journal `vault`
+   + `daily_dir` (relative to the vault); agent `path`.
+5. **Storage directory** — workflow records (default `~/.timesheet/records`).
+6. **Vault export root** (optional) and the **daily-note directory** relative to it.
+7. **Gradion** (optional) — `endpoint` + `credential_ref` (`keychain:<service>`).
+8. **Editorial** (optional) — `enabled`, `adapter` (`none`/`command`), `command`,
+   `credential_ref` (`keychain:<service>`).
+9. **Project → classification map** (optional).
+
+Then **show the exact JSON preview** the flow would write, **ask for explicit
+confirmation**, and — if the target file already exists — **ask for explicit
+overwrite consent** (or pass `--force`). The skill then lets `timesheet config`
+perform the write and validation. The skill **must not** write the target config
+file (`$CFG`) itself — that is `timesheet config`'s job; materializing the
+`--answers` INPUT document for the harness to hand to the command is expected and
+allowed. The skill also **must not** auto-confirm an overwrite, and **must not**
+put a raw secret in the answers (credential fields are `keychain:<service>`
+references only). Validation is offline — authoring resolves no live service.

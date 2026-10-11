@@ -123,6 +123,12 @@ func runCLIWithIO(ctx context.Context, args []string, in io.Reader, stdout, stde
 	if sub == "classify" {
 		return cmdClassify(ctx, args[1:], stdout, stderr)
 	}
+	// The config subcommand also has its OWN subcommands (init/edit) that precede
+	// its flags, so it is dispatched before the shared flag set. It authors the
+	// SAME non-secret cliConfig schema and never resolves a secret.
+	if sub == "config" {
+		return cmdConfig(ctx, args[1:], in, stdout, stderr, stdinTTY, stdoutTTY)
+	}
 
 	fs := flag.NewFlagSet("timesheet "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -249,6 +255,7 @@ Subcommands:
   run         preflight + collect + review + export convenience (--interactive for a guided run)
   classify    classification catalog: classify list | classify select
   metrics     token usage + durations (metrics import|aggregate|report|compare|run)
+  config      author a config file: config init | config edit
 
 Flags:
   --date YYYY-MM-DD        target date (default: today in the configured timezone)

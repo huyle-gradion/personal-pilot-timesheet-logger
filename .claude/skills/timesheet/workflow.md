@@ -28,6 +28,54 @@ never approves or submits. Full modes, precedence, and cancellation:
 
 ---
 
+## Step 0: `[Script]` Configuration (when no config exists, or to change one)
+
+Every later step reads a config document (`$CFG`). Author it with the **supported
+configuration flow** rather than hand-writing JSON:
+
+```bash
+$TS config init                                    # guided TUI (needs a terminal on stdin AND stdout)
+$TS config init --interactive                      # the explicit alias of the SAME guided mode (identical gate)
+$TS config init --plain --out "$CFG"               # line-based prompts (safe on a pipe; EOF aborts)
+$TS config init --answers answers.json --out "$CFG"   # non-interactive: validate + write a config document
+$TS config edit --config "$CFG"                    # load an existing config, prefill, edit in place
+```
+
+The TUI runs only at a real terminal (stdin **and** stdout, not CI); otherwise
+`config` refuses and points at `--plain` / `--answers` — it never silently falls
+back. `--interactive` is only the explicit alias of that default guided mode and
+does **not** change the terminal/CI gate.
+
+The non-interactive `--answers FILE` is a **complete config document in the same
+schema** the flow writes; `--non-interactive` requires it. The flow collects ONLY
+the existing schema: `evidence` (`id`, `timezone`, `sources`), `storage_dir`,
+`vault` + `daily_dir`, optional `gradion` (`endpoint` + `keychain:<service>`
+`credential_ref`), optional `editorial` (`enabled`/`adapter`/`command`/
+`credential_ref`), and the optional project→classification map.
+
+A guided **edit** preserves values it does not prompt for (the editorial tuning
+fields `soft_target`/`max_attempts`/`endpoint`/`model`, and existing
+classification entries), but REBUILDS each source's `config` map from the collected
+keys only — so uncollected source keys (e.g. a `fixture`) are dropped. Author such
+keys via `--answers`.
+
+Validation runs BEFORE any write and is **offline** (IANA timezone via
+`time.LoadLocation`, the source configuration contract, `editorial.Validate()`, and
+`keychain:` reference-format checks). It makes **no** live network, Keychain, or
+remote call and **never** resolves a secret. It prints the **exact JSON preview**
+(references only) and requires explicit confirmation; an existing target file is
+**refused** unless the user consents or `--force` is passed. The write is atomic.
+
+When delegating from chat, the skill asks the **equivalent questions** in
+chat (evidence id, timezone, sources and their keys, storage dir, vault +
+daily dir, Gradion, editorial, classification map), shows the preview, obtains
+confirmation and overwrite consent, and lets `timesheet config` do the write. The
+skill never writes the target config (`$CFG`) itself — materializing the
+`--answers` INPUT document is expected and allowed — never auto-confirms an
+overwrite, and never places a raw secret in the answers.
+
+---
+
 ## Step 1: `[Script]` Preflight
 
 Validate the timezone, resolve credential references (Keychain in memory), and
