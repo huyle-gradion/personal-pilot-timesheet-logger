@@ -1,6 +1,6 @@
 # Orchestration state
 
-Updated: 2026-10-10. This is a resumable status ledger, not a grant of authority. Update it at lifecycle transitions without duplicating the product specification.
+Updated: 2026-10-11. This is a resumable status ledger, not a grant of authority. Update it at lifecycle transitions without duplicating the product specification.
 
 ## Authority now
 
@@ -657,6 +657,18 @@ Open findings and disposition: S8F2-1 (label could mislabel when the classificat
 Commit and publication status: committed locally 8820895; NOT pushed, no PR, no merge.
 Vault sync status: complete.
 Next gate and blockers: none pending; a production pilot requires a separately approved exact daily plan and live write authority. Production submission remains blocked.
+```
+
+```text
+2026-10-11 / CONFIG-COLLECT-1 / authorized -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: owner-authorized bounded configuration/collection fix for findings A (no configured sources) and B (local git unnecessarily depends on GitHub); local commit of the accepted slice; vault update. Not authorized: push/publish/merge, live collection, Keychain changes, production writes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 68e0a37 (parent 612a5ea) / 12 files: internal/evidence/plugins/{git,git_test}.go; internal/run/{collect,collect_test,preflight,preflight_test,run_test}.go; cmd/timesheet/{main,main_test}.go; cmd/timesheet/timesheet.example.json; cmd/timesheet/timesheet.local-git.example.json (new); docs/agents/collection-config.md (new). md5s matched the accepted fix1 manifest before commit (.../opencode/config-collect-1-fix1-manifest.txt).
+Worker/reviewer report references and verification level: @fixer CONFIG-COLLECT-1 (ses_ed6ee4f72ffehA4jJS3C6dm3so) implement + fix; @oracle independent review (ses_ed6e788f3ffezknTa2Ys2vVcpj) verdict "commit yes / production no" (F2 High); focused re-review verdict "all six findings closed; commit yes". Orchestrator gofmt/build/vet/tests/race green on the committed snapshot.
+Behavior: Finding A - a run with no enabled evidence sources now prints exactly "No evidence sources configured." and is distinguished from configured sources returning no evidence; the collection-summary write guard keys off enabled-source count, so an all-disabled list cannot mark a prior incomplete collection complete. Finding B - the git source gains `mode` (local|remote|both, default both) and `local_repos` (explicit checkout paths, default "."); mode=local never contacts GitHub and needs no GitHub credential at preflight/run; when both are configured and GitHub fails, collected local evidence is retained and reported as partial (visible, gated by the existing missing-source acknowledgment), never silently complete. Local repo identity is `CanonicalRepoKey(RepoName, source id)` (no filesystem path in SourceRef).
+Open findings and disposition: F1/F2/F3/F4/F5/F6 closed. Carried non-blocking: N1 exported `run.GitSourceEnabled` now has no caller (dead; misuse risk); N2 no direct unit test for the absent/invalid-mode credential fail-safe (verified by inspection); pre-existing CONTRACT-mode `fixture` requirement makes end-to-end `preflight`/`run` unusable from the shipped examples (documented, not fixed); remote-less local identity falls back to the source id (multiple remote-less checkouts under one source id would collide).
+Commit and publication status: committed locally 68e0a37; NOT pushed, no PR, no merge.
+Vault sync status: complete - project note and daily note updated.
+Next gate and blockers: none pending; production submission remains blocked (a pilot requires a separately approved exact daily plan). Live collection remains unverified.
 ```
 
 ## Documentation review
