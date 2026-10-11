@@ -117,34 +117,44 @@ func cmdClassifySelect(ctx context.Context, args []string, stdout, stderr io.Wri
 	if *storageDir != "" {
 		cfg.StorageDir = *storageDir
 	}
-	cat, err := fetchCatalog(ctx, cfg, *useCache, "")
+	view, err := selectCatalogs(ctx, cfg, *useCache, *token)
 	if err != nil {
 		fmt.Fprintln(stderr, "timesheet: classify select:", err)
 		return exitError
 	}
 
-	// ALWAYS disclose the catalog's provenance and freshness. A --cache catalog
-	// that is STALE is refused unless --force is given (mirroring the submission
-	// gate's 24h rule), so a selection is never applied from stale data silently.
+	// ALWAYS disclose the provenance and freshness of EVERY catalog used. A --cache
+	// catalog that is STALE is refused unless --force is given (mirroring the
+	// submission gate's 24h rule), so a selection is never applied from stale data
+	// silently. A partial catalog is labelled so it is never presented as the whole
+	// catalog.
 	now := time.Now().UTC()
-	provLine, fresh := selection.Freshness(cat, now)
-	fmt.Fprintf(stdout, "provenance: %s\n", provLine)
-	if *useCache && !fresh && !*force {
-		fmt.Fprintf(stderr, "timesheet: refusing a STALE cached catalog (%s); pass --force to use it, or run `timesheet classify list` (live)\n", provLine)
-		return exitBlocked
+	for _, c := range view.used {
+		fmt.Fprintf(stdout, "provenance: %s\n", selectionProvenanceLine(c, now))
+	}
+	if view.targetedErr != nil {
+		fmt.Fprintf(stderr, "timesheet: warning: a targeted catalog fetch for %q failed (%v); resolving against the unfiltered catalog only\n", *token, view.targetedErr)
+	}
+	if *useCache && !*force {
+		// Deliberately CONSERVATIVE: a selection is refused when ANY used cached
+		// catalog is stale, not just the first one encountered. Mixing a fresh
+		// catalog with a stale one could resolve a token from data the 24h policy
+		// would otherwise reject, so we fail closed and require --force.
+		for _, c := range view.used {
+			provLine, fresh := selection.Freshness(c, now)
+			if !fresh {
+				fmt.Fprintf(stderr, "timesheet: refusing a STALE cached catalog (%s); pass --force to use it, or run `timesheet classify list` (live)\n", provLine)
+				return exitBlocked
+			}
+		}
 	}
 
-	opt, err := selection.ResolveToken(cat, *token)
+	opt, err := selection.ResolveToken(view.union, *token)
 	if err != nil {
-		switch {
-		case errors.Is(err, selection.ErrAmbiguousToken):
+		if errors.Is(err, selection.ErrAmbiguousToken) {
 			fmt.Fprintf(stderr, "timesheet: classification %q is ambiguous in the catalog; choose an exact id\n", *token)
-		default:
-			msg := fmt.Sprintf("timesheet: classification %q was not found in the catalog", *token)
-			if !cat.Complete {
-				msg += " (the catalog is PARTIAL; refine it with `timesheet classify list --search <term>`)"
-			}
-			fmt.Fprintln(stderr, msg)
+		} else {
+			fmt.Fprintln(stderr, "timesheet: "+selectionNotFoundMessage(*token, *useCache, view.haveTargeted, view.union))
 		}
 		return exitError
 	}
@@ -289,6 +299,96 @@ func fetchCatalog(ctx context.Context, cfg cliConfig, useCache bool, search stri
 		_ = selection.SaveCatalogCache(cachePath, cat)
 	}
 	return cat, nil
+}
+
+// selectCatalogView is the resolution view used by `classify select`: the UNION of
+// the unfiltered catalog and a TARGETED catalog for the token, plus the individual
+// catalogs actually used (for provenance disclosure) and whether a targeted
+// catalog was obtained. A targeted catalog lies outside the unfiltered 20-row
+// page, so any classification beyond that page stays selectable.
+type selectCatalogView struct {
+	union        gradion.Catalog
+	used         []gradion.Catalog
+	haveTargeted bool
+	targetedErr  error
+}
+
+// selectCatalogs builds the selection view. Live (default): fetch the unfiltered
+// catalog AND a targeted catalog for the token, unioning by id (targeted wins);
+// each is cached under its own query. A targeted fetch failure is non-fatal (the
+// unfiltered catalog may still resolve the token) and is reported via targetedErr.
+// --cache: load the "" entry AND the search=<token> entry and union them; a
+// missing targeted entry is NOT an error (only the union's coverage is reduced).
+func selectCatalogs(ctx context.Context, cfg cliConfig, useCache bool, token string) (selectCatalogView, error) {
+	if useCache {
+		cachePath, _ := selection.DefaultCatalogCachePath()
+		base, baseErr := selection.LoadCatalogCache(cachePath, "")
+		targeted, targetedErr := selection.LoadCatalogCache(cachePath, token)
+		haveBase := baseErr == nil
+		haveTargeted := targetedErr == nil
+		if !haveBase && !haveTargeted {
+			return selectCatalogView{}, errors.New("no cached catalog: run `timesheet classify list` (live) first")
+		}
+		switch {
+		case haveBase && haveTargeted:
+			return selectCatalogView{
+				union:        selection.UnionCatalogs(base, targeted),
+				used:         []gradion.Catalog{base, targeted},
+				haveTargeted: true,
+			}, nil
+		case haveBase:
+			return selectCatalogView{union: base, used: []gradion.Catalog{base}}, nil
+		default:
+			return selectCatalogView{union: targeted, used: []gradion.Catalog{targeted}, haveTargeted: true}, nil
+		}
+	}
+
+	base, err := fetchCatalog(ctx, cfg, false, "")
+	if err != nil {
+		return selectCatalogView{}, err
+	}
+	targeted, terr := fetchCatalog(ctx, cfg, false, token)
+	if terr != nil {
+		return selectCatalogView{union: base, used: []gradion.Catalog{base}, targetedErr: terr}, nil
+	}
+	return selectCatalogView{
+		union:        selection.UnionCatalogs(base, targeted),
+		used:         []gradion.Catalog{base, targeted},
+		haveTargeted: true,
+	}, nil
+}
+
+// selectionProvenanceLine discloses a catalog's provenance and freshness for a
+// selection, marking it PARTIAL when it cannot prove absence (filtered query or a
+// truncated/capped result). It never presents a partial catalog as the whole one.
+func selectionProvenanceLine(cat gradion.Catalog, now time.Time) string {
+	prov, _ := selection.Freshness(cat, now)
+	if !cat.IsFullCatalog() {
+		prov += " (partial; get_classifications caps results, so rows beyond the first page may be omitted)"
+	}
+	return prov
+}
+
+// selectionNotFoundMessage explains an unresolvable selection WITHOUT asserting
+// absence from the catalog. It keys the "may be beyond the page" caveat on
+// IsFullCatalog, not Complete: the --cache targeted-only branch resolves against a
+// FILTERED catalog (Query != "") that may still report Complete, so Complete alone
+// would wrongly assert a proven absence. A filtered or partial union says the
+// classification may lie beyond the first 20 rows and to refine with
+// `classify list --search`; when no targeted catalog was obtained it tells the
+// user to run that search LIVE first. A full (unfiltered AND complete) catalog
+// still reports a genuine absence.
+func selectionNotFoundMessage(token string, useCache, haveTargeted bool, union gradion.Catalog) string {
+	msg := fmt.Sprintf("classification %q was not found", token)
+	if !union.IsFullCatalog() {
+		msg += "; the catalog is PARTIAL (get_classifications is capped at the first 20 rows), so the classification may lie beyond that page"
+	}
+	if useCache && !haveTargeted {
+		msg += fmt.Sprintf(" — run `timesheet classify list --search %s` (live) first to fetch a targeted catalog, then re-select", token)
+	} else {
+		msg += fmt.Sprintf(" — refine with `timesheet classify list --search %s`", token)
+	}
+	return msg
 }
 
 // catalogClient builds the MCP client from non-secret config and returns its

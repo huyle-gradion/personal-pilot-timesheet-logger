@@ -145,6 +145,14 @@ func FirstRunSuggestion(cat gradion.Catalog) (gradion.ClassificationOption, stri
 	}
 	switch len(matches) {
 	case 0:
+		// A PARTIAL (filtered or truncated) catalog can never prove absence: the
+		// suggestion may simply lie beyond the first page. Qualify the message
+		// rather than asserting the classification is "not present".
+		if !cat.IsFullCatalog() {
+			return gradion.ClassificationOption{}, fmt.Sprintf(
+				"the catalog is PARTIAL, so the suggested classification %s (%s) may lie beyond the returned page; refine with a search and choose a selection explicitly",
+				FirstRunCode, FirstRunName), false
+		}
 		return gradion.ClassificationOption{}, fmt.Sprintf(
 			"suggested classification %s (%s) is not present in the fetched catalog; choose another selection",
 			FirstRunCode, FirstRunName), false
@@ -219,6 +227,63 @@ func ResolveToken(cat gradion.Catalog, token string) (gradion.ClassificationOpti
 	default:
 		return gradion.ClassificationOption{}, ErrAmbiguousToken
 	}
+}
+
+// --- catalog union -----------------------------------------------------------
+
+// UnionCatalogs merges base and targeted into one selection view, keyed by option
+// ID. A targeted option REPLACES a same-ID base option (the targeted fetch is the
+// more specific one); a targeted-only option is appended. An option with a BLANK
+// ID has no identity, so it is keyed by its content (name/code/activity type) and
+// deduped the same way: an identical blank-ID row is collapsed, while genuinely
+// distinct blank-ID rows all survive. The result lists base options in base order
+// first, then any targeted-only options in targeted order, so a caller can
+// resolve a token that is absent from the unfiltered page but present in the
+// targeted one. Complete is true only when EVERY contributing catalog is complete,
+// so a union never claims to prove absence while one input was partial.
+func UnionCatalogs(base, targeted gradion.Catalog) gradion.Catalog {
+	merged := base
+	merged.Options = nil
+	// key identifies an option for dedup: by ID when present, else by content so
+	// blank-ID rows still collapse on exact duplicates instead of double-counting.
+	type optionKey struct{ kind, id, name, code, activity string }
+	keyOf := func(o gradion.ClassificationOption) optionKey {
+		if id := strings.TrimSpace(o.ID); id != "" {
+			return optionKey{kind: "id", id: id}
+		}
+		return optionKey{
+			kind:     "blank",
+			name:     strings.TrimSpace(o.Name),
+			code:     strings.TrimSpace(o.Code),
+			activity: strings.TrimSpace(o.ActivityType),
+		}
+	}
+	seen := make(map[optionKey]int, len(base.Options)+len(targeted.Options))
+	merge := func(o gradion.ClassificationOption, targetedWins bool) {
+		k := keyOf(o)
+		if idx, ok := seen[k]; ok {
+			if targetedWins {
+				merged.Options[idx] = o // targeted wins on conflict
+			}
+			return // never double-count
+		}
+		seen[k] = len(merged.Options)
+		merged.Options = append(merged.Options, o)
+	}
+	for _, o := range base.Options {
+		merge(o, false)
+	}
+	for _, o := range targeted.Options {
+		merge(o, true)
+	}
+	merged.Complete = base.Complete && targeted.Complete
+	// The union is a resolution view, not a filtered fetch: it is unfiltered by
+	// construction. Completeness is carried by Complete alone.
+	merged.Query = ""
+	if targeted.ObservedAt.After(merged.ObservedAt) {
+		merged.ObservedAt = targeted.ObservedAt
+	}
+	return merged
 }
 
 // --- catalog cache -----------------------------------------------------------

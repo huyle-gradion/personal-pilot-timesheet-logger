@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,9 +15,13 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
-// fakeCatalogFetcher is a hermetic catalogFetcher that echoes the query.
+// fakeCatalogFetcher is a hermetic catalogFetcher that echoes the query. When
+// byQuery is set, a matching query returns that catalog (used to model an
+// unfiltered page WITHOUT a target and a targeted page WITH it); otherwise the
+// single catalog field is returned.
 type fakeCatalogFetcher struct {
 	catalog gradion.Catalog
+	byQuery map[string]gradion.Catalog
 	err     error
 	queries []string
 }
@@ -27,6 +32,9 @@ func (f *fakeCatalogFetcher) ClassificationCatalog(ctx context.Context, query st
 		return gradion.Catalog{}, f.err
 	}
 	cat := f.catalog
+	if c, ok := f.byQuery[query]; ok {
+		cat = c
+	}
 	cat.Query = query
 	cat.Source = "live"
 	return cat, nil
@@ -68,6 +76,33 @@ func sampleCat() gradion.Catalog {
 		Options: []gradion.ClassificationOption{
 			{ID: "uuid-1", Name: "Gradion Intern Academy 2026", Code: "INTGRADI2610", ActivityType: "internal project"},
 			{ID: "uuid-2", Name: "Client Alpha", Code: "ALPHA-1", ActivityType: "client project"},
+		},
+	}
+}
+
+// partialPage returns the server's capped UNFILTERED page: exactly
+// MaxClassificationResults rows, none of which is the target, marked PARTIAL.
+func partialPage() gradion.Catalog {
+	cat := gradion.Catalog{Complete: false, Source: "live", ObservedAt: time.Now().UTC()}
+	for i := 0; i < 20; i++ {
+		cat.Options = append(cat.Options, gradion.ClassificationOption{
+			ID:           fmt.Sprintf("u-%02d", i),
+			Name:         fmt.Sprintf("Unrelated Row %d", i),
+			Code:         fmt.Sprintf("ROW-%02d", i),
+			ActivityType: "client project",
+		})
+	}
+	return cat
+}
+
+// targetedIntern returns a TARGETED catalog that contains the out-of-page target.
+func targetedIntern() gradion.Catalog {
+	return gradion.Catalog{
+		Complete:   true,
+		Source:     "live",
+		ObservedAt: time.Now().UTC(),
+		Options: []gradion.ClassificationOption{
+			{ID: "uuid-int", Name: "Gradion Intern Academy 2026", Code: "INTGRADI2610", ActivityType: "internal project"},
 		},
 	}
 }
@@ -381,6 +416,206 @@ func TestClassifySelect_PartialCatalogNotFoundSuggestsSearch(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "PARTIAL") || !strings.Contains(stderr, "--search") {
 		t.Fatalf("a partial-catalog not-found must suggest refining --search, got %q", stderr)
+	}
+}
+
+// SELECT-TARGETED-1: a classification that lies OUTSIDE the unfiltered 20-row
+// page is still selectable, because `classify select` (live) also fetches a
+// TARGETED catalog for the token and resolves against the union.
+func TestClassifySelect_TargetedFetchResolvesBeyondPage(t *testing.T) {
+	withHome(t)
+	fetch := &fakeCatalogFetcher{
+		catalog: partialPage(),
+		byQuery: map[string]gradion.Catalog{"INTGRADI2610": targetedIntern()},
+	}
+	withCatalogFetcher(t, fetch)
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	seedSelectableDay(t, storage, false)
+
+	code, stdout, stderr := runArgs(t, "classify", "select", "--config", cfgPath,
+		"--storage-dir", storage, "--date", testDate, "--classification", "INTGRADI2610", "--all")
+	if code != exitOK {
+		t.Fatalf("an out-of-page classification must be selectable live, got %d (%s)", code, stderr)
+	}
+	// The unfiltered fetch (""), then the targeted fetch (the token).
+	if len(fetch.queries) != 2 || fetch.queries[0] != "" || fetch.queries[1] != "INTGRADI2610" {
+		t.Fatalf("want an unfiltered then targeted fetch, got %v", fetch.queries)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].ClassificationID != "uuid-int" || rec.Confirmed[0].ActivityType != "internal project" {
+		t.Fatalf("the out-of-page selection must be applied: %+v", rec.Confirmed[0])
+	}
+	if rec.Confirmed[0].ClassificationID == "" {
+		t.Fatalf("the target must be resolved from the union, not left unset")
+	}
+	// Provenance/freshness is disclosed for every catalog used; the partial page
+	// must be labelled partial, never presented as the whole catalog.
+	if strings.Count(stdout, "provenance:") < 2 {
+		t.Errorf("every catalog used must have its provenance disclosed:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "partial") {
+		t.Errorf("the capped unfiltered page must be disclosed as partial:\n%s", stdout)
+	}
+}
+
+// SELECT-TARGETED-1 regression: a token already in the unfiltered page still
+// selects (the union must not break the in-page path).
+func TestClassifySelect_InPageCodeStillSelects(t *testing.T) {
+	withHome(t)
+	page := sampleCat()
+	page.Options = []gradion.ClassificationOption{
+		{ID: "uuid-1", Name: "Gradion Intern Academy 2026", Code: "INTGRADI2610", ActivityType: "internal project"},
+	}
+	fetch := &fakeCatalogFetcher{catalog: page, byQuery: map[string]gradion.Catalog{"INTGRADI2610": page}}
+	withCatalogFetcher(t, fetch)
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	seedSelectableDay(t, storage, false)
+
+	code, _, stderr := runArgs(t, "classify", "select", "--config", cfgPath,
+		"--storage-dir", storage, "--date", testDate, "--classification", "INTGRADI2610", "--all")
+	if code != exitOK {
+		t.Fatalf("an in-page code must still select, got %d (%s)", code, stderr)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].ClassificationID != "uuid-1" {
+		t.Fatalf("the in-page selection must be applied: %+v", rec.Confirmed[0])
+	}
+}
+
+// SELECT-TARGETED-1: `classify select --cache` unions the "" entry and the
+// search=<token> entry, so a classification outside the cached unfiltered page is
+// still selectable offline.
+func TestClassifySelect_CacheUnionResolvesTargetedEntry(t *testing.T) {
+	withHome(t)
+	seedCache(t, partialPage()) // "" entry: partial, WITHOUT the target
+	targeted := targetedIntern()
+	targeted.Query = "INTGRADI2610"
+	targeted.ObservedAt = time.Now().UTC()
+	seedCache(t, targeted) // search=<token> entry: WITH the target
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	seedSelectableDay(t, storage, false)
+
+	code, stdout, stderr := runArgs(t, "classify", "select", "--config", cfgPath,
+		"--storage-dir", storage, "--date", testDate, "--classification", "INTGRADI2610",
+		"--all", "--cache")
+	if code != exitOK {
+		t.Fatalf("the cached union must resolve the target, got %d (%s)", code, stderr)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].ClassificationID != "uuid-int" {
+		t.Fatalf("the cached targeted entry must be unioned in: %+v", rec.Confirmed[0])
+	}
+	if strings.Count(stdout, "provenance:") < 2 || !strings.Contains(stdout, "partial") {
+		t.Errorf("both cached catalogs and the partial state must be disclosed:\n%s", stdout)
+	}
+}
+
+// SELECT-TARGETED-1: with --cache and NO targeted entry, an unresolved token FAILS
+// with a partial-aware message that points at `classify list --search` (live) —
+// never a bare "not found" that asserts absence from the catalog.
+func TestClassifySelect_CacheTargetedAbsentPartialAwareError(t *testing.T) {
+	withHome(t)
+	seedCache(t, partialPage()) // only the "" entry; no search=INTGRADI2610 entry
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	seedSelectableDay(t, storage, false)
+
+	code, _, stderr := runArgs(t, "classify", "select", "--config", cfgPath,
+		"--storage-dir", storage, "--date", testDate, "--classification", "INTGRADI2610",
+		"--block-id", "c1", "--cache")
+	if code != exitError {
+		t.Fatalf("an unresolved token must be refused, got %d", code)
+	}
+	for _, want := range []string{"not found", "PARTIAL", "20", "--search", "list", "live"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("the not-found message must be partial-aware and mention %q:\n%s", want, stderr)
+		}
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].ClassificationID != "" {
+		t.Fatalf("a refused selection must not change the record: %+v", rec.Confirmed[0])
+	}
+}
+
+// D1: the --cache TARGETED-ONLY branch. The cache holds ONLY the search=<token>
+// entry, which is a FILTERED catalog and may legitimately be Complete=true while
+// still not containing the token. The not-found message must remain partial-aware
+// (page cap / --search), never assert a proven absence.
+func TestClassifySelect_CacheTargetedOnlyBranchPartialAware(t *testing.T) {
+	withHome(t)
+	only := gradion.Catalog{
+		Complete:   true, // filtered yet complete: the exact trap D1 targets
+		Source:     "live",
+		ObservedAt: time.Now().UTC(),
+		Options: []gradion.ClassificationOption{
+			{ID: "uuid-other", Name: "Something Else", Code: "OTHER-1", ActivityType: "client project"},
+		},
+	}
+	only.Query = "INTGRADI2610" // keyed under the token, but the token is absent
+	seedCache(t, only)
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	seedSelectableDay(t, storage, false)
+
+	code, _, stderr := runArgs(t, "classify", "select", "--config", cfgPath,
+		"--storage-dir", storage, "--date", testDate, "--classification", "INTGRADI2610",
+		"--block-id", "c1", "--cache")
+	if code != exitError {
+		t.Fatalf("an unresolved token must be refused, got %d", code)
+	}
+	for _, want := range []string{"not found", "PARTIAL", "20", "--search"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("the targeted-only not-found message must be partial-aware and mention %q:\n%s", want, stderr)
+		}
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].ClassificationID != "" {
+		t.Fatalf("a refused selection must not change the record: %+v", rec.Confirmed[0])
+	}
+}
+
+// COVERAGE: a targeted search=<token> that returns an UNRELATED classification
+// (a mere substring match) must NOT be silently selected. Resolution stays exact
+// and applies nothing.
+func TestClassifySelect_TargetedSubstringMatchNotSilentlySelected(t *testing.T) {
+	withHome(t)
+	unrelated := gradion.Catalog{
+		Complete:   true,
+		Source:     "live",
+		ObservedAt: time.Now().UTC(),
+		Options: []gradion.ClassificationOption{
+			{ID: "uuid-unrelated", Name: "Gradion Intern Academy 2026 Retrospective", Code: "RETRO-2026", ActivityType: "internal project"},
+		},
+	}
+	fetch := &fakeCatalogFetcher{
+		catalog: partialPage(),
+		byQuery: map[string]gradion.Catalog{"INTGRADI2610": unrelated},
+	}
+	withCatalogFetcher(t, fetch)
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	seedSelectableDay(t, storage, false)
+
+	code, _, stderr := runArgs(t, "classify", "select", "--config", cfgPath,
+		"--storage-dir", storage, "--date", testDate, "--classification", "INTGRADI2610", "--all")
+	if code != exitError {
+		t.Fatalf("a substring match must not be silently selected, got %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stderr, "not found") {
+		t.Fatalf("the mismatch must be reported as not found, got %q", stderr)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].ClassificationID != "" || rec.Confirmed[0].ActivityType != "" {
+		t.Fatalf("a substring match must apply NOTHING: %+v", rec.Confirmed[0])
 	}
 }
 

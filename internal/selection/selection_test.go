@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,140 @@ func TestFirstRunSuggestion_IncompatibleActivityTypeRejected(t *testing.T) {
 	_, why, ok := FirstRunSuggestion(cat)
 	if ok || why == "" {
 		t.Fatalf("an incompatible activity type must be rejected, ok=%v why=%q", ok, why)
+	}
+}
+
+// SELECT-TARGETED: a PARTIAL catalog must not assert the suggestion is "not
+// present" — the suggestion may lie beyond the returned page. The message must
+// qualify (mention the partial page) instead.
+func TestFirstRunSuggestion_PartialDoesNotClaimAbsent(t *testing.T) {
+	partial := gradion.Catalog{
+		Complete: false,
+		Query:    "intern",
+		Options:  []gradion.ClassificationOption{{ID: "x", Code: "OTHER", ActivityType: "internal project"}},
+	}
+	_, why, ok := FirstRunSuggestion(partial)
+	if ok {
+		t.Fatalf("a catalog without the suggestion must not match: %+v", why)
+	}
+	if strings.Contains(strings.ToLower(why), "not present") {
+		t.Fatalf("a PARTIAL catalog must not claim the suggestion is not present: %q", why)
+	}
+	if !strings.Contains(why, "PARTIAL") {
+		t.Fatalf("the partial explanation must say the catalog is PARTIAL: %q", why)
+	}
+}
+
+// SELECT-TARGETED: a COMPLETE unfiltered catalog with the suggestion absent may
+// still say "not present" (absence is proven there).
+func TestFirstRunSuggestion_CompleteAbsentSaysNotPresent(t *testing.T) {
+	complete := gradion.Catalog{
+		Complete: true,
+		Options:  []gradion.ClassificationOption{{ID: "x", Code: "OTHER", ActivityType: "internal project"}},
+	}
+	_, why, ok := FirstRunSuggestion(complete)
+	if ok {
+		t.Fatalf("a catalog without the suggestion must not match")
+	}
+	if !strings.Contains(strings.ToLower(why), "not present") {
+		t.Fatalf("a COMPLETE catalog may assert the suggestion is not present: %q", why)
+	}
+}
+
+// SELECT-TARGETED: the union lets a token present ONLY in the targeted catalog
+// resolve, without double-counting and without mislabeling completeness.
+func TestUnionCatalogs_TargetedWinsAndNoDoubleCount(t *testing.T) {
+	base := gradion.Catalog{
+		Complete:   false,
+		Source:     "live",
+		ObservedAt: time.Date(2026, 10, 11, 8, 0, 0, 0, time.UTC),
+		Options: []gradion.ClassificationOption{
+			{ID: "x", Name: "Base X", Code: "X1", ActivityType: "internal project"},
+			{ID: "y", Name: "Base Y", Code: "Y1"},
+		},
+	}
+	targeted := gradion.Catalog{
+		Complete:   true,
+		Query:      "TARGET",
+		Source:     "live",
+		ObservedAt: time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC),
+		Options: []gradion.ClassificationOption{
+			{ID: "x", Name: "Targeted X", Code: "TX", ActivityType: "internal project"},
+			{ID: "z", Name: "Targeted Z", Code: "TZ"},
+		},
+	}
+	got := UnionCatalogs(base, targeted)
+	if len(got.Options) != 3 {
+		t.Fatalf("union = %d options, want 3 (no double-count): %+v", len(got.Options), got.Options)
+	}
+	// Targeted wins on the shared id, and base order is preserved for the rest.
+	if got.Options[0].ID != "x" || got.Options[0].Name != "Targeted X" || got.Options[0].Code != "TX" {
+		t.Errorf("targeted option must win on id conflict, got %+v", got.Options[0])
+	}
+	if got.Options[1].ID != "y" || got.Options[2].ID != "z" {
+		t.Errorf("union order must be base then targeted-only, got %+v", got.Options)
+	}
+	counts := map[string]int{}
+	for _, o := range got.Options {
+		counts[o.ID]++
+	}
+	for id, n := range counts {
+		if n != 1 {
+			t.Errorf("id %q appears %d times; the union must not double-count", id, n)
+		}
+	}
+	// A partial input must keep the union partial (never a false absence proof).
+	if got.Complete {
+		t.Errorf("a union containing a PARTIAL catalog must not be complete")
+	}
+	if got.Query != "" {
+		t.Errorf("the union is unfiltered by construction, got query %q", got.Query)
+	}
+	// A token present only in the targeted catalog must now resolve.
+	if o, err := ResolveToken(got, "TZ"); err != nil || o.ID != "z" {
+		t.Errorf("a targeted-only token must resolve: %+v err=%v", o, err)
+	}
+}
+
+// SELECT-TARGETED: the union of two COMPLETE catalogs is complete.
+func TestUnionCatalogs_CompleteOnlyWhenBothComplete(t *testing.T) {
+	if got := UnionCatalogs(sampleCatalog(), sampleCatalog()); !got.Complete {
+		t.Fatalf("two complete catalogs must union to a complete catalog")
+	}
+	partial := sampleCatalog()
+	partial.Complete = false
+	if got := UnionCatalogs(sampleCatalog(), partial); got.Complete {
+		t.Fatalf("a partial input must keep the union partial")
+	}
+}
+
+// D4: blank-ID options have no identity, so the union dedups them by content —
+// an identical blank-ID row is collapsed, distinct blank-ID rows survive.
+func TestUnionCatalogs_BlankIDOptionsDeduped(t *testing.T) {
+	blank := gradion.ClassificationOption{Name: "No Id", Code: "NI", ActivityType: "internal project"}
+	base := gradion.Catalog{Complete: true, Options: []gradion.ClassificationOption{blank, blank}}
+	targeted := gradion.Catalog{Complete: true, Options: []gradion.ClassificationOption{
+		blank, // same content as base: must not double-count
+		{Name: "Other", Code: "OT", ActivityType: "client project"}, // distinct blank-ID row
+	}}
+	got := UnionCatalogs(base, targeted)
+	if len(got.Options) != 2 {
+		t.Fatalf("blank-ID options must be deduped by content, got %d: %+v", len(got.Options), got.Options)
+	}
+	if got.Options[0].Code != "NI" || got.Options[1].Code != "OT" {
+		t.Fatalf("unexpected union: %+v", got.Options)
+	}
+}
+
+// COVERAGE: resolution stays EXACT. A substring search that returns an UNRELATED
+// classification must not be silently selected; ResolveToken refuses it.
+func TestResolveToken_SubstringMatchNotSelected(t *testing.T) {
+	cat := gradion.Catalog{Complete: true, Options: []gradion.ClassificationOption{
+		{ID: "uuid-unrelated", Name: "Gradion Intern Academy 2026 Retrospective", Code: "RETRO-2026", ActivityType: "internal project"},
+		{ID: "uuid-other", Name: "Intern Onboarding", Code: "INTGRADI-OTHER", ActivityType: "internal project"},
+	}}
+	if _, err := ResolveToken(cat, "INTGRADI2610"); !errors.Is(err, ErrUnknownToken) {
+		t.Fatalf("a substring match must not be selected; want ErrUnknownToken, got %v", err)
 	}
 }
 
