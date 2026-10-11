@@ -97,10 +97,17 @@ func (f *fakeRemote) Classifications(ctx context.Context, query string) ([]gradi
 }
 
 func (f *fakeRemote) ClassificationCatalog(ctx context.Context, query string) (gradion.Catalog, error) {
-	// A live catalog carrying the classification the ready record uses, so both
-	// the FULL catalog gate and a TARGETED per-id read can resolve it.
+	// A live, complete catalog carrying the FULL row for the classification the
+	// ready record uses, so a TARGETED read by the recorded code resolves it.
 	return gradion.Catalog{Complete: true, Query: query, ObservedAt: accNow, Source: "live",
-		Options: []gradion.ClassificationOption{{ID: "cls-1", Code: "INTGRADI2610", ActivityType: "internal project"}}}, nil
+		Options: []gradion.ClassificationOption{accClsOpt()}}, nil
+}
+
+// accClsOpt is the fully-populated catalog row matching accReadyRecord's stored
+// retrieval metadata. A row missing any of id/name/code/activity type fails the
+// submit proof closed.
+func accClsOpt() gradion.ClassificationOption {
+	return gradion.ClassificationOption{ID: "cls-1", Name: "Gradion Intern Academy 2026", Code: "INTGRADI2610", ActivityType: "internal project"}
 }
 
 func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, limit int) (gradion.Listing, error) {
@@ -335,7 +342,7 @@ func accResolver(string) (string, bool) { return "cls-1", true }
 func accCatalog() *gradion.Catalog {
 	return &gradion.Catalog{
 		Complete: true, Source: "live", ObservedAt: accNow,
-		Options: []gradion.ClassificationOption{{ID: "cls-1", Code: "INTGRADI2610", ActivityType: "internal project"}},
+		Options: []gradion.ClassificationOption{accClsOpt()},
 	}
 }
 
@@ -365,6 +372,7 @@ func accReadyRecord(date string) workflow.Record {
 		Confirmed: []workflow.ConfirmedInterval{{
 			ID: "c1", Date: date, StartTime: "09:00", EndTime: "10:00",
 			Project: "Proj", Description: "work", Attendance: true, ClassificationID: "cls-1",
+			ClassificationCode: "INTGRADI2610", ClassificationName: "Gradion Intern Academy 2026", ActivityType: "internal project",
 		}},
 		Review: &workflow.ReviewState{Reviewed: true},
 	}
@@ -1244,6 +1252,9 @@ func TestAcceptance_10_SharedNoAIWorkflow(t *testing.T) {
 	accSeed(t, store, accDate, func(rec *workflow.Record) {
 		for i := range rec.Confirmed {
 			rec.Confirmed[i].ClassificationID = "cls-1"
+			rec.Confirmed[i].ClassificationCode = "INTGRADI2610"
+			rec.Confirmed[i].ClassificationName = "Gradion Intern Academy 2026"
+			rec.Confirmed[i].ActivityType = "internal project"
 		}
 	})
 	pre, err := r.Preview(accCtx, accDate, accResolver)
@@ -1306,7 +1317,7 @@ func TestAcceptance_SubmissionBoundary_TargetedReadResolvesPartialCatalog(t *tes
 
 	partial := &gradion.Catalog{
 		Complete: false, Source: "live", Query: "something-else", ObservedAt: accNow,
-		Options: []gradion.ClassificationOption{{ID: "other"}},
+		Options: []gradion.ClassificationOption{{ID: "other", Name: "Other", Code: "OTHER", ActivityType: "internal project"}},
 	}
 	res, err := r.Submit(accCtx, accDate, run.SubmitOptions{Resolver: accResolver, Catalog: partial})
 	if err != nil {

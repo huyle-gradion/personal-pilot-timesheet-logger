@@ -126,6 +126,12 @@ func preserveConfirmedFields(incoming, existing ConfirmedInterval) ConfirmedInte
 	if incoming.ActivityType == "" {
 		incoming.ActivityType = existing.ActivityType
 	}
+	if incoming.ClassificationCode == "" {
+		incoming.ClassificationCode = existing.ClassificationCode
+	}
+	if incoming.ClassificationName == "" {
+		incoming.ClassificationName = existing.ClassificationName
+	}
 	return incoming
 }
 

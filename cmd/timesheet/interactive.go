@@ -718,10 +718,13 @@ func (g *guided) classificationStep(ctx context.Context, prop proposal.Proposal,
 		if targets[i].manual != nil {
 			targets[i].manual.ClassificationID = opt.ID
 			targets[i].manual.ActivityType = opt.ActivityType
+			targets[i].manual.ClassificationCode = opt.Code
+			targets[i].manual.ClassificationName = opt.Name
 			continue
 		}
 		dec.Classification = append(dec.Classification, run.ClassificationDecision{
 			BlockID: targets[i].key, ClassificationID: opt.ID, ActivityType: opt.ActivityType,
+			ClassificationCode: opt.Code, ClassificationName: opt.Name,
 		})
 	}
 	if retained > 0 {
@@ -738,23 +741,27 @@ func (g *guided) validateClassifications(dec *run.ReviewDecisions) error {
 		return nil
 	}
 	for i := range dec.Classification {
-		id, at, err := run.AuthoritativeClassification(*g.cat, dec.Classification[i].ClassificationID, dec.Classification[i].ActivityType)
+		opt, err := run.AuthoritativeClassificationOption(*g.cat, dec.Classification[i].ClassificationID, dec.Classification[i].ActivityType)
 		if err != nil {
 			return err
 		}
-		dec.Classification[i].ClassificationID = id
-		dec.Classification[i].ActivityType = at
+		dec.Classification[i].ClassificationID = opt.ID
+		dec.Classification[i].ActivityType = opt.ActivityType
+		dec.Classification[i].ClassificationCode = opt.Code
+		dec.Classification[i].ClassificationName = opt.Name
 	}
 	for i := range dec.Manual {
 		if strings.TrimSpace(dec.Manual[i].ClassificationID) == "" {
 			continue
 		}
-		id, at, err := run.AuthoritativeClassification(*g.cat, dec.Manual[i].ClassificationID, dec.Manual[i].ActivityType)
+		opt, err := run.AuthoritativeClassificationOption(*g.cat, dec.Manual[i].ClassificationID, dec.Manual[i].ActivityType)
 		if err != nil {
 			return err
 		}
-		dec.Manual[i].ClassificationID = id
-		dec.Manual[i].ActivityType = at
+		dec.Manual[i].ClassificationID = opt.ID
+		dec.Manual[i].ActivityType = opt.ActivityType
+		dec.Manual[i].ClassificationCode = opt.Code
+		dec.Manual[i].ClassificationName = opt.Name
 	}
 	return nil
 }

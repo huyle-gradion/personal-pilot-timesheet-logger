@@ -121,6 +121,7 @@ func TestApplyReview_ManualConfirmUpdatesEverySplitFragment(t *testing.T) {
 		Manual: []ManualDecision{{
 			UUID: "u-1", Start: start, End: end, Project: "Proj", Description: "long session",
 			Confirm: true, ClassificationID: "cls-1", ActivityType: "internal project",
+			ClassificationCode: "INTGRADI2610", ClassificationName: "Gradion Intern Academy 2026",
 		}},
 	}
 	if err := r.ApplyReview(ctx, date, dec); err != nil {
@@ -134,6 +135,9 @@ func TestApplyReview_ManualConfirmUpdatesEverySplitFragment(t *testing.T) {
 	for _, ci := range rec.Confirmed {
 		if ci.ClassificationID != "cls-1" || ci.ActivityType != "internal project" {
 			t.Fatalf("EVERY fragment must carry the classification, got %+v", ci)
+		}
+		if ci.ClassificationCode != "INTGRADI2610" || ci.ClassificationName != "Gradion Intern Academy 2026" {
+			t.Fatalf("EVERY fragment must carry the retrieval metadata, got %+v", ci)
 		}
 		if len(ci.EvidenceIDs) == 0 {
 			t.Fatalf("EVERY fragment must carry the manual evidence id, got %+v", ci)

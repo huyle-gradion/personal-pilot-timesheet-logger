@@ -190,6 +190,8 @@ func cmdClassifySelect(ctx context.Context, args []string, stdout, stderr io.Wri
 			}
 			r.Confirmed[i].ClassificationID = opt.ID
 			r.Confirmed[i].ActivityType = opt.ActivityType
+			r.Confirmed[i].ClassificationCode = opt.Code
+			r.Confirmed[i].ClassificationName = opt.Name
 		}
 		invalidateApprovalsForDate(r, d, now)
 		return nil

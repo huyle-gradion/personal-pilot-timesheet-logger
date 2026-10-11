@@ -76,6 +76,17 @@ type ConfirmedInterval struct {
 	// log_time/edit_time (neither tool accepts an activity-type field). It feeds
 	// LocalFingerprint so a change invalidates an existing approval.
 	ActivityType string `json:"activity_type,omitempty"`
+	// ClassificationCode and ClassificationName are ADDITIVE RETRIEVAL METADATA
+	// captured from the explicit authoritative catalog option the user selected.
+	// They are used ONLY to look the choice back up against a fresh live catalog
+	// before submission (query by code, else name); they are NEVER proof by
+	// themselves and NEVER sent to log_time/edit_time. They are deliberately
+	// EXCLUDED from LocalFingerprint and PlanHash, so adding them to an existing
+	// record does not invalidate an approval. Scripted decisions may carry them as
+	// a retrieval hint only. A record with neither is legacy: submission fails
+	// closed with an explicit reselect-by-code diagnostic (no fabricated proof).
+	ClassificationCode string `json:"classification_code,omitempty"`
+	ClassificationName string `json:"classification_name,omitempty"`
 }
 
 // ExcludedEvidence records a review-time decision to exclude an evidence item

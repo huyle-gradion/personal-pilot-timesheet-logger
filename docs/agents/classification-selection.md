@@ -85,11 +85,25 @@ day and requires the explicit `--all` flag. The exact change list is printed
   selection); `submit` never uses a stale cache.
 - Offline collection and review remain fully usable.
 - An **unresolved remote choice blocks submission** — it never becomes a default.
-  Before any write, when a catalog is available (live, else a **fresh** cache), each
-  planned operation's classification is validated against it. A missing, empty, or
-  activity-type-inconsistent classification blocks the whole run with
-  `unverified_classification` and **zero writes**. A stale or absent cache blocks
-  submission rather than defaulting.
+  Before any write, **every** planned selection must be re-proven against a
+  **fresh LIVE** remote result: a fresh **cache is never proof of identity**, even
+  when it already contains the row. When the catalog used at submit is itself a
+  fresh **live, unfiltered, complete** fetch it is authoritative and reused;
+  otherwise one bounded **targeted read per unique recorded code** (code
+  preferred, else name) is issued and must return a **live, complete** page
+  carrying the exact selected stable id with a nonempty name, code, and derived
+  activity type, the recorded code/name matching, and the confirmed interval's
+  derived type matching. A missing, errored, ambiguous/duplicate, changed,
+  incomplete/capped, or unrelated result blocks the whole run with
+  `unverified_classification` and **zero writes**; absence from a full catalog is
+  `unknown_classification`. Operations that share an id but disagree on metadata
+  or type block as a group. A stale or absent cache blocks submission rather than
+  defaulting.
+- A **legacy** confirmed interval that carries **no** recorded code/name cannot be
+  re-proven from a targeted read. It fails closed with an explicit
+  `reselect_classification` diagnostic and **zero writes**, unless it is proven
+  from a fresh live full complete catalog whose returned row meets the safety
+  checks above. Existing bytes/history are preserved (no silent migration).
 - When the catalog used is partial and a token is not found, the error says so and
   suggests refining with `timesheet classify list --search <term>`.
 
@@ -112,6 +126,9 @@ existing approval:
   plan is rebuilt — e.g. at the next `preview` — so it is the *rebuilt* plan whose
   hash differs; the stored approval is invalidated via `stale_local`, not by a
   retroactive hash rewrite.)
+- The optional retrieval metadata `classification_code`/`classification_name` is
+  **deliberately excluded** from `LocalFingerprint` and `PlanHash` (and never sent
+  to the remote): adding it to an existing record does **not** stale an approval.
 - `timesheet classify select` also explicitly invalidates any not-yet-invalidated
   approval for the day (reason `classification_selection`).
 
@@ -141,10 +158,15 @@ submission logic.
 
 - No activity-type payload field is ever sent.
 - No automatic classification from any source.
-- No private catalog content or credential is stored in records, exports, logs, or
-  this document.
+- No **credential** ever reaches records, exports, logs, or this document.
 - The **local catalog cache** (`~/.timesheet/catalog-cache.json`) and the recent
-  preferences (`~/.timesheet/preferences.json`) persist classification
-  **names/codes/ids** (and activity types) **locally only**. They are never written
-  into workflow records, exports, or logs, and they contain **no credentials**. The
-  cache is bounded and 24h-stale-gated; both files are created mode `0600`.
+  preferences (`~/.timesheet/preferences.json`) are **local-only files**. The code
+  never copies their rows into workflow records, exports, or logs, and they never
+  contain credentials. The cache is bounded and 24h-stale-gated; both files are
+  created mode `0600`.
+- An **explicit selection** stores retrieval metadata on the confirmed interval:
+  `classification_id`, the derived `activity_type`, and the selected option's
+  `code`/`name`. This metadata is retrieval-only: it looks the choice back up at
+  submit (see §3) and never reaches a remote payload, the editorial agent, or the
+  managed export as catalog content. Catalog rows the user did not select are never
+  stored.

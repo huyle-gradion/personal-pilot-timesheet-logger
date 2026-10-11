@@ -132,6 +132,7 @@ func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
 	for _, field := range []string{
 		"block_id", "evidence_id", "work_block_id", "meeting_ev_id",
 		"new_start", "mark_empty", "acknowledge", "evidence_ids",
+		"classification_id", "classification_code", "classification_name",
 	} {
 		if !strings.Contains(wfContent, field) {
 			t.Errorf("workflow.md decisions schema missing actual field %q", field)

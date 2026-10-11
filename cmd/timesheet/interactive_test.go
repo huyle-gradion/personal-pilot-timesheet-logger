@@ -238,6 +238,9 @@ func TestGuided_PlainRealPath_AppliesReviewAndPreviews(t *testing.T) {
 	if ci.ClassificationID != "cls-1" || ci.ActivityType != "internal project" {
 		t.Errorf("want the chosen classification + derived activity type, got %q / %q", ci.ClassificationID, ci.ActivityType)
 	}
+	if ci.ClassificationCode != "INTGRADI2610" || ci.ClassificationName != "Gradion Intern Academy 2026" {
+		t.Errorf("want the catalog retrieval metadata captured, got %q / %q", ci.ClassificationCode, ci.ClassificationName)
+	}
 	if ci.StartTime != "16:00" || ci.EndTime != "17:00" {
 		t.Errorf("want the edited span 16:00-17:00, got %s-%s", ci.StartTime, ci.EndTime)
 	}

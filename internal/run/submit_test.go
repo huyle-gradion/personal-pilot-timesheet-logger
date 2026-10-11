@@ -12,12 +12,20 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
+// clsOpt is a fully-populated catalog row matching readyRecord's stored
+// classification metadata (id-derived code/name + a fixed derived activity type),
+// so the fresh-live proof can validate it. A row missing any of id/name/code/
+// activity type fails the proof closed.
+func clsOpt(id string) gradion.ClassificationOption {
+	return gradion.ClassificationOption{ID: id, Name: "Class " + id, Code: "CODE-" + id, ActivityType: "internal project"}
+}
+
 // fullCatalogWith returns a fresh, FULL (unfiltered, complete) live catalog that
 // contains the given classification ids. A live catalog is always fresh.
 func fullCatalogWith(ids ...string) *gradion.Catalog {
 	cat := gradion.Catalog{Complete: true, Source: "live"}
 	for _, id := range ids {
-		cat.Options = append(cat.Options, gradion.ClassificationOption{ID: id})
+		cat.Options = append(cat.Options, clsOpt(id))
 	}
 	return &cat
 }
@@ -27,7 +35,7 @@ func fullCatalogWith(ids ...string) *gradion.Catalog {
 func partialCatalog(query string, ids ...string) *gradion.Catalog {
 	cat := gradion.Catalog{Complete: false, Source: "live", Query: query}
 	for _, id := range ids {
-		cat.Options = append(cat.Options, gradion.ClassificationOption{ID: id})
+		cat.Options = append(cat.Options, clsOpt(id))
 	}
 	return &cat
 }
@@ -253,7 +261,7 @@ func TestSubmit_PartialCatalogTargetedReadResolvesChoice(t *testing.T) {
 	remote := newFakeRemote()
 	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
 		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
-			Options: []gradion.ClassificationOption{{ID: "cls-1"}}}, nil
+			Options: []gradion.ClassificationOption{clsOpt("cls-1")}}, nil
 	}
 	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
 	seedApproved(t, store, r, date)
@@ -268,8 +276,8 @@ func TestSubmit_PartialCatalogTargetedReadResolvesChoice(t *testing.T) {
 	if remote.creates != 1 {
 		t.Fatalf("want one create, got %d", remote.creates)
 	}
-	if len(remote.catalogCalls) != 1 || remote.catalogCalls[0] != "cls-1" {
-		t.Fatalf("want one targeted read for cls-1, got %v", remote.catalogCalls)
+	if len(remote.catalogCalls) != 1 || remote.catalogCalls[0] != "CODE-cls-1" {
+		t.Fatalf("want one targeted read by the recorded code, got %v", remote.catalogCalls)
 	}
 }
 
@@ -280,7 +288,7 @@ func TestSubmit_PartialCatalogTargetedReadNotFoundBlocks(t *testing.T) {
 	remote := newFakeRemote()
 	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
 		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
-			Options: []gradion.ClassificationOption{{ID: "something-else"}}}, nil
+			Options: []gradion.ClassificationOption{clsOpt("something-else")}}, nil
 	}
 	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
 	seedApproved(t, store, r, date)
@@ -350,8 +358,10 @@ func TestSubmit_PartialCatalogTargetedReadActivityTypeMismatchBlocks(t *testing.
 	date := "2026-10-06"
 	remote := newFakeRemote()
 	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
+		o := clsOpt("cls-1")
+		o.ActivityType = "client project"
 		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
-			Options: []gradion.ClassificationOption{{ID: "cls-1", ActivityType: "client project"}}}, nil
+			Options: []gradion.ClassificationOption{o}}, nil
 	}
 	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
 	seedApprovedWithActivityType(t, store, r, date, "internal project")
@@ -375,7 +385,7 @@ func TestSubmit_PartialCatalogTargetedReadActivityTypeMatchProceeds(t *testing.T
 	remote := newFakeRemote()
 	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
 		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
-			Options: []gradion.ClassificationOption{{ID: "cls-1", ActivityType: "internal project"}}}, nil
+			Options: []gradion.ClassificationOption{clsOpt("cls-1")}}, nil
 	}
 	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
 	seedApprovedWithActivityType(t, store, r, date, "internal project")
@@ -399,7 +409,7 @@ func TestSubmit_TargetedReadIsDeduped(t *testing.T) {
 	remote := newFakeRemote()
 	remote.catalogByQuery = func(query string) (gradion.Catalog, error) {
 		return gradion.Catalog{Complete: true, Query: query, Source: "live", ObservedAt: fixedNow(),
-			Options: []gradion.ClassificationOption{{ID: "cls-1"}}}, nil
+			Options: []gradion.ClassificationOption{clsOpt("cls-1")}}, nil
 	}
 	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
 
@@ -408,6 +418,7 @@ func TestSubmit_TargetedReadIsDeduped(t *testing.T) {
 	rec.Confirmed = append(rec.Confirmed, workflow.ConfirmedInterval{
 		ID: "c2", Date: date, StartTime: "11:00", EndTime: "12:00",
 		Project: "Proj", Description: "b", Attendance: true, ClassificationID: "cls-1",
+		ClassificationCode: "CODE-cls-1", ClassificationName: "Class cls-1", ActivityType: "internal project",
 	})
 	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error { *x = rec; return nil }); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -443,9 +454,7 @@ func TestSubmit_VerifiedClassificationProceeds(t *testing.T) {
 	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
 	seedApproved(t, store, r, date)
 
-	cat := gradion.Catalog{Complete: true, Source: "live", Options: []gradion.ClassificationOption{
-		{ID: "cls-1", Code: "INTGRADI2610", ActivityType: "internal project"},
-	}}
+	cat := gradion.Catalog{Complete: true, Source: "live", Options: []gradion.ClassificationOption{clsOpt("cls-1")}}
 	res, err := r.Submit(ctx, date, SubmitOptions{Catalog: &cat})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)

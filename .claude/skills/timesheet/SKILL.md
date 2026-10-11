@@ -50,7 +50,12 @@ Invoke this skill when the user issues any of the following triggers:
   `classificationId`; the activity type is derived server-side and never sent. The
   project→classification map and the recent-selection preference may **suggest**
   only — an unset classification blocks the plan, and `--all` bulk selection
-  requires the explicit flag.
+  requires the explicit flag. The explicit choice records the catalog option's
+  **code** (preferred) and **name** as retrieval metadata only; at `submit` each
+  choice is re-proven against a fresh LIVE remote result (a cache is never proof),
+  and a legacy selection with no recorded code/name fails closed with a
+  `reselect_classification` diagnostic, unless a fresh live full complete catalog
+  proves it.
 - **The journal source is read-only narrative evidence.** ai-database is an
   optional evidence input and never the primary store. The journal **collector**
   never writes it; the separate managed export boundary still writes only the

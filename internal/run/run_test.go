@@ -273,6 +273,7 @@ func readyRecord(date string) workflow.Record {
 		Confirmed: []workflow.ConfirmedInterval{{
 			ID: "c1", Date: date, StartTime: "09:00", EndTime: "10:00",
 			Project: "Proj", Description: "work", Attendance: true, ClassificationID: "cls-1",
+			ClassificationCode: "CODE-cls-1", ClassificationName: "Class cls-1", ActivityType: "internal project",
 		}},
 		Review: &workflow.ReviewState{Reviewed: true},
 	}

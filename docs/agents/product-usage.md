@@ -290,6 +290,12 @@ $TS submit  --config CFG --date D                       # executes only the reco
 - **Approval is bound to the exact plan content hash** and is per-day. Any local,
   plan, or remote change invalidates it; re-run `preview` and `approve` with the
   new plan id.
+- **Submit re-proves every selected classification against a fresh LIVE remote
+  result** before any write (a fresh cache never proves identity). Each choice is
+  looked up by its recorded code (or name); a legacy selection with no recorded
+  code/name fails closed with a `reselect_classification` diagnostic and zero
+  writes, unless a fresh live full complete catalog proves it. See
+  [classification selection](classification-selection.md).
 - **Submit is currently blocked**: live Gradion create/edit semantics are
   unverified and this session holds no write authority. The command is documented
   for the future gated step only.

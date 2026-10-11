@@ -49,16 +49,27 @@ type ReviewDecisions struct {
 // classification id (and the activity type) against a FRESH catalog before any
 // write. ActivityType is display/validation only and is never sent.
 func AuthoritativeClassification(cat gradion.Catalog, classificationID, declaredActivityType string) (string, string, error) {
+	opt, err := AuthoritativeClassificationOption(cat, classificationID, declaredActivityType)
+	if err != nil {
+		return "", "", err
+	}
+	return opt.ID, opt.ActivityType, nil
+}
+
+// AuthoritativeClassificationOption is AuthoritativeClassification returning the
+// WHOLE resolved catalog option, so a caller can also capture the retrieval
+// metadata (code/name) from the SAME authoritative match.
+func AuthoritativeClassificationOption(cat gradion.Catalog, classificationID, declaredActivityType string) (gradion.ClassificationOption, error) {
 	opt, err := selection.ResolveToken(cat, classificationID)
 	if err != nil {
-		return "", "", fmt.Errorf("run: classification %q: %w", classificationID, err)
+		return gradion.ClassificationOption{}, fmt.Errorf("run: classification %q: %w", classificationID, err)
 	}
 	declared := strings.TrimSpace(declaredActivityType)
 	if declared != "" && opt.ActivityType != "" && !strings.EqualFold(declared, opt.ActivityType) {
-		return "", "", fmt.Errorf("run: classification %q declares activity type %q but the catalog derives %q",
+		return gradion.ClassificationOption{}, fmt.Errorf("run: classification %q declares activity type %q but the catalog derives %q",
 			opt.ID, declared, opt.ActivityType)
 	}
-	return opt.ID, opt.ActivityType, nil
+	return opt, nil
 }
 
 // ConfirmDecision confirms one proposed block.
@@ -113,6 +124,13 @@ type ClassificationDecision struct {
 	BlockID          string `json:"block_id"`
 	ClassificationID string `json:"classification_id"`
 	ActivityType     string `json:"activity_type,omitempty"`
+	// ClassificationCode/ClassificationName are ADDITIVE RETRIEVAL metadata
+	// captured from the explicit catalog option (code preferred). They are a
+	// retrieval hint ONLY: they are never proof and never a payload field. A
+	// scripted decision may supply them; Runner.Submit still requires a fresh live
+	// remote proof before any write.
+	ClassificationCode string `json:"classification_code,omitempty"`
+	ClassificationName string `json:"classification_name,omitempty"`
 }
 
 // ManualDecision adds or updates a manual interval (keyed by UUID). When Confirm
@@ -135,6 +153,11 @@ type ManualDecision struct {
 	Confirm          bool   `json:"confirm,omitempty"`
 	ClassificationID string `json:"classification_id,omitempty"`
 	ActivityType     string `json:"activity_type,omitempty"`
+	// ClassificationCode/ClassificationName are ADDITIVE RETRIEVAL metadata
+	// captured from the explicit catalog option (code preferred). Retrieval hint
+	// only: never proof, never a payload field.
+	ClassificationCode string `json:"classification_code,omitempty"`
+	ClassificationName string `json:"classification_name,omitempty"`
 }
 
 // CurrentProposal re-derives the proposal honoring the record's review decisions
@@ -243,7 +266,7 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 	}
 	for _, cs := range d.Classification {
 		for _, id := range resolveAll(cs.BlockID) {
-			if err := review.SetClassification(rec, id, cs.ClassificationID, cs.ActivityType); err != nil {
+			if err := review.SetClassificationMeta(rec, id, cs.ClassificationID, cs.ActivityType, cs.ClassificationCode, cs.ClassificationName); err != nil {
 				return err
 			}
 		}
@@ -358,7 +381,7 @@ func (r *Runner) confirmManualDecisions(rec *workflow.Record, date string, manua
 			}
 			if strings.TrimSpace(m.ClassificationID) != "" {
 				for _, id := range ids {
-					if err := review.SetClassification(rec, id, m.ClassificationID, m.ActivityType); err != nil {
+					if err := review.SetClassificationMeta(rec, id, m.ClassificationID, m.ActivityType, m.ClassificationCode, m.ClassificationName); err != nil {
 						return err
 					}
 				}

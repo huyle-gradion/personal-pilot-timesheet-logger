@@ -70,15 +70,15 @@ type SubmitOptions struct {
 	// Catalog is MANDATORY whenever the runner has a Remote (deps.Remote != nil):
 	// a nil Catalog fails closed with missing_catalog BEFORE any write, and a
 	// catalog older than the shared gradion.CatalogMaxAge policy fails closed with
-	// stale_catalog. A supplied catalog is validated against every planned
-	// operation before any write. An operation whose classification is empty or
-	// absent blocks the whole run with ZERO writes: unknown_classification when the
-	// catalog is FULL (proven absent), else unverified_classification — but an
-	// absent choice under a filtered/partial catalog is re-validated with a bounded
-	// targeted read before blocking. The CLI always supplies it (a fresh cache,
-	// else live, else a partial cache) whenever a Gradion endpoint is configured.
-	// It is nil only for an offline runner (deps.Remote == nil), which blocks
-	// earlier with remote_unavailable.
+	// stale_catalog. It is a FRESHNESS gate only: identity is NEVER proven from a
+	// cache. A fresh LIVE, UNFILTERED, COMPLETE catalog is authoritative and reused
+	// for every lookup; otherwise one bounded targeted read per unique recorded
+	// code (code preferred, else name) proves each selection against a fresh live
+	// result. A selection with no recorded code/name (legacy) blocks with
+	// reselect_classification unless proven from the reusable full catalog. The CLI
+	// always supplies it (a fresh cache, else live, else a partial cache) whenever
+	// a Gradion endpoint is configured. It is nil only for an offline runner
+	// (deps.Remote == nil), which blocks earlier with remote_unavailable.
 	Catalog *gradion.Catalog
 }
 
@@ -119,12 +119,11 @@ func (r *Runner) Submit(ctx context.Context, date string, opts SubmitOptions) (S
 	if !gradion.CatalogFresh(*opts.Catalog, r.now()) {
 		return SubmitResult{Blocked: true, BlockReasons: []string{BlockStaleCatalog}}, nil
 	}
-	// Verify every planned operation's classification BEFORE any write. An
-	// unverifiable classification blocks with zero writes; it never becomes a
-	// default. When the catalog cannot prove absence, a bounded targeted read may
-	// authoritatively validate a specific choice.
+	// Verify every planned operation's classification gets FRESH LIVE remote proof
+	// BEFORE any write. A fresh cache never proves identity; an unverifiable choice
+	// blocks with zero writes and never becomes a default.
 	if plan, ok := workflow.FindPlan(rec, active.PlanID); ok {
-		if reasons := r.validateClassification(ctx, *opts.Catalog, plan.Operations, rec.Confirmed); len(reasons) > 0 {
+		if reasons := r.proveSelections(ctx, *opts.Catalog, plan.Operations, rec.Confirmed); len(reasons) > 0 {
 			return SubmitResult{Blocked: true, BlockReasons: reasons}, nil
 		}
 	}
@@ -144,81 +143,110 @@ func (r *Runner) Submit(ctx context.Context, date string, opts SubmitOptions) (S
 	return out, expErr
 }
 
-// validateClassification returns the block reasons for a plan's operations. When
-// the catalog is a FULL, COMPLETE fetch, absence is authoritative and the reasons
-// from submit.ClassifyOperations stand. Otherwise an ABSENT choice is not proof of
-// invalidity: it is re-validated with a bounded, read-only TARGETED fetch of that
-// specific id — one call per distinct missing id, deduped — and a fetch that FINDS
-// the id makes that option available to the FULL comparison.
+// proveSelections returns the block reasons for a plan's operations. EVERY
+// planned selected classification must be PROVEN against a FRESH LIVE remote
+// result before any write: a fresh cache never proves identity.
 //
-// The resolved options are fed back through submit.ClassifyOperations so the
-// ACTIVITY-TYPE comparison is re-run against the FETCHED option: a targeted fetch
-// that returns the id with a DIFFERENT derived activity type still blocks with
-// unverified_classification (it never clears the op merely because the id exists).
-// A not-found or errored fetch fails closed (the op stays blocked).
+// When the supplied catalog is itself a fresh LIVE, UNFILTERED, COMPLETE fetch it
+// is authoritative and reused for every lookup (no extra reads). Otherwise a
+// bounded targeted read is issued per UNIQUE lookup query (the recorded code,
+// else the name) — at most one call per distinct query — and each result must be
+// live, complete, and carry the exact selected row. A lookup with NO retrieval
+// metadata can only be proven from the reusable full catalog; otherwise it fails
+// closed with an explicit reselect-by-code diagnostic.
 //
-// TARGETED-READ ASSUMPTION: ClassificationCatalog(ctx, <id>) matches the
-// classification by that id (the server filters on the id/code search term). A
-// server that does not match the id returns no option, so the choice stays blocked
-// — the assumption is fail-closed, never fail-open.
-func (r *Runner) validateClassification(ctx context.Context, cat gradion.Catalog, ops []workflow.PlanOperation, confirmed []workflow.ConfirmedInterval) []string {
-	issues := submit.ClassifyOperations(cat, ops, confirmed)
-	if len(issues) == 0 || cat.IsFullCatalog() {
-		return submit.IssueReasons(issues)
+// Ops that SHARE a classification id but disagree on retrieval metadata or derived
+// activity type block as a GROUP (never "one-wins"). The payload is never
+// extended: only the classification id is sent to log_time/edit_time.
+func (r *Runner) proveSelections(ctx context.Context, base gradion.Catalog, ops []workflow.PlanOperation, confirmed []workflow.ConfirmedInterval) []string {
+	byLocal := make(map[string]workflow.ConfirmedInterval, len(confirmed))
+	for _, ci := range confirmed {
+		byLocal[ci.ID] = ci
 	}
-	resolved := cat
-	resolved.Options = append([]gradion.ClassificationOption(nil), cat.Options...)
-	added := false
-	for _, id := range absentIDs(issues) {
-		res, err := r.deps.Remote.ClassificationCatalog(ctx, id)
-		if err != nil {
-			continue // fail closed: the op stays blocked
+	lookups := make([]submit.ClassificationLookup, 0, len(ops))
+	for _, op := range ops {
+		ci := byLocal[op.LocalID]
+		lookups = append(lookups, submit.ClassificationLookup{
+			LocalID:      op.LocalID,
+			ID:           op.ClassificationID,
+			Code:         ci.ClassificationCode,
+			Name:         ci.ClassificationName,
+			ActivityType: ci.ActivityType,
+		})
+	}
+
+	reasons := submit.InconsistentIDMetadata(lookups)
+	blocked := map[string]bool{}
+	for _, l := range lookups {
+		// A lookup is pre-blocked when its id group is inconsistent.
+		if hasPrefixReason(reasons, l.LocalID) {
+			blocked[l.LocalID] = true
 		}
-		opt, ok := optionByID(res, id)
-		if !ok {
+	}
+
+	full := strings.EqualFold(strings.TrimSpace(base.Source), "live") && base.IsFullCatalog()
+	type readResult struct {
+		cat gradion.Catalog
+		err error
+	}
+	reads := map[string]readResult{}
+	for _, lk := range lookups {
+		if blocked[lk.LocalID] {
 			continue
 		}
-		resolved.Options = append(resolved.Options, opt)
-		added = true
+		if full {
+			if reason := submit.ProveClassification(base, lk, true); reason != "" {
+				reasons = append(reasons, reason+":"+lk.LocalID)
+			}
+			continue
+		}
+		q := lk.Query()
+		if q == "" {
+			// Retrieval metadata is required to re-prove a choice from live data.
+			reasons = append(reasons, submit.BlockUnverifiedClassification+":"+lk.LocalID, submit.BlockReselectClassification+":"+lk.LocalID)
+			continue
+		}
+		rr, ok := reads[q]
+		if !ok {
+			cat, err := r.deps.Remote.ClassificationCatalog(ctx, q)
+			rr = readResult{cat: cat, err: err}
+			reads[q] = rr
+		}
+		if rr.err != nil {
+			reasons = append(reasons, submit.BlockUnverifiedClassification+":"+lk.LocalID)
+			continue
+		}
+		if reason := submit.ProveClassification(rr.cat, lk, false); reason != "" {
+			reasons = append(reasons, reason+":"+lk.LocalID)
+		}
 	}
-	if !added {
-		return submit.IssueReasons(issues)
-	}
-	// Re-run the FULL comparison (absence AND activity type) against the resolved
-	// options. A resolved id whose fetched activity type disagrees with the
-	// confirmed interval blocks as unverified_classification.
-	return submit.IssueReasons(submit.ClassifyOperations(resolved, ops, confirmed))
+	return dedupSort(reasons)
 }
 
-// absentIDs returns the distinct, non-empty classification ids of ABSENT issues,
-// sorted, so each is fetched at most once.
-func absentIDs(issues []submit.ClassificationIssue) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, is := range issues {
-		if !is.Absent {
+// hasPrefixReason reports whether reasons contains "<BlockUnverifiedClassification>:<localID>".
+func hasPrefixReason(reasons []string, localID string) bool {
+	want := submit.BlockUnverifiedClassification + ":" + localID
+	for _, r := range reasons {
+		if r == want {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupSort returns the non-empty, deduplicated, sorted reasons.
+func dedupSort(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v == "" || seen[v] {
 			continue
 		}
-		id := strings.TrimSpace(is.ClassificationID)
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, id)
+		seen[v] = true
+		out = append(out, v)
 	}
 	sort.Strings(out)
 	return out
-}
-
-// optionByID returns the catalog option with the given id (first match).
-func optionByID(cat gradion.Catalog, id string) (gradion.ClassificationOption, bool) {
-	id = strings.TrimSpace(id)
-	for _, o := range cat.Options {
-		if strings.TrimSpace(o.ID) == id {
-			return o, true
-		}
-	}
-	return gradion.ClassificationOption{}, false
 }
 
 // Export writes the managed daily-note section. A nil Exporter disables export.

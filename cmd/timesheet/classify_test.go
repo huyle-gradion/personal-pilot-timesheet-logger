@@ -228,6 +228,9 @@ func TestClassifySelect_BlockIDAppliesAndInvalidatesApproval(t *testing.T) {
 	if rec.Confirmed[0].ClassificationID != "uuid-1" || rec.Confirmed[0].ActivityType != "internal project" {
 		t.Fatalf("the selection must be applied: %+v", rec.Confirmed[0])
 	}
+	if rec.Confirmed[0].ClassificationCode != "INTGRADI2610" || rec.Confirmed[0].ClassificationName != "Gradion Intern Academy 2026" {
+		t.Fatalf("the selection must persist the retrieval metadata: %+v", rec.Confirmed[0])
+	}
 	if len(rec.Approvals) != 1 || rec.Approvals[0].InvalidatedAt == nil {
 		t.Fatalf("a selection change must invalidate the existing approval: %+v", rec.Approvals)
 	}

@@ -114,6 +114,7 @@ Example `decisions.json` (a subset of the `run.ReviewDecisions` fields):
   "join": [{"work_block_id": "<BLOCK_ID>", "meeting_ev_id": "<EVIDENCE_ID>"}],
   "trim": [{"block_id": "<BLOCK_ID>", "new_start": "09:15", "new_end": "09:45"}],
   "project": [{"block_id": "<BLOCK_ID>", "project": "Proj"}],
+  "classification": [{"block_id": "<BLOCK_ID>", "classification_id": "<ID>", "activity_type": "<derived>", "classification_code": "<CODE>", "classification_name": "<NAME>"}],
   "manual": [{"uuid": "<UUID>", "start": "2026-10-06T09:00:00Z", "end": "2026-10-06T11:00:00Z", "project": "Proj", "description": "Pairing", "evidence_ids": ["<EVIDENCE_ID>"]}],
   "mark_empty": false,
   "acknowledge": ["cal"]
@@ -160,9 +161,17 @@ $TS classify select --config "$CFG" --date "$DATE" --classification "<CODE|ID>" 
   recent choice is persisted as a **suggestion that still requires explicit
   confirmation** — it is never auto-applied.
 - `--classification` must be an explicit user input; no config default fills it.
+- The explicit selection records the catalog option's **code** (preferred) and
+  **name** as RETRIEVAL metadata on the confirmed interval. This metadata is never
+  proof and never a payload field; at `submit` each choice is re-proven against a
+  fresh LIVE remote result by its recorded code. A legacy interval with no recorded
+  code/name fails closed with a `reselect_classification` diagnostic (zero writes),
+  unless a fresh live full complete catalog proves it. See
+  [classification selection](../../../docs/agents/classification-selection.md) §3.
 
-**Output Seam**: the chosen `classification_id` (and its derived activity type) on
-the day's confirmed interval(s), with any prior approval invalidated.
+**Output Seam**: the chosen `classification_id` (and its derived activity type, plus
+the retrieval code/name) on the day's confirmed interval(s), with any prior approval
+invalidated.
 
 ---
 

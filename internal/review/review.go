@@ -212,8 +212,19 @@ func SetDescription(r *workflow.Record, blockID, text string) error {
 // the activity type DERIVED by the server for that classification. A non-empty
 // classification id is required: there is no default and no resolver auto-fill,
 // so an empty choice is refused rather than silently left unset. ActivityType is
-// display/validation only and is never sent to a remote write.
+// display/validation only and is never sent to a remote write. It stores no
+// retrieval metadata (see SetClassificationMeta).
 func SetClassification(r *workflow.Record, blockID, classificationID, activityType string) error {
+	return SetClassificationMeta(r, blockID, classificationID, activityType, "", "")
+}
+
+// SetClassificationMeta is SetClassification plus the RETRIEVAL metadata captured
+// from the explicit catalog option: ClassificationCode (preferred) and
+// ClassificationName. The metadata is stored EXACTLY as given, so an explicit
+// selection that carries none CLEARS any stale metadata (the choice can then only
+// be re-proven against a fresh live full catalog, else it must be reselected).
+// The metadata is retrieval-only: it never reaches a remote write.
+func SetClassificationMeta(r *workflow.Record, blockID, classificationID, activityType, code, name string) error {
 	if r == nil {
 		return ErrNilRecord
 	}
@@ -227,6 +238,8 @@ func SetClassification(r *workflow.Record, blockID, classificationID, activityTy
 	}
 	ci.ClassificationID = id
 	ci.ActivityType = strings.TrimSpace(activityType)
+	ci.ClassificationCode = strings.TrimSpace(code)
+	ci.ClassificationName = strings.TrimSpace(name)
 	return nil
 }
 
