@@ -749,6 +749,19 @@ Vault sync status: complete - project note and daily note updated.
 Next gate and blockers: production submission remains blocked (live-authority verification and an owner-approved exact daily plan are still required). F2 does not independently block source acceptance or release readiness.
 ```
 
+```text
+2026-10-11 / CLASSIFICATION-SELECT-TARGETED-1 / authorized -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: owner-authorized bounded fix at the SELECTION boundary (targeted resolution beyond the unfiltered catalog page); local commit; vault update. Not authorized: live access, remote writes, credential retrieval, Keychain changes, push/merge/publication.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 3fe22c5 (parent d133ff2) / 4 files, +554/-19: cmd/timesheet/{classify,classify_test}.go, internal/selection/{selection,selection_test}.go. md5s matched the accepted fix1 manifest (.../opencode/classification-select-targeted-1-fix1-manifest.txt).
+Worker/reviewer report references and verification level: @fixer (ses_ed5967078ffeJ78tJxEnuVLMBc) implement + fix; @oracle independent review (ses_ed58dca80ffeNWN6sYrqNZjTKz) verdict "not yet commit" (D1 Medium), focused re-review "D1/D2/D4 + coverage closed; commit yes". Full uncached suite green across repeated runs; gofmt/build/vet/`git diff --check` clean.
+Root cause: get_classifications (unfiltered) is server-capped at 20 rows with no pagination, so the CLI marks it partial. classify select resolved the token ONLY within that unfiltered partial page, so any classification beyond row 20 (e.g. INTGRADI2610, verified live to exist) was unselectable; --cache read only the "" entry; and the not-found / first-run messages asserted absence from a PARTIAL result as if it proved the choice invalid (the exact rule violated at the selection boundary).
+Fix: classify select now fetches the unfiltered catalog AND a targeted search=<token> catalog and resolves across their UNION (targeted wins on id conflict); --cache unions the "" entry with the search=<token> entry. The not-found predicate is IsFullCatalog (so a filtered-but-Complete --cache targeted-only entry is still partial-aware); FirstRunSuggestion is partial-qualified; blank-ID options are content-keyed deduped; a targeted substring match returning an unrelated classification is never silently selected (resolution stays exact: id -> code -> unambiguous id-prefix). The submission path is byte-identical.
+Open findings and disposition: D1/D2/D4 and the coverage gap closed. D2 accepted as intentional (per-entry staleness refusal is deliberately conservative). Carried: D3 (the live targeted fetch searches the token verbatim, so out-of-page selection by UUID or any token the server search does not index still fails; the code-based case works); the union-branch spurious-partial is theoretical (a complete base implies fewer than 20 rows, so a search subset cannot hit the cap).
+Commit and publication status: committed locally 3fe22c5; NOT pushed, no PR, no merge.
+Vault sync status: complete - project note and daily note updated.
+Next gate and blockers: production submission remains blocked (live-authority verification and an owner-approved exact daily plan are still required).
+```
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
