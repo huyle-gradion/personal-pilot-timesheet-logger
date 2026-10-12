@@ -20,7 +20,7 @@ func TestBuildMapping_OK(t *testing.T) {
 	now := time.Unix(1000, 0).UTC()
 	entry := workflow.RemoteState{
 		RemoteID: "uuid-1", Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00",
-		ClassificationID: "c1", Description: "work",
+		ClassificationID: "c1", Description: "work", ContentObserved: true,
 	}
 	m, err := BuildMapping("l1", PlannedEntry{
 		Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00",
@@ -37,6 +37,15 @@ func TestBuildMapping_OK(t *testing.T) {
 	}
 }
 
+// A mapping must never be built from a plan echo / identity-only state: an
+// unobserved entry fails closed rather than becoming LastObserved.
+func TestBuildMapping_UnobservedEntryFailsClosed(t *testing.T) {
+	entry := workflow.RemoteState{RemoteID: "uuid-1", Date: "2026-10-06"}
+	if _, err := BuildMapping("l1", PlannedEntry{Date: "2026-10-06"}, entry, time.Now()); CodeOf(err) != CodeUnobservedEntry {
+		t.Fatalf("expected %s, got %v", CodeUnobservedEntry, err)
+	}
+}
+
 func TestBuildOutcome_StatusesAndResolution(t *testing.T) {
 	now := time.Now().UTC()
 	planned := PlannedEntry{Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", Description: "work"}
@@ -46,7 +55,7 @@ func TestBuildOutcome_StatusesAndResolution(t *testing.T) {
 		status   workflow.OutcomeStatus
 		resolved bool
 	}{
-		{"confirmed", WriteResult{Status: WriteConfirmed, Entry: &workflow.RemoteState{RemoteID: "uuid-1"}}, workflow.OutcomeConfirmed, true},
+		{"confirmed", WriteResult{Status: WriteConfirmed, Entry: &workflow.RemoteState{RemoteID: "uuid-1", ContentObserved: true}}, workflow.OutcomeConfirmed, true},
 		{"uncertain", WriteResult{Status: WriteUncertain, ErrorCode: CodeWriteUncertain}, workflow.OutcomeUncertain, false},
 		{"unidentified", WriteResult{Status: WriteUnidentified, ErrorCode: CodeWriteUnidentified}, workflow.OutcomeUnidentified, false},
 		{"failed", WriteResult{Status: WriteFailed, ErrorCode: CodeWriteFailed}, workflow.OutcomeFailed, true},
@@ -80,8 +89,9 @@ func TestBuildOutcome_ConfirmedWithoutRemoteIDIsUnidentified(t *testing.T) {
 		res  WriteResult
 	}{
 		{"nil entry", WriteResult{Status: WriteConfirmed}},
-		{"empty id", WriteResult{Status: WriteConfirmed, Entry: &workflow.RemoteState{}}},
-		{"whitespace id", WriteResult{Status: WriteConfirmed, Entry: &workflow.RemoteState{RemoteID: "  "}}},
+		{"empty id", WriteResult{Status: WriteConfirmed, Entry: &workflow.RemoteState{ContentObserved: true}}},
+		{"whitespace id", WriteResult{Status: WriteConfirmed, Entry: &workflow.RemoteState{RemoteID: "  ", ContentObserved: true}}},
+		{"unobserved entry (plan echo)", WriteResult{Status: WriteConfirmed, Entry: &workflow.RemoteState{RemoteID: "uuid-1"}}},
 	}
 	for _, tc := range cases {
 		out := BuildOutcome("create", "l1", planned, tc.res, now)
@@ -100,13 +110,28 @@ func TestBuildOutcome_ConfirmedWithoutRemoteIDIsUnidentified(t *testing.T) {
 func TestBuildOutcome_OperationKeyMatchesPreWritePlan(t *testing.T) {
 	planned := PlannedEntry{RemoteID: "", Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00"}
 	out := BuildOutcome("create", "l1", planned,
-		WriteResult{Status: WriteConfirmed, Entry: &workflow.RemoteState{RemoteID: "uuid-1"}}, time.Now())
+		WriteResult{Status: WriteConfirmed, Entry: &workflow.RemoteState{RemoteID: "uuid-1", ContentObserved: true}}, time.Now())
 	want := workflow.DeriveOperationKey(workflow.OperationOutcome{
 		Date: "2026-10-06", Action: "create", RemoteID: "", LocalID: "l1",
 		StartTime: "09:00", EndTime: "10:00",
 	})
 	if out.OperationKey != want {
 		t.Errorf("operation key = %q, want %q", out.OperationKey, want)
+	}
+}
+
+// TestBuildOutcome_IdentifiedPreservesRemoteID proves an identity-acknowledged
+// write is UNRESOLVED (uncertain) and preserves the acknowledged remote id so the
+// caller can reconcile it.
+func TestBuildOutcome_IdentifiedPreservesRemoteID(t *testing.T) {
+	planned := PlannedEntry{Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00"}
+	out := BuildOutcome("create", "l1", planned,
+		WriteResult{Status: WriteIdentified, RemoteID: "uuid-9"}, time.Now())
+	if out.Status != workflow.OutcomeUncertain || out.Resolved {
+		t.Fatalf("identified must be unresolved uncertain, got %+v", out)
+	}
+	if out.RemoteID != "uuid-9" {
+		t.Errorf("acknowledged remote id must be preserved, got %q", out.RemoteID)
 	}
 }
 

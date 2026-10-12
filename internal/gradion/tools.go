@@ -77,6 +77,20 @@ const (
 	CodeWriteUncertain    = "GRADION_WRITE_UNCERTAIN"
 	CodeWriteFailed       = "GRADION_WRITE_FAILED"
 	CodeWriteUnidentified = "GRADION_WRITE_UNIDENTIFIED"
+	// CodeWriteContentUnverified is recorded when an identity-acknowledged write
+	// could not be confirmed by a bounded stable-ID read-back: the entry was
+	// absent, the read-back failed, or absence could not be established. The
+	// write stays UNRESOLVED (never retried).
+	CodeWriteContentUnverified = "GRADION_WRITE_CONTENT_UNVERIFIED"
+	// CodeWriteContentMismatch is recorded when the read-back found the entry but
+	// its content did not match the plan. The write stays UNRESOLVED (never
+	// retried); a server-normalized value reads as a mismatch, never a false
+	// confirm.
+	CodeWriteContentMismatch = "GRADION_WRITE_CONTENT_MISMATCH"
+	// CodeUnobservedEntry is a programmer error: BuildMapping was asked to bind a
+	// mapping to a state that was not observation-derived (ContentObserved false),
+	// e.g. a plan echo. Identity is never fabricated from a plan.
+	CodeUnobservedEntry = "GRADION_ERR_UNOBSERVED_ENTRY"
 )
 
 // Error is a typed, secret-free domain error.
@@ -114,20 +128,31 @@ type Listing struct {
 	ObservedAt time.Time
 }
 
-// WriteStatus classifies a remote write result.
+// WriteStatus classifies a remote write result. WriteIdentified is an IDENTITY
+// acknowledgement only: the server confirmed the stable entry id but its CONTENT
+// was not observed in the response, so the write is NOT confirmed and must be
+// verified by a bounded read-back before a mapping is recorded.
 type WriteStatus string
 
 const (
 	WriteConfirmed    WriteStatus = "confirmed"
+	WriteIdentified   WriteStatus = "identified"
 	WriteUncertain    WriteStatus = "uncertain"
 	WriteUnidentified WriteStatus = "unidentified"
 	WriteFailed       WriteStatus = "failed"
 )
 
-// WriteResult is the classified outcome of one write. Entry is set only when
-// confirmed.
+// WriteResult is the classified outcome of one write.
+//
+// RemoteID is the acknowledged stable id whenever the server identified the
+// entry, even for an unconfirmed (WriteIdentified/uncertain) result, so the
+// caller can perform a bounded read-back. Entry is non-nil ONLY when content was
+// actually observed (a complete structured response, or a verified read-back);
+// it always carries ContentObserved=true. A WriteIdentified result has a non-empty
+// RemoteID and a nil Entry.
 type WriteResult struct {
 	Status    WriteStatus
+	RemoteID  string
 	Entry     *workflow.RemoteState
 	ErrorCode string
 }

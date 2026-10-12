@@ -143,4 +143,18 @@ func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(repoRoot, "cmd", "timesheet", "timesheet.personal.example.json")); statErr != nil {
 		t.Errorf("cmd/timesheet/timesheet.personal.example.json does not exist: %v", statErr)
 	}
+
+	// 12. The unresolved-write STOP and the recovery-authority rules are stated.
+	for _, want := range []string{
+		"STOPS the operational",
+		"content-unverified",
+		"SEPARATE owner authority",
+		"self-adoption",
+		"source hot-patching",
+		`conversational "go"`,
+	} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("skill docs missing unresolved-write STOP/recovery rule %q", want)
+		}
+	}
 }

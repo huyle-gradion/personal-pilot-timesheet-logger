@@ -189,6 +189,11 @@ func resolveEditFromObservation(rec *workflow.Record, o workflow.OperationOutcom
 	if !ok {
 		return // no pre-edit baseline: leave unresolved
 	}
+	if !prior.LastObserved.ContentObserved {
+		// A legacy/plan-echo LastObserved is not verified content: never compare
+		// against it. Leave the operation unresolved.
+		return
+	}
 
 	postEdit := prior.LastObserved
 	postEdit.Date = o.Date
@@ -222,6 +227,7 @@ func mappingByLocalID(rec *workflow.Record, localID string) (workflow.RemoteMapp
 }
 
 func refreshMappingLastObserved(rec *workflow.Record, localID string, observed workflow.RemoteState, now time.Time) {
+	observed.ContentObserved = true
 	for i := range rec.RemoteMappings {
 		if rec.RemoteMappings[i].LocalID == localID {
 			rec.RemoteMappings[i].LastObserved = observed

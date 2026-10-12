@@ -389,8 +389,17 @@ $TS submit  --config CFG --date D                       # executes only the reco
   resolved credential, `preflight`/`review`/`preview` perform read-only MCP calls
   (capabilities, catalog, remote listing) **when the user authorizes them** — but
   no submission. `--offline` disables exactly those Gradion calls.
-- **Uncertain writes stop the run** and are never retried blindly. Reconcile later
-  with an explicit `resolve` decision (a future gated step).
+- **Uncertain writes stop the run** and are never retried blindly. An
+  identity-only write response is not a confirm: content is verified by a bounded
+  read-back, and a mismatch or an unverifiable read-back leaves the write
+  **content-unverified** and unresolved. An uncertain, unidentified, or
+  content-unverified write **STOPS the operational session**; recovering from it
+  requires SEPARATE owner authority — no self-adoption, no new-plan approval, no
+  source hot-patching, and no debugging writes without it. A conversational "go"
+  confirms ONLY the immediately presented exact plan, and ONLY when submission
+  authority is already established; it cannot authorize a different plan and never
+  implicitly grants debugging or source-repair authority. Reconcile later with an
+  explicit `resolve` decision (a future gated step).
 
 ## Skill usage
 
@@ -450,6 +459,29 @@ remote prompt prepares the exact plan for a human to `approve`/`submit` later.
   implicit ids in one section **fail visibly** rather than silently collapsing.
 - **Only recorded work is captured** — this never establishes a complete day.
 
+## Release note (upgrade behavior)
+
+The `content_observed` flag on a remote observation is an **additive** field. On
+upgrade, a pre-existing mapping or observation recorded before this field existed
+decodes with `content_observed` absent (treated as **false** = content unknown).
+
+1. **Legacy mappings are content-unknown, not conflicts.** A legacy mapping's
+   stored baseline is no longer asserted as a `remote_conflict` merely because it
+   lacks the flag: an unprovable conflict is not raised. Remote change detection
+   for such a mapping stays **inactive** — it is refreshed only by an explicit
+   `resolve`/adopt of an unresolved operation, or by a confirmed edit that rebuilds
+   the mapping; there is **no automatic refresh on `preview`/`plan`** (those never
+   persist `last_observed`). There is **no record migration and no silent trust
+   upgrade** — the legacy baseline is simply treated as unknown. An
+   observation-derived baseline whose content truly differs still conflicts as
+   before.
+2. **Legacy persisted edit plans fail closed.** A persisted edit plan whose
+   `expected_remote` is unobserved (a pre-field plan echo) now validates as
+   `stale_remote` (`edit_remote_changed`) and must be **re-planned and re-approved**.
+   This is **fail-closed and safe**: approvals are single-use and short-lived, no
+   already-submitted work is affected, and no false confirm is possible. No
+   migration is required.
+
 ## Troubleshooting
 
 Exit codes: `0` success, `1` error, `2` usage error, `3` blocked.
@@ -464,7 +496,9 @@ Exit codes: `0` success, `1` error, `2` usage error, `3` blocked.
 | `readiness:not_attended_as_work` | A meeting marked not attended is still included as work; exclude it or correct the reviewed attendance |
 | `readiness:unresolved_project` | Resolve the interval's project explicitly |
 | Catalog `partial` / `STALE` | The catalog is truncated or old — `classify list` (live) or `--force` deliberately |
-| `uncertain` submission | A write's outcome is unknown — the run stops; **never retry blindly**; `resolve` later (future gated) |
+| `uncertain` submission | A write's outcome is unknown — the run STOPS the operational session; **never retry blindly**; recovering needs SEPARATE owner authority (no self-adoption, no source hot-patching); `resolve` later (future gated) |
+| `content-unverified` write | The write only acknowledged an entry's identity; its content was not verified by the bounded read-back — the run STOPS unresolved, never a false confirm |
+| Conversational "go" | Confirms ONLY the immediately presented exact plan, and ONLY when submission authority is already established — it cannot authorize a different plan or grant debugging/source-repair authority |
 | `--interactive` refused | Not a real terminal or under CI — use `--plain` or `--decisions` |
 | Piped/`tee`d output | Not a TTY — the TUI will not start; use `--plain` |
 

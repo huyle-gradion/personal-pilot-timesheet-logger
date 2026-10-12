@@ -40,6 +40,7 @@ func (r remoteRow) toRemoteState(observed time.Time) workflow.RemoteState {
 		Task:             strings.TrimSpace(r.Task),
 		Billable:         r.Billable,
 		ObservedAt:       observed,
+		ContentObserved:  true,
 	}
 }
 
@@ -98,54 +99,101 @@ func parseRows(res mcp.CallResult) ([]remoteRow, error) {
 	return nil, &Error{Code: CodeReadSchema, Message: "listing payload had no recognized entry list"}
 }
 
-// parseWriteEntry extracts the observed entry from a confirmed write result. It
-// accepts a bare entry object or a wrapper under "entry".
-func parseWriteEntry(res mcp.CallResult) *remoteRow {
-	trimmed := bytes.TrimSpace(payloadOf(res))
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &obj); err == nil {
-		if raw, ok := obj["entry"]; ok {
-			var row remoteRow
-			if json.Unmarshal(raw, &row) == nil {
-				return &row
-			}
-		}
-	}
-	var row remoteRow
-	if err := json.Unmarshal(trimmed, &row); err == nil {
-		return &row
-	}
-	return nil
+// writeAck is the identity/content-explicit decode of a write response.
+//
+// RemoteID is the acknowledged stable id whenever ok is true. Entry is non-nil
+// ONLY when the response carried a COMPLETE structured entry (content actually
+// observed: an interval with a start AND an end). A reference envelope
+// ({resources:[{kind,id,label}]}) or an id-only object acknowledges identity but
+// does NOT establish content: it yields {RemoteID: id, Entry: nil}. Identity
+// acknowledgement and content observation are deliberately separate; planned
+// content is NEVER copied into an observed state.
+type writeAck struct {
+	RemoteID string
+	Entry    *remoteRow
 }
 
-// mergeObserved fills fields the write response omitted from the planned entry.
-func mergeObserved(row remoteRow, planned PlannedEntry, now time.Time) workflow.RemoteState {
-	state := row.toRemoteState(now)
-	if state.Date == "" {
-		state.Date = planned.Date
+// isCompleteEntry reports whether a decoded row carries interval CONTENT — a
+// non-empty start AND end — which distinguishes a complete structured entry from
+// an id-only object. Date is optional.
+func (r remoteRow) isCompleteEntry() bool {
+	return strings.TrimSpace(r.StartTime) != "" && strings.TrimSpace(r.EndTime) != ""
+}
+
+// parseWriteEntry decodes a write response into an identity + optional content
+// acknowledgement, FAILING CLOSED (ok=false) on anything unrecognized. Rules:
+//
+//   - {entry:{...}} with a non-empty id: {RemoteID, Entry} ONLY when the entry
+//     carries interval content (start AND end); an id-only entry object yields
+//     {RemoteID, nil Entry} (identity acknowledged, content NOT observed).
+//   - {resources:[...]} -> decode []referenceItem and require EXACTLY ONE
+//     item whose kind equals "entry" (case-insensitive, trimmed) with a non-empty
+//     id. Zero entry refs, more than one, an empty list, a non-array/unparseable
+//     resources, or a malformed ref -> ok=false. A reference identifies an entry;
+//     it does NOT establish content, so Entry stays nil.
+//   - A bare structured entry object with a non-empty id: same rule as {entry}
+//     (content requires start AND end; otherwise identity-only).
+//   - Otherwise ok=false.
+func parseWriteEntry(res mcp.CallResult) (writeAck, bool) {
+	trimmed := bytes.TrimSpace(payloadOf(res))
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return writeAck{}, false
 	}
-	if state.StartTime == "" {
-		state.StartTime = planned.StartTime
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return writeAck{}, false
 	}
-	if state.EndTime == "" {
-		state.EndTime = planned.EndTime
+	if raw, ok := obj["entry"]; ok {
+		var row remoteRow
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return writeAck{}, false
+		}
+		id := strings.TrimSpace(row.ID)
+		if id == "" {
+			return writeAck{}, false
+		}
+		row.ID = id
+		if !row.isCompleteEntry() {
+			return writeAck{RemoteID: id}, true
+		}
+		return writeAck{RemoteID: id, Entry: &row}, true
 	}
-	if state.ClassificationID == "" {
-		state.ClassificationID = planned.ClassificationID
+	if raw, ok := obj["resources"]; ok {
+		var items []referenceItem
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return writeAck{}, false
+		}
+		entryID := ""
+		count := 0
+		for _, it := range items {
+			if !strings.EqualFold(strings.TrimSpace(it.Kind), "entry") {
+				continue
+			}
+			id := strings.TrimSpace(it.ID)
+			if id == "" {
+				return writeAck{}, false
+			}
+			count++
+			entryID = id
+		}
+		if count != 1 {
+			return writeAck{}, false
+		}
+		return writeAck{RemoteID: entryID}, true
 	}
-	if state.Description == "" {
-		state.Description = planned.Description
+	var row remoteRow
+	if err := json.Unmarshal(trimmed, &row); err != nil {
+		return writeAck{}, false
 	}
-	if state.Task == "" {
-		state.Task = planned.Task
+	id := strings.TrimSpace(row.ID)
+	if id == "" {
+		return writeAck{}, false
 	}
-	if state.Billable == nil {
-		state.Billable = planned.Billable
+	row.ID = id
+	if !row.isCompleteEntry() {
+		return writeAck{RemoteID: id}, true
 	}
-	return state
+	return writeAck{RemoteID: id, Entry: &row}, true
 }
 
 // --- verified live week envelope (B5) ---------------------------------------
@@ -194,6 +242,7 @@ func (e weekEntry) toRemoteState(date string, observed time.Time) workflow.Remot
 		Description:      e.Description,
 		Task:             strings.TrimSpace(e.Task),
 		ObservedAt:       observed,
+		ContentObserved:  true,
 	}
 }
 

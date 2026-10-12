@@ -127,7 +127,13 @@ func Reconcile(rec workflow.Record, obs gradion.Listing, adoptions []Adoption, n
 				if isPersisted {
 					unresolved = append(unresolved, "mapped_remote_missing:"+ci.ID)
 				}
-			case isPersisted && !RemoteContentEqual(prior.LastObserved, observed):
+			case isPersisted && prior.LastObserved.ContentObserved && !RemoteContentEqual(prior.LastObserved, observed):
+				// A conflict is asserted ONLY when the persisted baseline was
+				// itself observation-derived AND its content differs from the
+				// fresh observation. An UNOBSERVED (legacy) baseline is treated as
+				// "content unknown", never as a conflict: the baseline's trust is
+				// not silently upgraded and the record is not rewritten, but a
+				// conflict that cannot be proven is not asserted.
 				local.Kind = MatchConflict
 				unresolved = append(unresolved, "remote_conflict:"+ci.ID)
 			default:

@@ -142,6 +142,7 @@ func TestExecute_PartialFailureContinuesAndPlansRemaining(t *testing.T) {
 			RemoteID: fmt.Sprintf("new-%d", n), Date: req.Date, StartTime: req.StartTime,
 			EndTime: req.EndTime, ClassificationID: req.ClassificationID,
 			Description: req.Description, Task: req.Task, Billable: req.Billable, ObservedAt: testNow,
+			ContentObserved: true,
 		}
 		return gradion.WriteResult{Status: gradion.WriteConfirmed, Entry: &st}, nil
 	}
@@ -430,5 +431,152 @@ func TestExecute_RestartCycleUncertainThenAdoptNoDuplicate(t *testing.T) {
 	}
 	if len(run2.Outcomes) != 0 {
 		t.Errorf("run 2 must dispatch nothing, got %+v", run2.Outcomes)
+	}
+}
+
+// An identity-acknowledged write (a reference envelope) is confirmed ONLY after a
+// bounded stable-ID read-back observes content matching the plan, and the mapping
+// is built from that observation.
+func TestExecute_IdentifiedWriteReadBackConfirmsAndMaps(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	rec := reviewedRecord()
+	fake := newFakeRemote()
+	fake.onCreate = func(gradion.CreateRequest) (gradion.WriteResult, error) {
+		return gradion.WriteResult{Status: gradion.WriteIdentified, RemoteID: "new-1"}, nil
+	}
+	fake.entryByID = func(id string) (workflow.RemoteState, bool, error) {
+		if id != "new-1" {
+			return workflow.RemoteState{}, false, nil
+		}
+		return workflow.RemoteState{
+			RemoteID: "new-1", Date: testDate, StartTime: "09:00", EndTime: "10:00",
+			ClassificationID: "cls-1", Description: "work", ObservedAt: testNow, ContentObserved: true,
+		}, true, nil
+	}
+	_, approval := seedApprovedDay(t, store, rec, completeListing(), alwaysResolver("cls-1"))
+
+	result, err := Execute(ctx, store, fake, fake, testDate, approval, alwaysResolver("cls-1"), testNow)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Blocked || result.Partial {
+		t.Fatalf("want a clean run, got blocked=%v partial=%v reasons=%v", result.Blocked, result.Partial, result.BlockReasons)
+	}
+	if len(result.Outcomes) != 1 || result.Outcomes[0].Status != workflow.OutcomeConfirmed || !result.Outcomes[0].Resolved {
+		t.Fatalf("want one confirmed outcome, got %+v", result.Outcomes)
+	}
+	if result.Outcomes[0].RemoteID != "new-1" {
+		t.Errorf("want the acknowledged remote id, got %q", result.Outcomes[0].RemoteID)
+	}
+	got := loadRecord(t, store, testDate)
+	if len(got.RemoteMappings) != 1 || got.RemoteMappings[0].RemoteID != "new-1" || !got.RemoteMappings[0].LastObserved.ContentObserved {
+		t.Fatalf("want a mapping built from the observed read-back, got %+v", got.RemoteMappings)
+	}
+	if fake.createCount() != 1 {
+		t.Fatalf("an identified write must not retry, got %d creates", fake.createCount())
+	}
+}
+
+// A read-back that observes content NOT matching the plan leaves the write
+// UNRESOLVED with a distinct mismatch code (never a false confirm), preserves the
+// acknowledged id, and never retries.
+func TestExecute_IdentifiedWriteContentMismatchIsUnresolved(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	rec := reviewedRecord()
+	fake := newFakeRemote()
+	fake.onCreate = func(gradion.CreateRequest) (gradion.WriteResult, error) {
+		return gradion.WriteResult{Status: gradion.WriteIdentified, RemoteID: "new-1"}, nil
+	}
+	fake.entryByID = func(string) (workflow.RemoteState, bool, error) {
+		// The server-normalized description differs from the plan.
+		return workflow.RemoteState{
+			RemoteID: "new-1", Date: testDate, StartTime: "09:00", EndTime: "10:00",
+			ClassificationID: "cls-1", Description: "work (normalized)", ObservedAt: testNow, ContentObserved: true,
+		}, true, nil
+	}
+	_, approval := seedApprovedDay(t, store, rec, completeListing(), alwaysResolver("cls-1"))
+
+	result, err := Execute(ctx, store, fake, fake, testDate, approval, alwaysResolver("cls-1"), testNow)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !result.Partial {
+		t.Fatalf("a content mismatch must mark the run partial")
+	}
+	if len(result.Outcomes) != 1 || result.Outcomes[0].Status != workflow.OutcomeUncertain {
+		t.Fatalf("want one uncertain outcome, got %+v", result.Outcomes)
+	}
+	if result.Outcomes[0].ErrorCode != gradion.CodeWriteContentMismatch {
+		t.Errorf("error code = %q, want %q", result.Outcomes[0].ErrorCode, gradion.CodeWriteContentMismatch)
+	}
+	if result.Outcomes[0].RemoteID != "new-1" {
+		t.Errorf("the acknowledged id must be preserved, got %q", result.Outcomes[0].RemoteID)
+	}
+	if got := loadRecord(t, store, testDate); len(got.RemoteMappings) != 0 {
+		t.Errorf("a mismatch must create no mapping, got %+v", got.RemoteMappings)
+	}
+	if fake.createCount() != 1 {
+		t.Fatalf("a mismatch must never retry, got %d creates", fake.createCount())
+	}
+}
+
+// An absent read-back (found=false) leaves the write unresolved with the
+// content-unverified code and preserves the acknowledged id.
+func TestExecute_IdentifiedWriteAbsentIsUnresolved(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	rec := reviewedRecord()
+	fake := newFakeRemote()
+	fake.onCreate = func(gradion.CreateRequest) (gradion.WriteResult, error) {
+		return gradion.WriteResult{Status: gradion.WriteIdentified, RemoteID: "ghost-1"}, nil
+	}
+	// EntryByID default returns found=false (no entry, complete listing).
+	_, approval := seedApprovedDay(t, store, rec, completeListing(), alwaysResolver("cls-1"))
+
+	result, err := Execute(ctx, store, fake, fake, testDate, approval, alwaysResolver("cls-1"), testNow)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(result.Outcomes) != 1 || result.Outcomes[0].Status != workflow.OutcomeUncertain {
+		t.Fatalf("want one uncertain outcome, got %+v", result.Outcomes)
+	}
+	if result.Outcomes[0].ErrorCode != gradion.CodeWriteContentUnverified {
+		t.Errorf("error code = %q, want %q", result.Outcomes[0].ErrorCode, gradion.CodeWriteContentUnverified)
+	}
+	if result.Outcomes[0].RemoteID != "ghost-1" {
+		t.Errorf("the acknowledged id must be preserved, got %q", result.Outcomes[0].RemoteID)
+	}
+	if got := loadRecord(t, store, testDate); len(got.RemoteMappings) != 0 {
+		t.Errorf("an absent read-back must create no mapping, got %+v", got.RemoteMappings)
+	}
+}
+
+// A read-back ERROR (absence cannot be established) leaves the write unresolved
+// with the content-unverified code rather than a false confirm.
+func TestExecute_IdentifiedWriteReadBackErrorIsUnresolved(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	rec := reviewedRecord()
+	fake := newFakeRemote()
+	fake.onCreate = func(gradion.CreateRequest) (gradion.WriteResult, error) {
+		return gradion.WriteResult{Status: gradion.WriteIdentified, RemoteID: "new-1"}, nil
+	}
+	fake.entryErr = &gradion.Error{Code: gradion.CodeListingIncomplete, Message: "listing incomplete"}
+	_, approval := seedApprovedDay(t, store, rec, completeListing(), alwaysResolver("cls-1"))
+
+	result, err := Execute(ctx, store, fake, fake, testDate, approval, alwaysResolver("cls-1"), testNow)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(result.Outcomes) != 1 || result.Outcomes[0].Status != workflow.OutcomeUncertain {
+		t.Fatalf("want one uncertain outcome, got %+v", result.Outcomes)
+	}
+	if result.Outcomes[0].ErrorCode != gradion.CodeWriteContentUnverified {
+		t.Errorf("error code = %q, want %q", result.Outcomes[0].ErrorCode, gradion.CodeWriteContentUnverified)
+	}
+	if fake.createCount() != 1 {
+		t.Fatalf("a read-back error must never retry, got %d creates", fake.createCount())
 	}
 }

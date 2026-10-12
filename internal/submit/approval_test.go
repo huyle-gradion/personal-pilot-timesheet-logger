@@ -188,6 +188,7 @@ func TestRemoteContentEqual_IgnoresObservedAt(t *testing.T) {
 	a := workflow.RemoteState{
 		RemoteID: "r1", StartTime: "09:00", EndTime: "10:00",
 		ClassificationID: "cls-1", Description: "work", ObservedAt: testNow,
+		ContentObserved: true,
 	}
 	b := a
 	b.ObservedAt = testNow.Add(time.Hour)
@@ -207,6 +208,14 @@ func TestRemoteContentEqual_IgnoresObservedAt(t *testing.T) {
 	if RemoteContentEqual(a, d) {
 		t.Error("a billable change (nil -> false) must be detected")
 	}
+
+	// A non-observation-derived operand (a plan echo / identity-only state) must
+	// never compare equal: content is not verified.
+	echo := a
+	echo.ContentObserved = false
+	if RemoteContentEqual(a, echo) || RemoteContentEqual(echo, a) {
+		t.Error("an unobserved operand must fail closed, never compare equal")
+	}
 }
 
 // F4: Date is content (a remote that moved date is a change); RemoteID stays
@@ -215,6 +224,7 @@ func TestRemoteContentEqual_ComparesDate(t *testing.T) {
 	a := workflow.RemoteState{
 		RemoteID: "r1", Date: testDate, StartTime: "09:00", EndTime: "10:00",
 		ClassificationID: "cls-1", Description: "work",
+		ContentObserved: true,
 	}
 	moved := a
 	moved.Date = "2026-10-07"
@@ -242,5 +252,40 @@ func TestValidateApproval_EditRemoteMissingIsStaleRemote(t *testing.T) {
 	}
 	if !hasReason(reasons, "edit_remote_missing:c1") {
 		t.Fatalf("want edit_remote_missing:c1, got %v", reasons)
+	}
+}
+
+// An ExpectedRemote that is NOT observation-derived (a plan echo) must fail
+// closed with edit_remote_changed: a plan echo is never trusted as verified
+// content, even when its fields happen to match.
+func TestValidateApproval_UnobservedExpectedRemoteFailsClosed(t *testing.T) {
+	rec := reviewedRecord()
+	observed := remoteState("r1", "09:00", "10:00", "cls-1", "work")
+	rec.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", observed)}
+
+	echo := observed
+	echo.ContentObserved = false // a plan echo, not an observation
+	plan := workflow.SubmissionPlan{
+		Date:             testDate,
+		LocalFingerprint: workflow.LocalFingerprint(rec),
+		RemoteComplete:   true,
+		RemoteObservedAt: testNow,
+		Operations: []workflow.PlanOperation{{
+			LocalID: "c1", Kind: workflow.PlanOpEdit, RemoteID: "r1",
+			Date: testDate, StartTime: "09:00", EndTime: "10:00",
+			ClassificationID: "cls-1", Description: "work", Reason: "r",
+			ExpectedRemote: &echo,
+		}},
+	}
+	plan.PlanID = workflow.PlanHash(plan)
+	workflow.UpsertPlan(&rec, plan)
+	a, err := Approve(&rec, plan, testNow)
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	status, reasons := ValidateApproval(rec, a, completeListing(observed), testNow)
+	if status != ApprovalStaleRemote || !hasReason(reasons, "edit_remote_changed:c1") {
+		t.Fatalf("an unobserved ExpectedRemote must fail closed with edit_remote_changed, got %q (%v)", status, reasons)
 	}
 }

@@ -22,6 +22,17 @@ type RemoteState struct {
 	ObservedAt       time.Time `json:"observed_at"`
 	Task             string    `json:"task,omitempty"`
 	Billable         *bool     `json:"billable,omitempty"`
+	// ContentObserved is true ONLY when this state was built from an actual
+	// observation of remote CONTENT: a read-back listing (EntryByID / week /
+	// legacy rows) or a complete structured write response. It is false for a
+	// legacy record, for an identity-only acknowledgement (a reference envelope
+	// that names an entry but carries no interval), and for a plan echo. It is an
+	// ADDITIVE, omitempty S9 field (SchemaVersion stays 1): a false/legacy value
+	// marshals byte-identically, so PlanHash is unchanged for a legacy plan that
+	// carries ExpectedRemote. Identity acknowledgement is NEVER content
+	// observation; a consumer must fail closed on an unobserved operand rather
+	// than compare or store it as a verified fact.
+	ContentObserved bool `json:"content_observed,omitempty"`
 }
 
 // EvidenceReference records a non-secret provenance pointer (repo/PR/branch)

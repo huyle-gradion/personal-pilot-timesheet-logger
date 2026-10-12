@@ -38,9 +38,22 @@ Invoke this skill when the user issues any of the following triggers:
   executes only the record's **active** approval. If there is no active approval,
   or a requested `--approval` does not match it, `submit` refuses with **zero
   remote writes**.
-- **Uncertain remote writes are never retried.** An uncertain write stops the run,
-  is recorded as unresolved, and blocks replay until an explicit `resolve`
-  decision. Remote entries are editable but never deleted.
+- **Uncertain remote writes are never retried.** An uncertain, unidentified, or
+  content-unverified write STOPS the operational session: it is recorded as
+  unresolved and blocks replay until an explicit `resolve` decision. A write that
+  merely acknowledges an entry's identity is NOT a confirmed write; its content is
+  verified by a bounded read-back first, and a mismatch or an unverifiable
+  read-back leaves it unresolved (never a false confirm). Remote entries are
+  editable but never deleted.
+- **Recovering from an unresolved write requires SEPARATE owner authority.** No
+  self-adoption, no new-plan approval, no source hot-patching, and no debugging
+  writes without that separate authority. A conversational "go" confirms ONLY the
+  immediately presented exact plan, and ONLY when submission authority is already
+  established; it cannot authorize a different plan and never implicitly grants
+  debugging or source-repair authority. These STOP rules are
+  **instruction-enforced** at this boundary (the skill must not act on its own);
+  the unresolved-write STOP itself is additionally **code-enforced** (the run
+  halts and the restart gate blocks replay).
 - **The export is marker-delimited and non-destructive.** It rewrites only the
   block between `<!-- timesheet:begin v1 -->` and `<!-- timesheet:end -->` and
   leaves every other byte (frontmatter, journals, legacy sections) untouched.

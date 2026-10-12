@@ -309,6 +309,9 @@ func (f *submitFakeRemote) ClassificationCatalog(_ context.Context, query string
 func (f *submitFakeRemote) ListEntries(context.Context, string, string, int) (gradion.Listing, error) {
 	return gradion.Listing{Complete: true, ObservedAt: time.Now().UTC()}, nil
 }
+func (f *submitFakeRemote) EntryByID(context.Context, string, string, string) (workflow.RemoteState, bool, error) {
+	return workflow.RemoteState{}, false, nil
+}
 func (f *submitFakeRemote) CreateEntry(context.Context, gradion.CreateRequest) (gradion.WriteResult, error) {
 	f.writes++
 	return gradion.WriteResult{}, nil

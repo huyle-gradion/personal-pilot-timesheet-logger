@@ -150,3 +150,30 @@ func TestResolveUnresolved_EditInference(t *testing.T) {
 		t.Fatalf("an absent edit remote must stay unresolved, got %+v", absent.Outcomes[0])
 	}
 }
+
+// A legacy plan-echo baseline (LastObserved.ContentObserved false) must NEVER be
+// trusted for inference: even post-edit content present leaves the edit
+// unresolved rather than confirming against an unverified baseline.
+func TestResolveUnresolved_EditInferenceIgnoresUnobservedBaseline(t *testing.T) {
+	key := workflow.DeriveOperationKey(workflow.OperationOutcome{
+		Date: testDate, Action: string(workflow.PlanOpEdit), RemoteID: "r1", LocalID: "c1",
+		StartTime: "09:00", EndTime: "10:00",
+	})
+	rec := reviewedRecord()
+	baseline := remoteState("r1", "09:00", "10:00", "cls-1", "old text")
+	baseline.ContentObserved = false
+	rec.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", baseline)}
+	rec.Outcomes = []workflow.OperationOutcome{{
+		OperationKey: key, LocalID: "c1", RemoteID: "r1", Action: string(workflow.PlanOpEdit),
+		Status: workflow.OutcomeUncertain, Date: testDate, StartTime: "09:00", EndTime: "10:00",
+		Description: "work",
+	}}
+
+	post := completeListing(remoteState("r1", "09:00", "10:00", "cls-1", "work"))
+	if err := ResolveUnresolved(&rec, post, nil, testNow); err != nil {
+		t.Fatalf("ResolveUnresolved: %v", err)
+	}
+	if rec.Outcomes[0].Resolved {
+		t.Fatalf("an unobserved baseline must leave the edit unresolved, got %+v", rec.Outcomes[0])
+	}
+}

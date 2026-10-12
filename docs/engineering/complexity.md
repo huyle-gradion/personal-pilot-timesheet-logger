@@ -67,7 +67,7 @@ performed in this slice, the cell is marked `unavailable` rather than estimated.
 
 | algorithm | time | in-memory space | durable space | code ref | cap | note |
 | --- | --- | --- | --- | --- | --- | --- |
-| Match local operations to freshly observed remote state by stable remote id | `O(n_blocks)` | `O(n_blocks)` | `O(n_blocks)` outcomes | `internal/run/submit.go:133` | `MaxOutcomesCount=1000` | One remote read per reconcile; uncertain writes stop the run. |
+| Match local operations to freshly observed remote state by stable remote id | `O(n_blocks)` | `O(n_blocks)` | `O(n_blocks)` outcomes | `internal/run/submit.go:133` | `MaxOutcomesCount=1000` | One remote read per reconcile, PLUS one bounded stable-ID read-back (one listing scan) per identity-only (reference-envelope) write to verify content; uncertain/unverified writes stop the run. |
 
 ### Persistence
 

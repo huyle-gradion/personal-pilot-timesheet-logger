@@ -271,6 +271,21 @@ $TS submit --config "$CFG" --date "$DATE"
   continues; an **uncertain** write is recorded and **stops** the run (never
   retried). Partial success re-plans only the remaining operations, so confirmed
   work is never replayed.
+- A write response that only **acknowledges an entry's identity** is not a
+  confirmed write: the core verifies its content by a bounded stable-ID read-back
+  before recording a mapping. A read-back that is absent, unverifiable, or whose
+  content does not match the plan leaves the write **content-unverified** and
+  unresolved (never a false confirm). A server-normalized value reads as a
+  mismatch — conservative, never an optimistic confirm.
+- **An uncertain, unidentified, or content-unverified write STOPS the operational
+  session.** Recovering from it requires SEPARATE owner authority: no
+  self-adoption, no new-plan approval, no source hot-patching, and no debugging
+  writes without that authority. A conversational "go" confirms ONLY the
+  immediately presented exact plan, and ONLY when submission authority is already
+  established; it cannot authorize a different plan and never implicitly grants
+  debugging or source-repair authority. (The unresolved-write STOP is
+  code-enforced by the run and the restart gate; the recovery rules above are
+  instruction-enforced.)
 - After execution the core rewrites only the marker block in
   `<vault>/<daily-dir>/<date>.md`, preserving everything else byte-for-byte.
 

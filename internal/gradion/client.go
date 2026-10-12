@@ -451,7 +451,7 @@ func (c *Client) CreateEntry(ctx context.Context, req CreateRequest) (WriteResul
 	if req.Billable != nil {
 		args["billable"] = *req.Billable
 	}
-	return c.write(ctx, ToolLogTime, args, req.Planned())
+	return c.write(ctx, ToolLogTime, args)
 }
 
 // EditEntry performs EXACTLY ONE edit_time attempt (no retry). Reason is the
@@ -495,14 +495,24 @@ func (c *Client) EditEntry(ctx context.Context, req EditRequest) (WriteResult, e
 	if req.Billable != nil {
 		args["billable"] = *req.Billable
 	}
-	return c.write(ctx, ToolEditTime, args, req.Planned())
+	return c.write(ctx, ToolEditTime, args)
 }
 
 // write performs one tool call and classifies the outcome. It never retries and
 // never returns a non-nil error for a dispatched write: the classification is in
 // WriteResult.Status. A non-nil error is reserved for local/precondition failures
 // (arg bounds, uninitialized).
-func (c *Client) write(ctx context.Context, tool string, args map[string]any, planned PlannedEntry) (WriteResult, error) {
+//
+// Identity acknowledgement is separated from content observation:
+//   - a complete structured response yields WriteConfirmed with an observed Entry
+//     (ContentObserved=true);
+//   - a reference envelope (or any identity-only shape) yields WriteIdentified
+//     with the acknowledged RemoteID and a nil Entry — the caller MUST verify
+//     content by a bounded stable-ID read-back before recording a mapping;
+//   - an unparseable/empty response yields WriteUnidentified (no id).
+//
+// Planned content is NEVER copied into an observed state.
+func (c *Client) write(ctx context.Context, tool string, args map[string]any) (WriteResult, error) {
 	res, err := c.session.CallTool(ctx, tool, args)
 	if err != nil {
 		return classifyWrite(err), nil
@@ -510,12 +520,16 @@ func (c *Client) write(ctx context.Context, tool string, args map[string]any, pl
 	if res.IsError {
 		return WriteResult{Status: WriteUncertain, ErrorCode: CodeWriteUncertain}, nil
 	}
-	row := parseWriteEntry(res)
-	if row == nil || strings.TrimSpace(row.ID) == "" {
+	ack, ok := parseWriteEntry(res)
+	if !ok {
 		return WriteResult{Status: WriteUnidentified, ErrorCode: CodeWriteUnidentified}, nil
 	}
-	state := mergeObserved(*row, planned, time.Now().UTC())
-	return WriteResult{Status: WriteConfirmed, Entry: &state}, nil
+	if ack.Entry != nil {
+		state := ack.Entry.toRemoteState(time.Now().UTC())
+		state.ContentObserved = true
+		return WriteResult{Status: WriteConfirmed, RemoteID: ack.RemoteID, Entry: &state}, nil
+	}
+	return WriteResult{Status: WriteIdentified, RemoteID: ack.RemoteID}, nil
 }
 
 // --- local arg bounds (validated BEFORE dispatch; zero HTTP on violation) ----

@@ -23,6 +23,8 @@ type fakeRemote struct {
 	listErr      error
 	listErrAt    int // fail ListEntries on this 1-based call (0 = never)
 	incompleteAt int // make ListEntries Complete=false on this 1-based call (0 = never)
+	entryErr     error
+	entryByID    func(id string) (workflow.RemoteState, bool, error)
 	onCreate     func(gradion.CreateRequest) (gradion.WriteResult, error)
 	onEdit       func(gradion.EditRequest) (gradion.WriteResult, error)
 	creates      []gradion.CreateRequest
@@ -52,6 +54,7 @@ func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, l
 	}
 	entries := make([]workflow.RemoteState, 0, len(f.entries))
 	for _, e := range f.entries {
+		e.ContentObserved = true
 		entries = append(entries, e)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].RemoteID < entries[j].RemoteID })
@@ -60,6 +63,29 @@ func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, l
 		complete = false
 	}
 	return gradion.Listing{Complete: complete, ObservedAt: testNow, Entries: entries}, nil
+}
+
+// EntryByID is the bounded stable-ID read-back used to verify an
+// identity-acknowledged write. It fails closed (CodeListingIncomplete) when the
+// listing is not complete, so absence is never claimed from a partial scan.
+func (f *fakeRemote) EntryByID(ctx context.Context, id, from, to string) (workflow.RemoteState, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.entryByID != nil {
+		return f.entryByID(id)
+	}
+	if f.entryErr != nil {
+		return workflow.RemoteState{}, false, f.entryErr
+	}
+	if !f.complete {
+		return workflow.RemoteState{}, false, &gradion.Error{Code: gradion.CodeListingIncomplete, Message: "listing incomplete"}
+	}
+	e, ok := f.entries[id]
+	if !ok {
+		return workflow.RemoteState{}, false, nil
+	}
+	e.ContentObserved = true
+	return e, true, nil
 }
 
 func (f *fakeRemote) CreateEntry(ctx context.Context, req gradion.CreateRequest) (gradion.WriteResult, error) {
@@ -80,6 +106,7 @@ func (f *fakeRemote) CreateEntry(ctx context.Context, req gradion.CreateRequest)
 			RemoteID: fmt.Sprintf("new-%d", f.seq), Date: req.Date, StartTime: req.StartTime,
 			EndTime: req.EndTime, ClassificationID: req.ClassificationID,
 			Description: req.Description, Task: req.Task, Billable: req.Billable, ObservedAt: testNow,
+			ContentObserved: true,
 		}
 		res = gradion.WriteResult{Status: gradion.WriteConfirmed, Entry: &state}
 	}
@@ -106,6 +133,7 @@ func (f *fakeRemote) EditEntry(ctx context.Context, req gradion.EditRequest) (gr
 			RemoteID: req.EntryID, Date: req.Date, StartTime: req.StartTime,
 			EndTime: req.EndTime, ClassificationID: req.ClassificationID,
 			Description: req.Description, Task: req.Task, Billable: req.Billable, ObservedAt: testNow,
+			ContentObserved: true,
 		}
 		res = gradion.WriteResult{Status: gradion.WriteConfirmed, Entry: &state}
 	}

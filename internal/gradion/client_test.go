@@ -438,7 +438,10 @@ func TestArgBounds_ZeroHTTP(t *testing.T) {
 	}
 }
 
-func TestEditEntry_ConfirmedSendsReason(t *testing.T) {
+// An id-only edit response (no interval content) is an IDENTITY acknowledgement,
+// not a confirm: the write stays WriteIdentified with a nil Entry so the caller
+// runs the bounded read-back. The edit reason is still sent.
+func TestEditEntry_IdOnlyIsIdentifiedSendsReason(t *testing.T) {
 	f := newFakeMCP()
 	f.onCall = func(name string, _ map[string]any) callOutcome {
 		if name != ToolEditTime {
@@ -452,8 +455,8 @@ func TestEditEntry_ConfirmedSendsReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EditEntry: %v", err)
 	}
-	if res.Status != WriteConfirmed || res.Entry == nil || res.Entry.RemoteID != "uuid-9" {
-		t.Fatalf("unexpected result: %+v", res)
+	if res.Status != WriteIdentified || res.Entry != nil || res.RemoteID != "uuid-9" {
+		t.Fatalf("an id-only edit response must be identity-only, got %+v", res)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -467,6 +470,30 @@ func TestEditEntry_ConfirmedSendsReason(t *testing.T) {
 	}
 	if !found {
 		t.Error("edit reason was not sent to the tool")
+	}
+}
+
+// F3: a complete edit response carrying interval content (start AND end) IS a
+// confirm with an observed Entry.
+func TestEditEntry_CompleteEntryIsConfirmed(t *testing.T) {
+	f := newFakeMCP()
+	f.onCall = func(name string, _ map[string]any) callOutcome {
+		if name != ToolEditTime {
+			return callOutcome{}
+		}
+		return structured(json.RawMessage(`{"id":"uuid-9","startTime":"09:00","endTime":"10:00"}`))
+	}
+	c := newTestClient(t, f)
+
+	res, err := c.EditEntry(context.Background(), EditRequest{LocalID: "l1", EntryID: "uuid-9", Reason: "fix", Description: "work"})
+	if err != nil {
+		t.Fatalf("EditEntry: %v", err)
+	}
+	if res.Status != WriteConfirmed || res.Entry == nil || !res.Entry.ContentObserved {
+		t.Fatalf("a complete entry must confirm with an observed Entry, got %+v", res)
+	}
+	if res.Entry.StartTime != "09:00" || res.Entry.EndTime != "10:00" {
+		t.Errorf("observed interval lost: %+v", res.Entry)
 	}
 }
 
@@ -742,5 +769,41 @@ func TestListEntries_CrossPageDuplicate(t *testing.T) {
 	}
 	if listing.Complete {
 		t.Error("a cross-page duplicate must make the listing incomplete")
+	}
+}
+
+// A multi-entry write envelope must NOT confirm anything and must NOT retry: it
+// cannot be resolved to one entry, so the write is unidentified and the outcome
+// is unresolved (no mapping is possible).
+func TestCreateEntry_MultiEntryEnvelopeUnidentifiedNoRetry(t *testing.T) {
+	f := newFakeMCP()
+	f.onCall = func(name string, _ map[string]any) callOutcome {
+		if name != ToolLogTime {
+			return callOutcome{}
+		}
+		rb, _ := json.Marshal(map[string]any{"resources": []map[string]any{
+			{"kind": "entry", "id": "e1"},
+			{"kind": "entry", "id": "e2"},
+		}})
+		return structured(rb)
+	}
+	c := newTestClient(t, f)
+
+	res, err := c.CreateEntry(context.Background(), CreateRequest{Date: "2026-10-06", Description: "work"})
+	if err != nil {
+		t.Fatalf("CreateEntry: %v", err)
+	}
+	if res.Status != WriteUnidentified {
+		t.Fatalf("status = %s, want unidentified", res.Status)
+	}
+	if res.Entry != nil {
+		t.Fatalf("an ambiguous envelope must not establish content: %+v", res.Entry)
+	}
+	if n := f.countToolCalls(ToolLogTime); n != 1 {
+		t.Fatalf("tools/call attempts = %d, want exactly 1 (no retry)", n)
+	}
+	out := BuildOutcome("create", "l1", PlannedEntry{Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00"}, res, time.Now())
+	if out.Status != workflow.OutcomeUnidentified || out.Resolved {
+		t.Fatalf("want an unresolved unidentified outcome, got %+v", out)
 	}
 }

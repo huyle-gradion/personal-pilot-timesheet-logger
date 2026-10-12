@@ -61,6 +61,51 @@ func TestReconcile_RemoteContentChangeIsConflict(t *testing.T) {
 	}
 }
 
+// F1: a legacy mapping whose LastObserved predates ContentObserved (unobserved)
+// must NOT be asserted as a conflict — its content is UNKNOWN, not changed —
+// whether the fresh observation matches or differs. An unprovable conflict is
+// never asserted.
+func TestReconcile_UnobservedLegacyBaselineIsNotAConflict(t *testing.T) {
+	legacy := remoteState("r1", "09:00", "10:00", "cls-1", "work")
+	legacy.ContentObserved = false
+
+	matching := reviewedRecord()
+	matching.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", legacy)}
+	res := Reconcile(matching, completeListing(remoteState("r1", "09:00", "10:00", "cls-1", "work")), nil, testNow)
+	if res.Locals[0].Kind != MatchMapped {
+		t.Errorf("a matching unobserved baseline must map, got %q", res.Locals[0].Kind)
+	}
+	if hasReason(res.Unresolved, "remote_conflict:c1") {
+		t.Errorf("an unobserved baseline must not conflict, got %v", res.Unresolved)
+	}
+
+	changed := reviewedRecord()
+	changed.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", legacy)}
+	res = Reconcile(changed, completeListing(remoteState("r1", "09:00", "10:00", "cls-1", "changed remotely")), nil, testNow)
+	if res.Locals[0].Kind == MatchConflict {
+		t.Errorf("an unobserved baseline must not assert a conflict even when content differs, got %q", res.Locals[0].Kind)
+	}
+	if hasReason(res.Unresolved, "remote_conflict:c1") {
+		t.Errorf("an unobserved baseline must not conflict, got %v", res.Unresolved)
+	}
+}
+
+// F1 guard: real change detection is preserved — an OBSERVED baseline whose
+// content differs from the fresh observation still conflicts.
+func TestReconcile_ObservedBaselineChangeStillConflicts(t *testing.T) {
+	observed := remoteState("r1", "09:00", "10:00", "cls-1", "work")
+	if !observed.ContentObserved {
+		t.Fatal("the test helper must produce an observation-derived baseline")
+	}
+	rec := reviewedRecord()
+	rec.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", observed)}
+
+	res := Reconcile(rec, completeListing(remoteState("r1", "09:00", "10:00", "cls-1", "changed remotely")), nil, testNow)
+	if res.Locals[0].Kind != MatchConflict || !hasReason(res.Unresolved, "remote_conflict:c1") {
+		t.Fatalf("an observed baseline with changed content must still conflict, got kind=%q unresolved=%v", res.Locals[0].Kind, res.Unresolved)
+	}
+}
+
 func TestReconcile_OrphanedMappingUnresolved(t *testing.T) {
 	rec := reviewedRecord()
 	observed := remoteState("r1", "09:00", "10:00", "cls-1", "work")

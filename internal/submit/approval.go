@@ -96,6 +96,8 @@ func ValidateApproval(rec workflow.Record, a workflow.Approval, fresh gradion.Li
 				continue
 			}
 			if op.ExpectedRemote == nil || !RemoteContentEqual(*op.ExpectedRemote, observed) {
+				// RemoteContentEqual fails closed when either operand is not
+				// observation-derived, so a plan echo is never trusted here.
 				reasons = append(reasons, "edit_remote_changed:"+op.LocalID)
 			}
 		case workflow.PlanOpCreate:
@@ -114,10 +116,18 @@ func ValidateApproval(rec workflow.Record, a workflow.Approval, fresh gradion.Li
 	return ApprovalValid, nil
 }
 
-// RemoteContentEqual compares two remote states' content. It ignores ObservedAt
+// RemoteContentEqual compares two remote states' CONTENT. It ignores ObservedAt
 // and RemoteID (the identity key), but treats Date as content: the server accepts
 // date on edit, so a remote that moved to another date is a change.
+//
+// It fails closed on a non-observation-derived operand: when EITHER state has
+// ContentObserved false (a plan echo, an identity-only acknowledgement, or a
+// legacy record) it returns false. A caller must therefore treat a false result
+// as "not proven equal" and never trust a plan echo as verified content.
 func RemoteContentEqual(a, b workflow.RemoteState) bool {
+	if !a.ContentObserved || !b.ContentObserved {
+		return false
+	}
 	return a.Date == b.Date &&
 		a.StartTime == b.StartTime &&
 		a.EndTime == b.EndTime &&

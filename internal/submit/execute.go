@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
@@ -189,6 +190,15 @@ func Execute(ctx context.Context, store workflow.Store, obs RemoteObserver, w Re
 			return result, fmt.Errorf("submit: dispatch %s for %s: %w", action, op.LocalID, dispatchErr)
 		}
 
+		// Identity acknowledgement is not content observation. When the write
+		// only identified the entry (a reference envelope), verify its CONTENT by
+		// a bounded stable-ID read-back before recording a confirmed outcome. A
+		// failed/absent read-back or a content mismatch leaves the write
+		// UNRESOLVED (never retried; the restart gate blocks replay).
+		if res.Status == gradion.WriteIdentified {
+			res = verifyIdentifiedWrite(ctx, obs, op, planned, res)
+		}
+
 		outcome := gradion.BuildOutcome(action, op.LocalID, planned, res, now)
 		result.Outcomes = append(result.Outcomes, outcome)
 
@@ -293,6 +303,66 @@ func dispatch(ctx context.Context, w RemoteWriter, op workflow.PlanOperation, pl
 	default:
 		return gradion.WriteResult{}, fmt.Errorf("submit: unsupported plan operation kind %q", op.Kind)
 	}
+}
+
+// verifyIdentifiedWrite confirms an identity-acknowledged write by a BOUNDED
+// stable-ID read-back of the entry's content. It converts a WriteIdentified
+// result into either WriteConfirmed (content observed AND matching the plan) or
+// WriteUncertain with a distinct code, PRESERVING the acknowledged RemoteID:
+//
+//   - read-back error, not found, or no id -> GRADION_WRITE_CONTENT_UNVERIFIED;
+//   - content mismatch -> GRADION_WRITE_CONTENT_MISMATCH.
+//
+// It never retries. The read-back is a separate observation a later mutation can
+// invalidate (the residual remote race); it does not eliminate that race.
+func verifyIdentifiedWrite(ctx context.Context, obs RemoteObserver, op workflow.PlanOperation, planned gradion.PlannedEntry, res gradion.WriteResult) gradion.WriteResult {
+	if strings.TrimSpace(res.RemoteID) == "" {
+		res.Status = gradion.WriteUncertain
+		res.ErrorCode = gradion.CodeWriteContentUnverified
+		return res
+	}
+	observed, found, err := obs.EntryByID(ctx, res.RemoteID, op.Date, op.Date)
+	if err != nil || !found {
+		res.Status = gradion.WriteUncertain
+		res.ErrorCode = gradion.CodeWriteContentUnverified
+		return res
+	}
+	if !contentMatchesPlan(observed, planned) {
+		res.Status = gradion.WriteUncertain
+		res.ErrorCode = gradion.CodeWriteContentMismatch
+		return res
+	}
+	observed.ContentObserved = true
+	res.Entry = &observed
+	res.Status = gradion.WriteConfirmed
+	return res
+}
+
+// contentMatchesPlan compares the OBSERVED remote content against the pre-write
+// plan. Fields compared (each after TrimSpace): Date, StartTime, EndTime,
+// ClassificationID, Description. Task is compared ONLY when the plan specifies
+// one (a create without a task, or an edit preserving a remote-only task, does
+// not require a task match). Billable is NEVER required or fabricated: an omitted
+// remote billable stays nil/"unknown" and is neither treated as an observed false
+// nor filled from the plan.
+//
+// Normalization is a conservative exact string comparison after trimming: a value
+// the server normalizes (e.g. a different time format or a canonicalized
+// description) reads as a MISMATCH and leaves the write unresolved — never a
+// false confirm.
+func contentMatchesPlan(observed workflow.RemoteState, planned gradion.PlannedEntry) bool {
+	eq := func(a, b string) bool { return strings.TrimSpace(a) == strings.TrimSpace(b) }
+	if !eq(observed.Date, planned.Date) ||
+		!eq(observed.StartTime, planned.StartTime) ||
+		!eq(observed.EndTime, planned.EndTime) ||
+		!eq(observed.ClassificationID, planned.ClassificationID) ||
+		!eq(observed.Description, planned.Description) {
+		return false
+	}
+	if strings.TrimSpace(planned.Task) != "" && !eq(observed.Task, planned.Task) {
+		return false
+	}
+	return true
 }
 
 // plannedFromOp projects a plan operation onto the pre-write plan used to derive

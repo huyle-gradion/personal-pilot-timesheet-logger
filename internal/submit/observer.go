@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
 // RemoteObserver is the read side of the remote used during execution. It exists
@@ -11,8 +12,16 @@ import (
 // and tests inject a fake. ListEntries is expected to re-observe the remote at
 // call time; the execution layer calls it again under the held day lock rather
 // than trusting a plan-time listing.
+//
+// EntryByID performs a BOUNDED stable-ID read-back of one entry's CONTENT within
+// [from, to]. It fails closed (found=false with a non-nil error) when absence
+// cannot be established (an incomplete listing), so a write is never confirmed
+// against a false absence. The read-back is a SEPARATE observation a later remote
+// mutation can invalidate; it narrows, and does not eliminate, the residual
+// remote race.
 type RemoteObserver interface {
 	ListEntries(ctx context.Context, dateFrom, dateTo string, limit int) (gradion.Listing, error)
+	EntryByID(ctx context.Context, id, from, to string) (workflow.RemoteState, bool, error)
 }
 
 // RemoteWriter is the write side of the remote used during execution.

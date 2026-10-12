@@ -119,9 +119,26 @@ func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, l
 	}
 	entries := make([]workflow.RemoteState, 0, len(f.entries))
 	for _, e := range f.entries {
+		e.ContentObserved = true
 		entries = append(entries, e)
 	}
 	return gradion.Listing{Complete: f.complete, ObservedAt: accNow, Entries: entries}, nil
+}
+
+// EntryByID is the bounded stable-ID read-back used to verify an
+// identity-acknowledged write.
+func (f *fakeRemote) EntryByID(ctx context.Context, id, from, to string) (workflow.RemoteState, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.complete {
+		return workflow.RemoteState{}, false, &gradion.Error{Code: gradion.CodeListingIncomplete, Message: "listing incomplete"}
+	}
+	e, ok := f.entries[id]
+	if !ok {
+		return workflow.RemoteState{}, false, nil
+	}
+	e.ContentObserved = true
+	return e, true, nil
 }
 
 func (f *fakeRemote) CreateEntry(ctx context.Context, req gradion.CreateRequest) (gradion.WriteResult, error) {
@@ -134,6 +151,7 @@ func (f *fakeRemote) CreateEntry(ctx context.Context, req gradion.CreateRequest)
 			RemoteID: "new-" + itoa(f.seq), Date: req.Date, StartTime: req.StartTime,
 			EndTime: req.EndTime, ClassificationID: req.ClassificationID,
 			Description: req.Description, ObservedAt: accNow,
+			ContentObserved: true,
 		}
 		f.entries[state.RemoteID] = state
 		f.mu.Unlock()
@@ -151,6 +169,7 @@ func (f *fakeRemote) EditEntry(ctx context.Context, req gradion.EditRequest) (gr
 		RemoteID: req.EntryID, Date: req.Date, StartTime: req.StartTime,
 		EndTime: req.EndTime, ClassificationID: req.ClassificationID,
 		Description: req.Description, ObservedAt: accNow,
+		ContentObserved: true,
 	}
 	f.entries[req.EntryID] = state
 	return gradion.WriteResult{Status: gradion.WriteConfirmed, Entry: &state}, nil
@@ -908,6 +927,7 @@ func TestAcceptance_06_RemoteChangeInvalidatesApproval(t *testing.T) {
 			LastObserved: workflow.RemoteState{
 				RemoteID: "r1", Date: accDate, StartTime: "09:00", EndTime: "10:00",
 				ClassificationID: "cls-1", Description: "old text", ObservedAt: accNow,
+				ContentObserved: true,
 			},
 		}}
 	})

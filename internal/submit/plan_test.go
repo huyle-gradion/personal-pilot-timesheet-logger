@@ -39,6 +39,7 @@ func remoteState(id, start, end, class, desc string) workflow.RemoteState {
 	return workflow.RemoteState{
 		RemoteID: id, Date: testDate, StartTime: start, EndTime: end,
 		ClassificationID: class, Description: desc, ObservedAt: testNow,
+		ContentObserved: true,
 	}
 }
 
@@ -93,6 +94,31 @@ func TestBuildPlan_EditPreferredOverCreate(t *testing.T) {
 	}
 	if op.Reason != "timesheet review update "+testDate {
 		t.Errorf("an edit must carry the fixed, revision-independent audit reason, got %q", op.Reason)
+	}
+}
+
+// F1: BuildPlan must NOT block on a legacy (unobserved) mapping whose fresh
+// remote content differs from the baseline — the content is unknown, not a proven
+// change. Planning proceeds (as an edit against the mapped remote).
+func TestBuildPlan_LegacyUnobservedMappingIsNotBlocked(t *testing.T) {
+	rec := reviewedRecord()
+	legacy := remoteState("r1", "09:00", "10:00", "cls-1", "old text")
+	legacy.ContentObserved = false
+	rec.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", legacy)}
+
+	// The fresh observation differs from the legacy baseline.
+	res, err := BuildPlan(rec, completeListing(remoteState("r1", "09:00", "10:00", "cls-1", "changed remotely")), nil, alwaysResolver("cls-1"), testNow)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if res.Blocked {
+		t.Fatalf("a legacy unobserved mapping must not block planning, got %v", res.Reasons)
+	}
+	if hasReason(res.Reasons, "reconcile:remote_conflict:c1") {
+		t.Fatalf("no remote_conflict may be asserted for an unobserved baseline, got %v", res.Reasons)
+	}
+	if len(res.Plan.Operations) != 1 || res.Plan.Operations[0].Kind != workflow.PlanOpEdit {
+		t.Fatalf("want the mapped interval planned as an edit, got %+v", res.Plan.Operations)
 	}
 }
 

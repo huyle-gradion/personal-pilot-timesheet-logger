@@ -67,13 +67,21 @@ func isRequestErrorCode(code int) bool {
 	return false
 }
 
-// BuildMapping binds a local id to a confirmed remote entry. It errors on an
-// empty remote id: identity is never fabricated from time-slot equality.
+// BuildMapping binds a local id to a confirmed remote entry. It fails closed on
+// an empty remote id (identity is never fabricated from time-slot equality) AND
+// on an entry that is not observation-derived (ContentObserved false): a plan
+// echo or an identity-only acknowledgement must never become LastObserved.
 func BuildMapping(localID string, planned PlannedEntry, entry workflow.RemoteState, now time.Time) (workflow.RemoteMapping, error) {
 	if strings.TrimSpace(entry.RemoteID) == "" {
 		return workflow.RemoteMapping{}, &Error{
 			Code:    CodeEmptyRemoteID,
 			Message: "remote id required; identity is never fabricated",
+		}
+	}
+	if !entry.ContentObserved {
+		return workflow.RemoteMapping{}, &Error{
+			Code:    CodeUnobservedEntry,
+			Message: "mapping requires an observation-derived entry, not a plan echo",
 		}
 	}
 	if entry.ObservedAt.IsZero() {
@@ -111,9 +119,11 @@ func BuildOutcome(action, localID string, planned PlannedEntry, res WriteResult,
 
 	switch res.Status {
 	case WriteConfirmed:
-		// A confirmed write MUST carry a stable remote id. An empty/nil entry is
-		// downgraded to unidentified: identity is never fabricated.
-		if res.Entry == nil || strings.TrimSpace(res.Entry.RemoteID) == "" {
+		// A confirmed write MUST carry a genuinely OBSERVED entry (content seen)
+		// with a stable remote id. An identity-only acknowledgement, an empty/nil
+		// entry, or a plan echo is downgraded to unidentified: identity and
+		// content are never fabricated.
+		if res.Entry == nil || strings.TrimSpace(res.Entry.RemoteID) == "" || !res.Entry.ContentObserved {
 			out.Status = workflow.OutcomeUnidentified
 			out.ErrorCode = orDefault(res.ErrorCode, CodeWriteUnidentified)
 			out.Resolved = false
@@ -126,14 +136,16 @@ func BuildOutcome(action, localID string, planned PlannedEntry, res WriteResult,
 		out.Status = workflow.OutcomeUnidentified
 		out.ErrorCode = orDefault(res.ErrorCode, CodeWriteUnidentified)
 		out.Resolved = false
+		out.RemoteID = strings.TrimSpace(res.RemoteID)
 	case WriteFailed:
 		out.Status = workflow.OutcomeFailed
 		out.ErrorCode = orDefault(res.ErrorCode, CodeWriteFailed)
 		out.Resolved = true
-	default: // uncertain
+	default: // uncertain / identified: unresolved, preserve the acknowledged id.
 		out.Status = workflow.OutcomeUncertain
 		out.ErrorCode = orDefault(res.ErrorCode, CodeWriteUncertain)
 		out.Resolved = false
+		out.RemoteID = strings.TrimSpace(res.RemoteID)
 	}
 
 	out.OperationKey = workflow.DeriveOperationKey(workflow.OperationOutcome{

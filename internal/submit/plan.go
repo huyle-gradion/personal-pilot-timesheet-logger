@@ -194,7 +194,9 @@ func buildSuggestions(rec workflow.Record, resolver ClassificationResolver) []Cl
 
 // desiredRemoteState is the content a planned edit would produce. It overrides
 // the locally-managed fields (times, classification, description) and preserves
-// remote-only fields (task, billable) so a partial edit does not clear them.
+// remote-only fields (task, billable) so a partial edit does not clear them. It is
+// derived from an observed baseline, so it is marked ContentObserved=true: a
+// synthesized expectation is only valid when derived from real observation.
 func desiredRemoteState(ci workflow.ConfirmedInterval, classificationID string, observed workflow.RemoteState) workflow.RemoteState {
 	return workflow.RemoteState{
 		RemoteID:         observed.RemoteID,
@@ -205,6 +207,7 @@ func desiredRemoteState(ci workflow.ConfirmedInterval, classificationID string, 
 		Description:      ci.Description,
 		Task:             observed.Task,
 		Billable:         observed.Billable,
+		ContentObserved:  true,
 	}
 }
 

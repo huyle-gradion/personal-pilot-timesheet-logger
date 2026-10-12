@@ -155,9 +155,24 @@ func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, l
 	f.listCalls++
 	entries := make([]workflow.RemoteState, 0, len(f.entries))
 	for _, e := range f.entries {
+		e.ContentObserved = true
 		entries = append(entries, e)
 	}
 	return gradion.Listing{Complete: f.complete, ObservedAt: fixedNow(), Entries: entries}, nil
+}
+
+// EntryByID is the bounded stable-ID read-back used to verify an
+// identity-acknowledged write.
+func (f *fakeRemote) EntryByID(ctx context.Context, id, from, to string) (workflow.RemoteState, bool, error) {
+	if !f.complete {
+		return workflow.RemoteState{}, false, &gradion.Error{Code: gradion.CodeListingIncomplete, Message: "listing incomplete"}
+	}
+	e, ok := f.entries[id]
+	if !ok {
+		return workflow.RemoteState{}, false, nil
+	}
+	e.ContentObserved = true
+	return e, true, nil
 }
 
 func (f *fakeRemote) CreateEntry(ctx context.Context, req gradion.CreateRequest) (gradion.WriteResult, error) {
@@ -170,6 +185,7 @@ func (f *fakeRemote) CreateEntry(ctx context.Context, req gradion.CreateRequest)
 		RemoteID: "new-" + itoa(f.seq), Date: req.Date, StartTime: req.StartTime,
 		EndTime: req.EndTime, ClassificationID: req.ClassificationID,
 		Description: req.Description, ObservedAt: fixedNow(),
+		ContentObserved: true,
 	}
 	f.entries[state.RemoteID] = state
 	return gradion.WriteResult{Status: gradion.WriteConfirmed, Entry: &state}, nil
@@ -181,6 +197,7 @@ func (f *fakeRemote) EditEntry(ctx context.Context, req gradion.EditRequest) (gr
 		RemoteID: req.EntryID, Date: req.Date, StartTime: req.StartTime,
 		EndTime: req.EndTime, ClassificationID: req.ClassificationID,
 		Description: req.Description, ObservedAt: fixedNow(),
+		ContentObserved: true,
 	}
 	f.entries[state.RemoteID] = state
 	return gradion.WriteResult{Status: gradion.WriteConfirmed, Entry: &state}, nil
