@@ -162,6 +162,32 @@ type ProposedTimeBlock struct {
 	// linked, contiguous confirmed intervals with the exact total preserved.
 	SplitGroupID string `json:"split_group_id,omitempty"`
 	PartIndex    int    `json:"part_index,omitempty"`
+	// Carryover marks a block that is a fragment of a split interval belonging
+	// to a LATER local day than the day it was proposed on. It is an ADDITIVE S9
+	// field (omitempty) and is never preselected: it requires an explicit
+	// confirmation exactly like a manual/meeting block.
+	Carryover bool `json:"carryover,omitempty"`
+}
+
+// Carry is a fragment of a split interval that belongs to a LATER local day than
+// the day it was proposed on (a cross-midnight carry). It is surfaced on the
+// ORIGINATING day (review and export) and, on the later day, as an UNCONFIRMED
+// proposed block requiring explicit confirmation. It is NEVER written into
+// another day's record automatically and never auto-confirmed.
+type Carry struct {
+	SourceDate   string    `json:"source_date"`
+	Date         string    `json:"date"`
+	Start        string    `json:"start"`
+	End          string    `json:"end"`
+	StartAt      time.Time `json:"start_at"`
+	EndAt        time.Time `json:"end_at"`
+	Minutes      int       `json:"minutes"`
+	SplitGroupID string    `json:"split_group_id"`
+	PartIndex    int       `json:"part_index"`
+	Kind         BlockKind `json:"kind,omitempty"`
+	Project      string    `json:"project,omitempty"`
+	Description  string    `json:"description,omitempty"`
+	EvidenceIDs  []string  `json:"evidence_ids,omitempty"`
 }
 
 // Proposal is the deterministic, unconfirmed draft for one local day.
@@ -184,6 +210,11 @@ type Proposal struct {
 	// never timed work blocks and are deliberately NOT part of Work/Meetings/
 	// Manual, so the time-block count is unaffected.
 	Narratives []NarrativeCandidate `json:"narratives,omitempty"`
+	// Carries holds the later-day fragments of split intervals proposed for this
+	// day. They are recorded durably as carry items on the day's record and
+	// surface on the later day's review as UNCONFIRMED blocks; they are never
+	// auto-confirmed and never written into another day's record.
+	Carries []Carry `json:"carries,omitempty"`
 }
 
 // ProposalOptions configures Build. Location and Date define the local day;

@@ -510,7 +510,8 @@ func checkCapacity(record Record) error {
 		len(record.CollectedEvidence) > MaxCollectedEvidenceCount ||
 		len(record.Plans) > MaxPlansCount ||
 		len(record.Approvals) > MaxApprovalsCount ||
-		len(record.Editorial) > MaxEditorialCount {
+		len(record.Editorial) > MaxEditorialCount ||
+		len(record.Carries) > MaxCarriesCount {
 		return ErrCapacityExceeded
 	}
 	if record.Review != nil {

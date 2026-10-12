@@ -122,6 +122,50 @@ func SplitAtMaxDuration(start, end time.Time, maxMinutes int, loc *time.Location
 	return frags
 }
 
+// SplitInterval composes the midnight split and the four-hour split: it splits
+// [start, end) at EACH local midnight FIRST, then applies the maxMinutes bound
+// WITHIN each local day. Fragments are contiguous and non-overlapping, none
+// crosses a local midnight, they share ONE SplitGroupID with sequential
+// PartIndex values across the whole group, each carries its own local Date, and
+// their minutes (real elapsed, DST-correct) sum to the exact original total.
+// Carryover is set on every fragment whose local date differs from the first
+// fragment's. It returns nil for a non-positive interval.
+func SplitInterval(start, end time.Time, maxMinutes int, loc *time.Location) []Fragment {
+	if loc == nil {
+		loc = time.UTC
+	}
+	if maxMinutes <= 0 {
+		maxMinutes = DefaultMaxEntryMinutes
+	}
+	days := SplitAtMidnight(start, end, loc)
+	if len(days) == 0 {
+		return nil
+	}
+
+	groupID := days[0].SplitGroupID
+	var out []Fragment
+	idx := 0
+	for _, day := range days {
+		within := SplitAtMaxDuration(day.StartAt, day.EndAt, maxMinutes, loc)
+		if len(within) == 0 {
+			// A non-positive day fragment cannot occur for a positive span; keep
+			// the day fragment itself rather than dropping time.
+			within = []Fragment{day}
+		}
+		for _, f := range within {
+			// Re-index across the WHOLE group so midnight and four-hour
+			// composition never produces duplicate or non-sequential parts.
+			f.SplitGroupID = groupID
+			f.PartIndex = idx
+			out = append(out, f)
+			idx++
+		}
+	}
+
+	markCarryover(out)
+	return out
+}
+
 // markCarryover flags any fragment whose local date differs from the first.
 func markCarryover(frags []Fragment) {
 	if len(frags) == 0 {

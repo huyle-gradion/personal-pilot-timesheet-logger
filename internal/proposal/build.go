@@ -92,13 +92,13 @@ func Build(ev []evidence.Evidence, opts ProposalOptions) (Proposal, error) {
 
 	var warnings []string
 
-	meetings, meetingCarry := buildMeetings(calendarEv, loc, dateStr, opts.ProjectMap)
-	for _, d := range meetingCarry {
-		warnings = append(warnings, "carryover:"+d)
+	meetings, meetingCarries := buildMeetings(calendarEv, loc, dateStr, maxEntry, opts.ProjectMap)
+	manual, manualCarries := buildManual(manualEv, loc, dateStr, maxEntry, opts.ProjectMap)
+	for _, c := range meetingCarries {
+		warnings = append(warnings, "carryover:"+c.Date)
 	}
-	manual, manualCarry := buildManual(manualEv, loc, dateStr, opts.ProjectMap)
-	for _, d := range manualCarry {
-		warnings = append(warnings, "carryover:"+d)
+	for _, c := range manualCarries {
+		warnings = append(warnings, "carryover:"+c.Date)
 	}
 
 	meetingIntervals := make([]meetingInterval, 0, len(meetings))
@@ -135,6 +135,7 @@ func Build(ev []evidence.Evidence, opts ProposalOptions) (Proposal, error) {
 	prop.Manual = splitBlocks(manual, maxEntry, loc)
 	prop.Work = splitBlocks(buildWorkBlocks(prop.Topics, gitEv, meetings, opts.ProjectMap, loc), maxEntry, loc)
 	prop.Narratives = buildNarratives(journalEv, dateStr)
+	prop.Carries = normalizeCarries(append(meetingCarries, manualCarries...))
 	sortProposal(&prop)
 	prop.Warnings = normalizeWarnings(warnings)
 	return prop, nil
@@ -272,10 +273,13 @@ func exclusionReason(e evidence.Evidence) ExclusionReason {
 	}
 }
 
-// splitForDay splits an interval at local midnight, returning the same-day
-// fragments and the distinct carryover dates (next-day fragments).
-func splitForDay(start, end time.Time, loc *time.Location, dateStr string) ([]Fragment, []string) {
-	frags := SplitAtMidnight(start, end, loc)
+// splitForDay splits an interval at local midnight and within the max-entry
+// bound, returning the same-day fragments (local date == dateStr) and the
+// carryover fragments (later local dates). It uses the composed SplitInterval so
+// PartIndex is sequential across the whole group and no fragment crosses a local
+// midnight.
+func splitForDay(start, end time.Time, maxMinutes int, loc *time.Location, dateStr string) (same, carry []Fragment) {
+	frags := SplitInterval(start, end, maxMinutes, loc)
 	if len(frags) == 0 {
 		frags = []Fragment{{
 			StartAt: start, EndAt: end,
@@ -283,22 +287,56 @@ func splitForDay(start, end time.Time, loc *time.Location, dateStr string) ([]Fr
 			Date:    start.In(loc).Format(defaultDateLayout),
 		}}
 	}
-	var same []Fragment
-	var carry []string
 	for _, f := range frags {
 		if f.Date == dateStr {
 			same = append(same, f)
 		} else {
-			carry = append(carry, f.Date)
+			carry = append(carry, f)
 		}
 	}
 	return same, carry
 }
 
-// buildMeetings builds meeting blocks from calendar evidence.
-func buildMeetings(calendarEv []evidence.Evidence, loc *time.Location, dateStr string, projectMap map[string]string) ([]ProposedTimeBlock, []string) {
+// carryFromFragment materializes a later-day fragment as a durable Carry.
+func carryFromFragment(sourceDate string, kind BlockKind, f Fragment, loc *time.Location, project, description string, evidenceIDs []string) Carry {
+	return Carry{
+		SourceDate:   sourceDate,
+		Date:         f.Date,
+		Start:        f.StartAt.In(loc).Format(defaultDisplayTimeLayout),
+		End:          f.EndAt.In(loc).Format(defaultDisplayTimeLayout),
+		StartAt:      f.StartAt,
+		EndAt:        f.EndAt,
+		Minutes:      f.Minutes,
+		SplitGroupID: f.SplitGroupID,
+		PartIndex:    f.PartIndex,
+		Kind:         kind,
+		Project:      project,
+		Description:  description,
+		EvidenceIDs:  evidenceIDs,
+	}
+}
+
+// sameDayBlockID returns the PRE-SLICE block identity for a same-day fragment.
+// Pre-slice, an unsplit interval's identity was
+// hashID(kind, dateStr, intervalStartUTC, eID); once the four-hour rule split it,
+// each fragment's identity was hashID("split", baseID, part). Composed fragments
+// keep exactly that scheme so re-confirming an existing split fragment updates it
+// in place instead of inserting a duplicate (and does not orphan RemoteMappings).
+func sameDayBlockID(kind, dateStr string, intervalStart time.Time, eID string, part int, split bool) string {
+	base := hashID(kind, dateStr, intervalStart.UTC().Format(time.RFC3339Nano), eID)
+	if !split {
+		return base
+	}
+	return hashID("split", base, strconv.Itoa(part))
+}
+
+// buildMeetings builds meeting blocks from calendar evidence. Only same-day
+// fragments become blocks; later-day fragments are returned as carry items. A
+// fragment's SplitGroupID/PartIndex/Carryover are propagated when the interval
+// produced more than one fragment (a midnight or four-hour split).
+func buildMeetings(calendarEv []evidence.Evidence, loc *time.Location, dateStr string, maxMinutes int, projectMap map[string]string) ([]ProposedTimeBlock, []Carry) {
 	var blocks []ProposedTimeBlock
-	var carry []string
+	var carries []Carry
 	for _, e := range calendarEv {
 		start, end := e.Start, e.End
 		if start.IsZero() {
@@ -307,15 +345,17 @@ func buildMeetings(calendarEv []evidence.Evidence, loc *time.Location, dateStr s
 		if end.Before(start) {
 			end = start
 		}
-		frags, c := splitForDay(start, end, loc, dateStr)
-		carry = append(carry, c...)
+		frags, carryFrags := splitForDay(start, end, maxMinutes, loc, dateStr)
+		grouped := len(frags)+len(carryFrags) > 1
+		sameSplit := len(frags) > 1
+		project := ResolveProject(projectMap, "", e.ProjectHints)
 		for _, f := range frags {
 			dur := evidence.UnknownDuration()
 			if e.Duration.Known {
 				dur = evidence.KnownDuration(f.Minutes)
 			}
-			blocks = append(blocks, ProposedTimeBlock{
-				ID:            hashID("meeting", dateStr, f.StartAt.UTC().Format(time.RFC3339Nano), e.ID),
+			b := ProposedTimeBlock{
+				ID:            sameDayBlockID("meeting", dateStr, start, e.ID, f.PartIndex, sameSplit),
 				Kind:          BlockMeeting,
 				Date:          f.Date,
 				Start:         f.StartAt.In(loc).Format(defaultDisplayTimeLayout),
@@ -323,24 +363,34 @@ func buildMeetings(calendarEv []evidence.Evidence, loc *time.Location, dateStr s
 				StartAt:       f.StartAt,
 				EndAt:         f.EndAt,
 				Duration:      dur,
-				Project:       ResolveProject(projectMap, "", e.ProjectHints),
+				Project:       project,
 				Description:   blockDescription(e),
 				EvidenceIDs:   []string{e.ID},
 				Attendance:    AttendanceUnresolved,
 				Preselected:   e.Invitation == evidence.InvitationAccepted,
 				GridSuggested: !onGrid(f.StartAt, loc),
-			})
+			}
+			if grouped {
+				b.SplitGroupID = f.SplitGroupID
+				b.PartIndex = f.PartIndex
+				b.Carryover = f.Carryover
+			}
+			blocks = append(blocks, b)
+		}
+		for _, f := range carryFrags {
+			carries = append(carries, carryFromFragment(dateStr, BlockMeeting, f, loc, project.Project, blockDescription(e), []string{e.ID}))
 		}
 	}
-	return blocks, carry
+	return blocks, carries
 }
 
 // buildManual builds manual blocks. Manual intervals are user-provided evidence
 // but are PROPOSED, not confirmed: Preselected is always false so an explicit
-// confirm step is required.
-func buildManual(manualEv []evidence.Evidence, loc *time.Location, dateStr string, projectMap map[string]string) ([]ProposedTimeBlock, []string) {
+// confirm step is required. Only same-day fragments become blocks; later-day
+// fragments are returned as carry items.
+func buildManual(manualEv []evidence.Evidence, loc *time.Location, dateStr string, maxMinutes int, projectMap map[string]string) ([]ProposedTimeBlock, []Carry) {
 	var blocks []ProposedTimeBlock
-	var carry []string
+	var carries []Carry
 	for _, e := range manualEv {
 		start, end := e.Start, e.End
 		if start.IsZero() {
@@ -349,11 +399,13 @@ func buildManual(manualEv []evidence.Evidence, loc *time.Location, dateStr strin
 		if end.Before(start) {
 			end = start
 		}
-		frags, c := splitForDay(start, end, loc, dateStr)
-		carry = append(carry, c...)
+		frags, carryFrags := splitForDay(start, end, maxMinutes, loc, dateStr)
+		grouped := len(frags)+len(carryFrags) > 1
+		sameSplit := len(frags) > 1
+		project := ResolveProject(projectMap, "", e.ProjectHints)
 		for _, f := range frags {
-			blocks = append(blocks, ProposedTimeBlock{
-				ID:            hashID("manual", dateStr, f.StartAt.UTC().Format(time.RFC3339Nano), e.ID),
+			b := ProposedTimeBlock{
+				ID:            sameDayBlockID("manual", dateStr, start, e.ID, f.PartIndex, sameSplit),
 				Kind:          BlockManual,
 				Date:          f.Date,
 				Start:         f.StartAt.In(loc).Format(defaultDisplayTimeLayout),
@@ -361,16 +413,25 @@ func buildManual(manualEv []evidence.Evidence, loc *time.Location, dateStr strin
 				StartAt:       f.StartAt,
 				EndAt:         f.EndAt,
 				Duration:      evidence.KnownDuration(f.Minutes),
-				Project:       ResolveProject(projectMap, "", e.ProjectHints),
+				Project:       project,
 				Description:   blockDescription(e),
 				EvidenceIDs:   manualEvidenceIDs(e),
 				Attendance:    AttendanceUnresolved,
 				Preselected:   false,
 				GridSuggested: !onGrid(f.StartAt, loc),
-			})
+			}
+			if grouped {
+				b.SplitGroupID = f.SplitGroupID
+				b.PartIndex = f.PartIndex
+				b.Carryover = f.Carryover
+			}
+			blocks = append(blocks, b)
+		}
+		for _, f := range carryFrags {
+			carries = append(carries, carryFromFragment(dateStr, BlockManual, f, loc, project.Project, blockDescription(e), manualEvidenceIDs(e)))
 		}
 	}
-	return blocks, carry
+	return blocks, carries
 }
 
 // manualEvidenceIDs returns a manual item's own identity followed by the linked
@@ -589,6 +650,34 @@ func uniqueSorted(values []string) []string {
 	return out
 }
 
+// normalizeCarries dedupes carry items by (date, group, part) and sorts them
+// deterministically so identical input in any order yields an identical result.
+func normalizeCarries(carries []Carry) []Carry {
+	if len(carries) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(carries))
+	out := make([]Carry, 0, len(carries))
+	for _, c := range carries {
+		key := c.Date + "|" + c.SplitGroupID + "|" + strconv.Itoa(c.PartIndex)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Date != out[j].Date {
+			return out[i].Date < out[j].Date
+		}
+		if out[i].SplitGroupID != out[j].SplitGroupID {
+			return out[i].SplitGroupID < out[j].SplitGroupID
+		}
+		return out[i].PartIndex < out[j].PartIndex
+	})
+	return out
+}
+
 func normalizeWarnings(warnings []string) []string {
 	if len(warnings) == 0 {
 		return nil
@@ -616,12 +705,14 @@ func onGrid(t time.Time, loc *time.Location) bool {
 	return lt.Minute()%DefaultGridMinutes == 0 && lt.Second() == 0 && lt.Nanosecond() == 0
 }
 
-// SplitBlock splits a proposed block whose SPAN exceeds maxMinutes into linked,
-// contiguous, non-overlapping fragments of at most maxMinutes, preserving the
-// exact total span minutes. Fragments share a SplitGroupID with sequential
-// PartIndex values and copy every other field (identity changes to a stable
-// per-fragment ID). A block within the bound, or with an unusable span, is
-// returned unchanged as a single-element slice, so callers never branch.
+// SplitBlock splits a proposed block at EACH local midnight and within
+// maxMinutes (the composed split), producing linked, contiguous, non-overlapping
+// fragments that preserve the exact total span minutes. Fragments share a
+// SplitGroupID with sequential PartIndex values and copy every other field
+// (identity becomes a stable per-fragment ID). A block already within one local
+// day and within the bound, or with an unusable span, is returned unchanged as a
+// single-element slice, so callers never branch. This keeps the proposal's Work
+// blocks consistent with what ConfirmProposed persists.
 func SplitBlock(block ProposedTimeBlock, maxMinutes int, loc *time.Location) []ProposedTimeBlock {
 	if maxMinutes <= 0 {
 		maxMinutes = DefaultMaxEntryMinutes
@@ -632,11 +723,11 @@ func SplitBlock(block ProposedTimeBlock, maxMinutes int, loc *time.Location) []P
 	if block.StartAt.IsZero() || block.EndAt.IsZero() || !block.EndAt.After(block.StartAt) {
 		return []ProposedTimeBlock{block}
 	}
-	if DurationMinutes(block.StartAt, block.EndAt) <= maxMinutes {
+	frags := SplitInterval(block.StartAt, block.EndAt, maxMinutes, loc)
+	if len(frags) <= 1 {
 		return []ProposedTimeBlock{block}
 	}
 
-	frags := SplitAtMaxDuration(block.StartAt, block.EndAt, maxMinutes, loc)
 	out := make([]ProposedTimeBlock, 0, len(frags))
 	for _, f := range frags {
 		b := block

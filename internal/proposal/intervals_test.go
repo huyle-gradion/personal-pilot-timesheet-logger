@@ -66,6 +66,93 @@ func TestSplitAtMidnight(t *testing.T) {
 	}
 }
 
+// TestSplitInterval_MidnightThenFourHour proves the composed split: midnight
+// first, then the four-hour bound WITHIN each day, with PartIndex re-indexed
+// across the whole group and exact totals preserved.
+func TestSplitInterval_MidnightThenFourHour(t *testing.T) {
+	// 18:00 D -> 02:00 D+1 = 8h. Midnight gives D:360, D+1:120; the four-hour
+	// bound then splits D:360 into 240+120, so parts are 0,1,2 across the group.
+	start := at(6, 18, 0)
+	end := at(7, 2, 0)
+	frags := SplitInterval(start, end, DefaultMaxEntryMinutes, time.UTC)
+	if len(frags) != 3 {
+		t.Fatalf("fragments = %d, want 3", len(frags))
+	}
+	wantMin := []int{240, 120, 120}
+	wantDate := []string{"2026-10-06", "2026-10-06", "2026-10-07"}
+	wantCarry := []bool{false, false, true}
+	total := 0
+	for i, f := range frags {
+		if f.Minutes != wantMin[i] {
+			t.Errorf("fragment %d minutes = %d, want %d", i, f.Minutes, wantMin[i])
+		}
+		if f.Date != wantDate[i] {
+			t.Errorf("fragment %d date = %q, want %q", i, f.Date, wantDate[i])
+		}
+		if f.Carryover != wantCarry[i] {
+			t.Errorf("fragment %d carryover = %v, want %v", i, f.Carryover, wantCarry[i])
+		}
+		if f.PartIndex != i {
+			t.Errorf("fragment %d part = %d, want %d", i, f.PartIndex, i)
+		}
+		if f.SplitGroupID != frags[0].SplitGroupID {
+			t.Error("fragments must share one SplitGroupID")
+		}
+		if i > 0 && !f.StartAt.Equal(frags[i-1].EndAt) {
+			t.Error("fragments must be contiguous")
+		}
+		// No fragment may cross a local midnight.
+		if crossesLocalMidnight(f.StartAt, f.EndAt, time.UTC) {
+			t.Errorf("fragment %d crosses local midnight: %v..%v", i, f.StartAt, f.EndAt)
+		}
+		total += f.Minutes
+	}
+	if total != DurationMinutes(start, end) || total != 480 {
+		t.Errorf("total = %d, want 480", total)
+	}
+}
+
+// TestSplitInterval_DSTSafe proves a midnight-crossing split around a DST
+// transition neither loses nor adds minutes and keeps each fragment on one local
+// date (minutes are measured by time.Time.Sub, real elapsed time).
+func TestSplitInterval_DSTSafe(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	// Fall back 2026-11-01: 22:00 EDT D -> 02:00 EST D+1 is 300 real minutes.
+	start := time.Date(2026, 10, 31, 22, 0, 0, 0, ny)
+	end := time.Date(2026, 11, 1, 2, 0, 0, 0, ny)
+	frags := SplitInterval(start, end, DefaultMaxEntryMinutes, ny)
+	if len(frags) != 2 {
+		t.Fatalf("fragments = %d, want 2", len(frags))
+	}
+	total := 0
+	for i, f := range frags {
+		total += f.Minutes
+		if crossesLocalMidnight(f.StartAt, f.EndAt, ny) {
+			t.Errorf("fragment %d crosses local midnight: %v..%v", i, f.StartAt, f.EndAt)
+		}
+	}
+	if total != DurationMinutes(start, end) || total != 300 {
+		t.Errorf("total = %d, want 300", total)
+	}
+	if frags[0].Date != "2026-10-31" || frags[1].Date != "2026-11-01" {
+		t.Errorf("dates = %q/%q, want 2026-10-31/2026-11-01", frags[0].Date, frags[1].Date)
+	}
+	if frags[0].Carryover || !frags[1].Carryover {
+		t.Errorf("carryover flags = %v/%v, want false/true", frags[0].Carryover, frags[1].Carryover)
+	}
+}
+
+// crossesLocalMidnight reports whether [start,end) strictly contains a local
+// midnight. A fragment that ends exactly at midnight does NOT cross it.
+func crossesLocalMidnight(start, end time.Time, loc *time.Location) bool {
+	s := start.In(loc)
+	nextMidnight := time.Date(s.Year(), s.Month(), s.Day()+1, 0, 0, 0, 0, loc)
+	return end.After(nextMidnight)
+}
+
 func TestSplitAtMaxDuration(t *testing.T) {
 	start := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)

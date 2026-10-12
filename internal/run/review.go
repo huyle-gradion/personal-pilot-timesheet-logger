@@ -162,13 +162,18 @@ type ManualDecision struct {
 
 // CurrentProposal re-derives the proposal honoring the record's review decisions
 // AND folds in the persisted editorial suggestions, so AI text is what the user
-// reviews.
+// reviews. Persisted cross-midnight carries from the previous day are merged as
+// unconfirmed blocks (read-only).
 func (r *Runner) CurrentProposal(ctx context.Context, date string) (proposal.Proposal, error) {
 	rec, err := r.deps.Store.GetDay(ctx, date)
 	if err != nil {
 		return proposal.Proposal{}, err
 	}
-	return r.appliedProposal(rec, date)
+	prop, err := r.appliedProposal(rec, date)
+	if err != nil {
+		return proposal.Proposal{}, err
+	}
+	return r.withCarries(ctx, date, prop)
 }
 
 // appliedProposal re-derives the current proposal and folds in the persisted
@@ -186,22 +191,32 @@ func (r *Runner) appliedProposal(rec *workflow.Record, date string) (proposal.Pr
 // reviewed (or reviewed-empty). It uses only the existing internal/review actions,
 // so a scripted review and an interactive review produce the same record.
 func (r *Runner) ApplyReview(ctx context.Context, date string, d ReviewDecisions) error {
+	// Read the previous day's carries BEFORE opening this day's session, so the
+	// carry blocks are available for a normal Confirm decision.
+	carries, err := r.carriesForDay(ctx, date)
+	if err != nil {
+		return err
+	}
 	session, err := r.deps.Store.BeginDaySession(ctx, date)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = session.Close() }()
 	_, err = session.Update(ctx, func(rec *workflow.Record) error {
-		return r.applyDecisions(rec, date, d)
+		return r.applyDecisions(rec, date, d, carries)
 	})
 	return err
 }
 
-func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecisions) error {
+func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecisions, carries []workflow.CarryItem) error {
 	prop, err := r.appliedProposal(rec, date)
 	if err != nil {
 		return err
 	}
+	// A persisted carry from the previous day is surfaced as a NORMAL unconfirmed
+	// block: it is confirmed only through an explicit Confirm decision, exactly
+	// like any other proposed block. There is no special auto path.
+	prop = mergeCarryBlocks(prop, carries)
 	blocks := proposalBlocksByID(prop)
 
 	// Confirm first, recording EVERY confirmed interval each proposal block
@@ -294,6 +309,13 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 		}
 	}
 
+	// Record durable carry items for any confirmed cross-midnight interval. A
+	// carry is recorded ONLY for a group that was actually confirmed, so an
+	// unconfirmed (or never-reviewed) day leaves no carry behind.
+	if err := review.RecordCarries(rec, proposalCarryItems(prop)); err != nil {
+		return err
+	}
+
 	if d.MarkEmpty {
 		return review.MarkReviewedEmpty(rec)
 	}
@@ -312,7 +334,35 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 	if err != nil {
 		return err
 	}
+	final = mergeCarryBlocks(final, carries)
 	return review.MarkReviewed(rec, review.ProposalHash(final))
+}
+
+// proposalCarryItems converts a proposal's carry fragments into durable carry
+// items.
+func proposalCarryItems(prop proposal.Proposal) []workflow.CarryItem {
+	if len(prop.Carries) == 0 {
+		return nil
+	}
+	out := make([]workflow.CarryItem, 0, len(prop.Carries))
+	for _, c := range prop.Carries {
+		out = append(out, workflow.CarryItem{
+			SourceDate:   c.SourceDate,
+			Date:         c.Date,
+			Start:        c.Start,
+			End:          c.End,
+			StartAt:      c.StartAt,
+			EndAt:        c.EndAt,
+			Minutes:      c.Minutes,
+			SplitGroupID: c.SplitGroupID,
+			PartIndex:    c.PartIndex,
+			Kind:         string(c.Kind),
+			Project:      c.Project,
+			Description:  c.Description,
+			EvidenceIDs:  append([]string{}, c.EvidenceIDs...),
+		})
+	}
+	return out
 }
 
 // scheduleAffecting reports whether a decision set contains any action that can

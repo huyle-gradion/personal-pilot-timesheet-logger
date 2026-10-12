@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -262,6 +263,173 @@ func TestMarkReviewedEmpty_PreservesCollections(t *testing.T) {
 	}
 	if len(r.Review.ExcludedEvidence) != 1 || len(r.Review.Attendance) != 1 || len(r.Review.AcknowledgedSources) != 1 {
 		t.Errorf("collections lost: %+v", r.Review)
+	}
+}
+
+// TestConfirmProposed_MidnightSplitCarryAndLinkage proves R3/R4/R6: confirming a
+// cross-midnight interval persists ONLY its same-day fragment on day D and
+// records the later-day fragment as a durable carry; confirming that carry on
+// day D+1 persists an interval linked to the SAME split group.
+func TestConfirmProposed_MidnightSplitCarryAndLinkage(t *testing.T) {
+	d := "2026-10-06"
+	r := workflow.Record{Date: d}
+	block := proposal.ProposedTimeBlock{
+		ID: "b1", Kind: proposal.BlockManual, Date: d,
+		Start: "23:30", End: "00:30",
+		StartAt:     at(23, 30),
+		EndAt:       time.Date(2026, 10, 7, 0, 30, 0, 0, time.UTC),
+		Duration:    evidence.KnownDuration(60),
+		Description: "late work",
+	}
+	if err := ConfirmProposed(&r, block, ConfirmOptions{Location: time.UTC}); err != nil {
+		t.Fatalf("ConfirmProposed: %v", err)
+	}
+	if len(r.Confirmed) != 1 {
+		t.Fatalf("confirmed = %d, want 1 (same-day fragment only)", len(r.Confirmed))
+	}
+	ci := r.Confirmed[0]
+	if ci.Date != d || ci.StartTime != "23:30" || ci.EndTime != "00:00" {
+		t.Errorf("confirmed = %s %s-%s, want %s 23:30-00:00", ci.Date, ci.StartTime, ci.EndTime, d)
+	}
+	if ci.SplitGroupID == "" || ci.PartIndex != 0 || ci.Carryover {
+		t.Errorf("same-day fragment must be linked and not a carry: %+v", ci)
+	}
+	if len(r.Carries) != 1 {
+		t.Fatalf("carries = %d, want 1 (the later-day fragment)", len(r.Carries))
+	}
+	carry := r.Carries[0]
+	if carry.Date != "2026-10-07" || carry.Start != "00:00" || carry.End != "00:30" {
+		t.Errorf("carry = %s %s-%s, want 2026-10-07 00:00-00:30", carry.Date, carry.Start, carry.End)
+	}
+	if carry.SourceDate != d {
+		t.Errorf("carry source day = %q, want %q", carry.SourceDate, d)
+	}
+	if carry.SplitGroupID != ci.SplitGroupID || carry.PartIndex != 1 {
+		t.Fatalf("carry linkage wrong: %+v vs group %q", carry, ci.SplitGroupID)
+	}
+	if carry.Minutes != 30 {
+		t.Errorf("carry minutes = %d, want 30", carry.Minutes)
+	}
+
+	// D+1: confirming the carry keeps the SAME group/part.
+	r2 := workflow.Record{Date: "2026-10-07"}
+	if err := ConfirmCarry(&r2, carry, ConfirmOptions{Location: time.UTC}); err != nil {
+		t.Fatalf("ConfirmCarry: %v", err)
+	}
+	if len(r2.Confirmed) != 1 {
+		t.Fatalf("D+1 confirmed = %d, want 1", len(r2.Confirmed))
+	}
+	ci2 := r2.Confirmed[0]
+	if ci2.Date != "2026-10-07" || ci2.StartTime != "00:00" || ci2.EndTime != "00:30" {
+		t.Errorf("D+1 interval = %s %s-%s, want 2026-10-07 00:00-00:30", ci2.Date, ci2.StartTime, ci2.EndTime)
+	}
+	if ci2.SplitGroupID != carry.SplitGroupID || ci2.PartIndex != carry.PartIndex {
+		t.Fatalf("D+1 interval lost the split linkage: %+v vs carry %+v", ci2, carry)
+	}
+	if !ci2.Carryover {
+		t.Error("the D+1 interval must be marked Carryover")
+	}
+}
+
+// TestRecordCarries_RequiresConfirmedGroup proves an unconfirmed (or
+// never-reviewed) day records NO carry, so the later day cannot surface a carry
+// from work that was never confirmed.
+func TestRecordCarries_RequiresConfirmedGroup(t *testing.T) {
+	r := workflow.Record{Date: "2026-10-06"}
+	if err := RecordCarries(&r, []workflow.CarryItem{{
+		Date: "2026-10-07", SplitGroupID: "split_unconfirmed", PartIndex: 1,
+	}}); err != nil {
+		t.Fatalf("RecordCarries: %v", err)
+	}
+	if len(r.Carries) != 0 {
+		t.Fatalf("an unconfirmed group must not record a carry: %+v", r.Carries)
+	}
+
+	r.Confirmed = []workflow.ConfirmedInterval{{ID: "c1", Date: r.Date, EndTime: "00:00", SplitGroupID: "split_ok"}}
+	if err := RecordCarries(&r, []workflow.CarryItem{{
+		Date: "2026-10-07", SplitGroupID: "split_ok", PartIndex: 1, Minutes: 30,
+	}}); err != nil {
+		t.Fatalf("RecordCarries: %v", err)
+	}
+	if len(r.Carries) != 1 || r.Carries[0].SplitGroupID != "split_ok" {
+		t.Fatalf("a confirmed group must record its carry: %+v", r.Carries)
+	}
+}
+
+// TestConfirmProposed_SplitFragmentIdentityPreSlice proves F3: a split fragment
+// persists with the PRE-SLICE identity, and re-confirming it does not duplicate.
+func TestConfirmProposed_SplitFragmentIdentityPreSlice(t *testing.T) {
+	d := "2026-10-06"
+	start := at(8, 0)
+	r := workflow.Record{Date: d, CollectedEvidence: []evidence.Evidence{{
+		ID: "man1", Kind: evidence.SourceManual, Title: "long",
+		Start: start, End: at(14, 0), Duration: evidence.KnownDuration(360),
+	}}}
+	prop, err := CurrentProposal(r, testProposalOpts())
+	if err != nil {
+		t.Fatalf("CurrentProposal: %v", err)
+	}
+	if len(prop.Manual) != 2 {
+		t.Fatalf("manual fragments = %d, want 2", len(prop.Manual))
+	}
+	base := hashID("manual", d, start.UTC().Format(time.RFC3339Nano), "man1")
+	for i, b := range prop.Manual {
+		if want := hashID("split", base, strconv.Itoa(i)); b.ID != want {
+			t.Fatalf("fragment %d id = %q, want pre-slice %q", i, b.ID, want)
+		}
+	}
+	if err := ConfirmProposed(&r, prop.Manual[0], ConfirmOptions{Location: time.UTC}); err != nil {
+		t.Fatalf("ConfirmProposed: %v", err)
+	}
+	wantID := hashID("conf-manual", d, prop.Manual[0].ID)
+	if len(r.Confirmed) != 1 || r.Confirmed[0].ID != wantID {
+		t.Fatalf("persisted id = %+v, want pre-slice %q", r.Confirmed, wantID)
+	}
+	if err := ConfirmProposed(&r, prop.Manual[0], ConfirmOptions{Location: time.UTC}); err != nil {
+		t.Fatalf("re-confirm: %v", err)
+	}
+	if len(r.Confirmed) != 1 {
+		t.Fatalf("re-confirming a split fragment must not duplicate, got %d", len(r.Confirmed))
+	}
+}
+
+// TestRecordCarries_ReconcilesStaleCarry proves F2: a carry is dropped once its
+// source interval is excluded or trimmed so it no longer reaches midnight.
+func TestRecordCarries_ReconcilesStaleCarry(t *testing.T) {
+	r := workflow.Record{Date: "2026-10-06"}
+	block := proposal.ProposedTimeBlock{
+		ID: "b1", Kind: proposal.BlockManual, Date: "2026-10-06",
+		Start: "23:30", End: "00:30",
+		StartAt: at(23, 30), EndAt: time.Date(2026, 10, 7, 0, 30, 0, 0, time.UTC),
+		Duration: evidence.KnownDuration(60),
+	}
+	if err := ConfirmProposed(&r, block, ConfirmOptions{Location: time.UTC}); err != nil {
+		t.Fatalf("ConfirmProposed: %v", err)
+	}
+	if len(r.Carries) != 1 {
+		t.Fatalf("want a carry after confirming a crossing interval, got %+v", r.Carries)
+	}
+
+	// Trimming the source so it no longer reaches midnight drops the carry.
+	r.Confirmed[0].EndTime = "23:45"
+	if err := RecordCarries(&r, nil); err != nil {
+		t.Fatalf("RecordCarries(trim): %v", err)
+	}
+	if len(r.Carries) != 0 {
+		t.Fatalf("a trimmed-away carry must be reconciled, got %+v", r.Carries)
+	}
+
+	// Re-confirm and then exclude the source: the carry is dropped again.
+	r.Confirmed = nil
+	if err := ConfirmProposed(&r, block, ConfirmOptions{Location: time.UTC}); err != nil {
+		t.Fatalf("ConfirmProposed: %v", err)
+	}
+	r.Confirmed = nil // exclusion removed the interval (and its group)
+	if err := RecordCarries(&r, nil); err != nil {
+		t.Fatalf("RecordCarries(exclude): %v", err)
+	}
+	if len(r.Carries) != 0 {
+		t.Fatalf("an excluded carry must be reconciled, got %+v", r.Carries)
 	}
 }
 

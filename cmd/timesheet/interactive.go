@@ -107,6 +107,10 @@ type guided struct {
 	// catalogFetch is the catalog fetch seam. Production callers leave it nil so
 	// loadCatalog uses the real fetchCatalog; tests inject a counting fake.
 	catalogFetch func(ctx context.Context, cfg cliConfig, useCache bool, search string) (gradion.Catalog, error)
+	// carryCount is the number of cross-midnight carry items visible for this day
+	// (carries originating on this day plus carry blocks surfaced from the
+	// previous day). It is shown in the confirmation summary.
+	carryCount int
 }
 
 // catalogMemoEntry is one in-run memoized catalog fetch: the catalog and the
@@ -234,6 +238,7 @@ func cmdRunGuided(ctx context.Context, r *run.Runner, cfg cliConfig, store workf
 
 func (g *guided) gatherReview(ctx context.Context, prop proposal.Proposal, rec *workflow.Record, evByID map[string]evidence.Evidence) (run.ReviewDecisions, error) {
 	var dec run.ReviewDecisions
+	g.carryCount = countCarries(prop)
 
 	// Explicit --ack ids are STAGED here (validated against the day's collection)
 	// and applied only on the final deliberate confirmation, so an abort leaves no
@@ -909,6 +914,9 @@ func (g *guided) confirmSummary(ctx context.Context, dec run.ReviewDecisions) (b
 	fmt.Fprintf(g.stdout, "  edits: %d time, %d project, %d description\n", len(dec.Trim), len(dec.Project), len(dec.Description))
 	fmt.Fprintf(g.stdout, "  manual intervals: %d\n", len(dec.Manual))
 	fmt.Fprintf(g.stdout, "  classification chosen: %d\n", len(dec.Classification)+manualClassified(dec))
+	if g.carryCount > 0 {
+		fmt.Fprintf(g.stdout, "  carryover items: %d (a carry on the next day is confirmed separately)\n", g.carryCount)
+	}
 	if dec.MarkEmpty {
 		fmt.Fprintln(g.stdout, "  result: reviewed with no work (no entries)")
 	}
@@ -955,6 +963,9 @@ func (g *guided) printOverview(prop proposal.Proposal, rec *workflow.Record, evB
 	}
 	for _, n := range prop.Narratives {
 		fmt.Fprintf(g.stdout, "  narrative %s  %s\n", narrativeProvenance(n, evByID), oneLine(n.Description))
+	}
+	for _, c := range prop.Carries {
+		fmt.Fprintf(g.stdout, "  carry    -> %s %s-%s (group %s)\n", c.Date, c.Start, c.End, shortID(c.SplitGroupID))
 	}
 	for _, ex := range prop.Excluded {
 		line := fmt.Sprintf("  excluded %s reason=%s", shortID(ex.EvidenceID), ex.Reason)
@@ -1007,6 +1018,9 @@ func (g *guided) blockLabel(b proposal.ProposedTimeBlock) string {
 	}
 	if b.Collision {
 		line += " collision"
+	}
+	if b.Carryover {
+		line += " carryover"
 	}
 	if strings.TrimSpace(b.Description) != "" {
 		line += "  " + oneLine(b.Description)
@@ -1074,6 +1088,29 @@ func proposalBlockIndex(prop proposal.Proposal) map[string]proposal.ProposedTime
 		out[b.ID] = b
 	}
 	return out
+}
+
+// countCarries counts the cross-midnight carries visible for this day: the
+// carries originating on this day plus the carry blocks surfaced from the
+// previous day.
+func countCarries(prop proposal.Proposal) int {
+	n := len(prop.Carries)
+	for _, b := range prop.Work {
+		if b.Carryover {
+			n++
+		}
+	}
+	for _, b := range prop.Meetings {
+		if b.Carryover {
+			n++
+		}
+	}
+	for _, b := range prop.Manual {
+		if b.Carryover {
+			n++
+		}
+	}
+	return n
 }
 
 func narrativeProvenance(n proposal.NarrativeCandidate, evByID map[string]evidence.Evidence) string {

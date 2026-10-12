@@ -711,17 +711,21 @@ func contains(values []string, want string) bool {
 // --- Scenario 5: exact midnight / four-hour splits --------------------------
 
 func TestAcceptance_05_MidnightAndFourHourSplits(t *testing.T) {
-	// (a) Midnight split is end-to-end: a meeting crossing local midnight yields a
-	// same-day block plus a carryover warning, and the same-day block confirms with
-	// the exact minutes.
+	// (a) A meeting crossing local midnight is split into two LINKED fragments on
+	// consecutive local dates: the same-day fragment stays on D, the later-day
+	// fragment is a durable carry surfaced on D+1 as an UNCONFIRMED block. The
+	// exact total is preserved, the carry is visible in the export, and nothing is
+	// auto-approved or auto-written.
 	store := accStore(t)
+	remote := newFakeRemote()
 	start := time.Date(2026, 10, 6, 23, 30, 0, 0, time.UTC)
 	end := time.Date(2026, 10, 7, 0, 30, 0, 0, time.UTC)
+	nextDate := "2026-10-07"
 	cal := &fakePlugin{kind: evidence.SourceCalendar, ev: []evidence.Evidence{accMeeting("m1", "Late review", start, end)}}
 	cfg := run.Config{Evidence: evidence.Config{Timezone: "UTC", Sources: []evidence.SourceConfig{
 		{ID: "cal", Type: evidence.SourceCalendar, Enabled: true},
 	}}}
-	r := accRunner(t, run.Deps{Store: store, Registry: accRegistry(cal)}, cfg)
+	r := accRunner(t, run.Deps{Store: store, Registry: accRegistry(cal), Remote: remote}, cfg)
 
 	if _, err := r.Collect(accCtx, accDate); err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -737,15 +741,21 @@ func TestAcceptance_05_MidnightAndFourHourSplits(t *testing.T) {
 	if int(frag.EndAt.Sub(frag.StartAt)/time.Minute) != 30 {
 		t.Fatalf("the same-day fragment must be 30 minutes, got %s-%s", frag.Start, frag.End)
 	}
-	carry := false
-	for _, w := range prop.Warnings {
-		if strings.HasPrefix(w, "carryover:") {
-			carry = true
-		}
+	if len(prop.Carries) != 1 {
+		t.Fatalf("want one later-day carry fragment, got %d", len(prop.Carries))
 	}
-	if !carry {
-		t.Fatalf("a midnight-crossing meeting must warn about carryover, got %v", prop.Warnings)
+	carry := prop.Carries[0]
+	if carry.Date != nextDate || carry.Start != "00:00" || carry.End != "00:30" {
+		t.Fatalf("carry fragment = %s %s-%s, want %s 00:00-00:30", carry.Date, carry.Start, carry.End, nextDate)
 	}
+	if carry.SplitGroupID != frag.SplitGroupID || frag.PartIndex != 0 || carry.PartIndex != 1 {
+		t.Fatalf("fragments must be linked: meeting=%+v carry=%+v", frag, carry)
+	}
+	if frag.Duration.Minutes+carry.Minutes != 60 {
+		t.Fatalf("exact total = %d, want 60", frag.Duration.Minutes+carry.Minutes)
+	}
+
+	// Confirm ONLY the same-day fragment on D.
 	if err := r.ApplyReview(accCtx, accDate, run.ReviewDecisions{
 		Confirm: []run.ConfirmDecision{{BlockID: frag.ID, Attendance: boolPtr(true)}},
 	}); err != nil {
@@ -753,10 +763,72 @@ func TestAcceptance_05_MidnightAndFourHourSplits(t *testing.T) {
 	}
 	rec := accLoad(t, store, accDate)
 	if len(rec.Confirmed) != 1 {
-		t.Fatalf("want one confirmed fragment, got %d", len(rec.Confirmed))
+		t.Fatalf("want one confirmed same-day fragment, got %d", len(rec.Confirmed))
 	}
 	if rec.Confirmed[0].StartTime != "23:30" || rec.Confirmed[0].EndTime != "00:00" {
 		t.Fatalf("the confirmed fragment must preserve exact boundaries, got %s-%s", rec.Confirmed[0].StartTime, rec.Confirmed[0].EndTime)
+	}
+	if rec.Confirmed[0].SplitGroupID != carry.SplitGroupID {
+		t.Fatalf("the confirmed fragment must keep the split linkage")
+	}
+	if len(rec.Carries) != 1 || rec.Carries[0].Date != nextDate || rec.Carries[0].SplitGroupID != carry.SplitGroupID {
+		t.Fatalf("the carry must be recorded durably on D, got %+v", rec.Carries)
+	}
+
+	// The carry is visible in D's export (marker/note + warning bullet naming D+1).
+	rendered := export.Render(export.BuildNote(rec))
+	for _, want := range []string{nextDate, "00:00-00:30", carry.SplitGroupID, "carry:"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("the export must show the carry (%q):\n%s", want, rendered)
+		}
+	}
+
+	// D+1: the carry surfaces as an UNCONFIRMED block. Proposing writes nothing.
+	propNext, err := r.Propose(accCtx, nextDate)
+	if err != nil {
+		t.Fatalf("Propose(D+1): %v", err)
+	}
+	var carryBlock proposal.ProposedTimeBlock
+	found := false
+	for _, b := range append(append([]proposal.ProposedTimeBlock{}, propNext.Meetings...), propNext.Manual...) {
+		if b.SplitGroupID == carry.SplitGroupID {
+			carryBlock = b
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("D+1 must surface the carry as an unconfirmed block, got %+v / %+v", propNext.Meetings, propNext.Manual)
+	}
+	if !carryBlock.Carryover || carryBlock.Preselected {
+		t.Fatalf("the D+1 carry block must be an unconfirmed carryover (not preselected): %+v", carryBlock)
+	}
+	if recNext, err := store.GetDay(accCtx, nextDate); err == nil && len(recNext.Confirmed) != 0 {
+		t.Fatalf("proposing D+1 must not auto-confirm the carry: %+v", recNext.Confirmed)
+	}
+
+	// Only an explicit confirmation persists the D+1 interval, linked to the SAME
+	// split group. Nothing is auto-approved or auto-written.
+	if err := r.ApplyReview(accCtx, nextDate, run.ReviewDecisions{
+		Confirm: []run.ConfirmDecision{{BlockID: carryBlock.ID, Attendance: boolPtr(true)}},
+	}); err != nil {
+		t.Fatalf("ApplyReview(D+1): %v", err)
+	}
+	recNext := accLoad(t, store, nextDate)
+	if len(recNext.Confirmed) != 1 {
+		t.Fatalf("want one confirmed D+1 carry interval, got %d", len(recNext.Confirmed))
+	}
+	ciNext := recNext.Confirmed[0]
+	if ciNext.SplitGroupID != carry.SplitGroupID || ciNext.PartIndex != carry.PartIndex {
+		t.Fatalf("the D+1 interval must link to the same split group: %+v", ciNext)
+	}
+	if !ciNext.Carryover || ciNext.Date != nextDate {
+		t.Fatalf("the D+1 interval must be a carryover on its own date: %+v", ciNext)
+	}
+	if len(recNext.Approvals) != 0 {
+		t.Fatalf("the carry path must create NO approval, got %+v", recNext.Approvals)
+	}
+	if remote.writes() != 0 {
+		t.Fatalf("the carry path must cause zero remote writes, got %d", remote.writes())
 	}
 
 	// (b) Four-hour split through the SHARED CORE (no bypass): a >4h manual

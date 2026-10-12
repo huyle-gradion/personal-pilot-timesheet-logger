@@ -14,6 +14,7 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/proposal"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/run"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/selection"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
@@ -33,6 +34,9 @@ type fakePrompter struct {
 	ci, ii, mi, co int
 	chooseTitles   []string
 	confirmTitles  []string
+	// confirmDefaults records the default offered at each Confirm prompt, so a
+	// test can assert the guided final confirmation defaults to "no".
+	confirmDefaults []bool
 }
 
 func (f *fakePrompter) Choose(_ context.Context, title string, options []promptOption, def int) (int, error) {
@@ -73,8 +77,9 @@ func (f *fakePrompter) Input(_ context.Context, title, _, initial string) (strin
 	return v, nil
 }
 
-func (f *fakePrompter) Confirm(_ context.Context, title string, _ bool) (bool, error) {
+func (f *fakePrompter) Confirm(_ context.Context, title string, def bool) (bool, error) {
 	f.confirmTitles = append(f.confirmTitles, title)
+	f.confirmDefaults = append(f.confirmDefaults, def)
 	if f.co >= len(f.confirms) {
 		return false, errAborted
 	}
@@ -926,8 +931,86 @@ func TestGuided_ExistingConfirmedEditable(t *testing.T) {
 	}
 }
 
-// --- B6: explicit --ack is staged, validated, and applied only on confirm ----
+// TestGuided_CarrySurfacedAndExplicit proves G1/G3: a carry from the previous
+// day is surfaced and labeled "carryover", requires an explicit choice (never
+// auto-confirmed), and the guided final confirmation defaults to "no".
+func TestGuided_CarrySurfacedAndExplicit(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	// The PREVIOUS day holds a carry targeting testDate.
+	seedRecord(t, storage, "2026-10-05", func(rec *workflow.Record) {
+		rec.Carries = []workflow.CarryItem{{
+			SourceDate: "2026-10-05", Date: testDate, Start: "00:00", End: "00:30",
+			StartAt: time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC),
+			EndAt:   time.Date(2026, 10, 6, 0, 30, 0, 0, time.UTC),
+			Minutes: 30, SplitGroupID: "split_late", PartIndex: 1,
+			Kind: string(proposal.BlockManual), Project: "Proj", Description: "late work",
+		}}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
 
+	var out, errb bytes.Buffer
+	// confirm the carry block (0); no missing work (false); classification option
+	// 0; apply the review (true).
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "carryover") {
+		t.Fatalf("the guided run must label the carry block:\n%s", out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || !rec.Confirmed[0].Carryover {
+		t.Fatalf("the carry must be confirmed ONLY by the explicit choice: %+v", rec.Confirmed)
+	}
+	if len(rec.Approvals) != 0 {
+		t.Fatalf("the guided run must not approve")
+	}
+	if got := p.confirmDefaults[len(p.confirmDefaults)-1]; got != false {
+		t.Fatalf("the guided final confirmation default must be no, got %v", got)
+	}
+}
+
+// TestGuided_CarryNotConfirmedWritesNothing proves G3: answering "no" to the
+// final confirmation leaves the carry unconfirmed and unapproved.
+func TestGuided_CarryNotConfirmedWritesNothing(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, "2026-10-05", func(rec *workflow.Record) {
+		rec.Carries = []workflow.CarryItem{{
+			SourceDate: "2026-10-05", Date: testDate, Start: "00:00", End: "00:30",
+			StartAt: time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC),
+			EndAt:   time.Date(2026, 10, 6, 0, 30, 0, 0, time.UTC),
+			Minutes: 30, SplitGroupID: "split_late", PartIndex: 1,
+			Kind: string(proposal.BlockManual), Project: "Proj", Description: "late work",
+		}}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// confirm the carry block (0); no missing work (false); classification 0;
+	// DECLINE the final confirmation (false).
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code == exitOK {
+		t.Fatalf("a declined confirmation must not exit ok:\n%s", out.String())
+	}
+	rec, err := workflow.NewJSONFileStore(storage)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	got, err := rec.GetDay(context.Background(), testDate)
+	if err == nil && (len(got.Confirmed) != 0 || len(got.Approvals) != 0) {
+		t.Fatalf("a declined confirmation must write nothing: %+v", got)
+	}
+}
+
+// --- B6: explicit --ack is staged, validated, and applied only on confirm ----
 func TestGuided_ExplicitAckStagedNoPrompt(t *testing.T) {
 	t.Setenv("TIMESHEET_HOME", t.TempDir())
 	dir := t.TempDir()

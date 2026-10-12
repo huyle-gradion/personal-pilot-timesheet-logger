@@ -146,6 +146,24 @@ func TestReviewCapacityBound(t *testing.T) {
 	}
 }
 
+// TestWorkflow_CarriesCapacityBound proves the cross-midnight carry bound is
+// enforced like every other persisted collection.
+func TestWorkflow_CarriesCapacityBound(t *testing.T) {
+	ctx := context.Background()
+	date := "2026-10-06"
+	store, err := NewJSONFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJSONFileStore: %v", err)
+	}
+	_, err = store.UpdateDay(ctx, date, func(r *Record) error {
+		r.Carries = make([]CarryItem, MaxCarriesCount+1)
+		return nil
+	})
+	if !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("want ErrCapacityExceeded, got %v", err)
+	}
+}
+
 // TestWorkflow_OldSchemaV1FileHasNilReview proves a pre-S4 SchemaVersion-1 file
 // loads with Review == nil.
 func TestWorkflow_OldSchemaV1FileHasNilReview(t *testing.T) {

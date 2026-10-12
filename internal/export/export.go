@@ -47,15 +47,22 @@ type Row struct {
 	Description string `json:"description,omitempty"`
 	Status      string `json:"status,omitempty"`
 	Code        string `json:"code,omitempty"`
+	// Carry is an ADDITIVE S9 marker on a carryover row, e.g.
+	// "-> 2026-10-07 00:00-00:30 (group split_ab12)". It names the later local
+	// date and the linked split group so a carry is visible in the export.
+	Carry string `json:"carry,omitempty"`
 }
 
 // Note is the exportable summary of one day.
 type Note struct {
-	Date      string   `json:"date"`
-	Status    Status   `json:"status"`
-	Confirmed []Row    `json:"confirmed,omitempty"`
-	Outcomes  []Row    `json:"outcomes,omitempty"`
-	Warnings  []string `json:"warnings,omitempty"`
+	Date      string `json:"date"`
+	Status    Status `json:"status"`
+	Confirmed []Row  `json:"confirmed,omitempty"`
+	Outcomes  []Row  `json:"outcomes,omitempty"`
+	// Carries is an ADDITIVE S9 field: the cross-midnight carry items originating
+	// on this day, each targeting a later local day.
+	Carries  []Row    `json:"carries,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Result reports the outcome of one Export call.
@@ -106,10 +113,27 @@ func DeriveStatus(rec workflow.Record) Status {
 func BuildNote(rec workflow.Record) Note {
 	note := Note{Date: rec.Date, Status: DeriveStatus(rec)}
 	for _, ci := range rec.Confirmed {
-		note.Confirmed = append(note.Confirmed, Row{
+		row := Row{
 			LocalID: ci.ID, Start: ci.StartTime, End: ci.EndTime,
 			Project: ci.Project, Description: ci.Description,
+		}
+		if ci.Carryover {
+			if g := strings.TrimSpace(ci.SplitGroupID); g != "" {
+				row.Carry = "carryover (group " + g + ")"
+			} else {
+				row.Carry = "carryover from the previous day"
+			}
+		}
+		note.Confirmed = append(note.Confirmed, row)
+	}
+	// A cross-midnight carry is visible on the ORIGINATING day's export: a marker
+	// naming the later local date and the linked group, plus a warning bullet.
+	for _, c := range rec.Carries {
+		marker := carryMarker(c.Date, c.Start, c.End, c.SplitGroupID)
+		note.Carries = append(note.Carries, Row{
+			Start: c.Start, End: c.End, Status: "carryover", Carry: marker,
 		})
+		note.Warnings = append(note.Warnings, "carry:"+c.Date+" "+c.Start+"-"+c.End+" (group "+c.SplitGroupID+")")
 	}
 	for _, o := range rec.Outcomes {
 		note.Outcomes = append(note.Outcomes, Row{
@@ -125,6 +149,12 @@ func BuildNote(rec workflow.Record) Note {
 		}
 	}
 	return note
+}
+
+// carryMarker renders the non-secret carry marker naming the later local date
+// and the linked split group.
+func carryMarker(date, start, end, group string) string {
+	return "-> " + date + " " + start + "-" + end + " (group " + group + ")"
 }
 
 // Render returns the marker-delimited markdown block for a note. It emits only
@@ -143,11 +173,24 @@ func Render(note Note) string {
 		for _, r := range note.Confirmed {
 			sb.WriteString("| " + mdCell(r.Start) + " | " + mdCell(r.End) + " | " + mdCell(r.Project) + " | " + mdCell(r.Description) + " |\n")
 		}
+		// A carryover row (the later-day fragment of a cross-midnight split) is
+		// marked in the WRITTEN note, so the carry is visible on BOTH days.
+		for _, r := range note.Confirmed {
+			if strings.TrimSpace(r.Carry) != "" {
+				sb.WriteString("- " + mdCell(r.Start) + "-" + mdCell(r.End) + " — " + mdCell(r.Carry) + "\n")
+			}
+		}
 	}
 	if len(note.Outcomes) > 0 {
 		sb.WriteString("\n### Submission outcomes\n\n| Local | Status | Code |\n| --- | --- | --- |\n")
 		for _, r := range note.Outcomes {
 			sb.WriteString("| " + mdCell(r.LocalID) + " | " + mdCell(r.Status) + " | " + mdCell(r.Code) + " |\n")
+		}
+	}
+	if len(note.Carries) > 0 {
+		sb.WriteString("\n### Carryover to the next day\n\n")
+		for _, r := range note.Carries {
+			sb.WriteString("- " + mdCell(r.Carry) + "\n")
 		}
 	}
 	if len(note.Warnings) > 0 {

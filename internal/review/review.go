@@ -126,8 +126,16 @@ func ConfirmMeetingsBulk(r *workflow.Record, evIDs []string, attended bool) erro
 	return nil
 }
 
-// ConfirmProposed confirms a proposed block as one ConfirmedInterval. Manual
-// blocks are marked Manual; a meeting's attendance defaults to its preselection.
+// ConfirmProposed confirms a proposed block as one or more ConfirmedIntervals.
+// Manual blocks are marked Manual; a meeting's attendance defaults to its
+// preselection.
+//
+// The block is split with the COMPOSED split (local midnight first, then the
+// four-hour bound within each day). Only fragments on THIS record's local day
+// are persisted as confirmed intervals, each carrying its own local Date, the
+// shared SplitGroupID/PartIndex, and its Carryover flag. A fragment on a LATER
+// local day is recorded as a durable carry item instead of being written into
+// another day's record.
 func ConfirmProposed(r *workflow.Record, block proposal.ProposedTimeBlock, opts ConfirmOptions) error {
 	if r == nil {
 		return ErrNilRecord
@@ -148,35 +156,188 @@ func ConfirmProposed(r *workflow.Record, block proposal.ProposedTimeBlock, opts 
 	if date == "" {
 		date = r.Date
 	}
-	// A block whose span exceeds the maximum entry length is persisted as linked,
-	// contiguous fragments (the four-hour rule), each carrying the shared
-	// SplitGroupID and a sequential PartIndex; the exact total minutes are
-	// preserved. A block within the bound persists as a single interval.
-	for _, b := range proposal.SplitBlock(block, proposal.DefaultMaxEntryMinutes, opts.Location) {
-		bDate := b.Date
-		if bDate == "" {
-			bDate = date
+	loc := opts.Location
+	if loc == nil {
+		loc = time.UTC
+	}
+
+	frags := proposal.SplitInterval(block.StartAt, block.EndAt, proposal.DefaultMaxEntryMinutes, loc)
+	if len(frags) == 0 {
+		frags = []proposal.Fragment{{
+			StartAt:      block.StartAt,
+			EndAt:        block.EndAt,
+			Minutes:      proposal.DurationMinutes(block.StartAt, block.EndAt),
+			Date:         date,
+			SplitGroupID: block.SplitGroupID,
+			PartIndex:    block.PartIndex,
+			Carryover:    block.Carryover,
+		}}
+	}
+
+	preGrouped := strings.TrimSpace(block.SplitGroupID) != ""
+	multi := len(frags) > 1
+	for i, f := range frags {
+		// Group/part are preserved when the block already belongs to a split
+		// group (a same-day fragment from the proposal, or a carry surfaced on a
+		// later day), and derived otherwise. An ordinary unsplit block stays
+		// ungrouped so no spurious linkage is introduced.
+		group, part, carry := "", 0, false
+		switch {
+		case preGrouped:
+			group = block.SplitGroupID
+			part = block.PartIndex + i
+			carry = block.Carryover
+		case multi:
+			group = f.SplitGroupID
+			part = f.PartIndex
+			carry = f.Carryover
+		}
+		fDate := f.Date
+		if fDate == "" {
+			fDate = date
+		}
+		start := f.StartAt.In(loc).Format(displayLayout)
+		end := f.EndAt.In(loc).Format(displayLayout)
+		if r.Date != "" && fDate != r.Date {
+			// R3/R4: a later-day fragment is NEVER written into this record; it
+			// becomes a durable carry item surfaced on its own day.
+			upsertCarry(r, workflow.CarryItem{
+				SourceDate:   r.Date,
+				Date:         fDate,
+				Start:        start,
+				End:          end,
+				StartAt:      f.StartAt,
+				EndAt:        f.EndAt,
+				Minutes:      f.Minutes,
+				SplitGroupID: group,
+				PartIndex:    part,
+				Kind:         string(block.Kind),
+				Project:      project,
+				Description:  block.Description,
+				EvidenceIDs:  append([]string{}, block.EvidenceIDs...),
+			})
+			continue
+		}
+		fragKey := block.ID
+		if multi {
+			// A block that was NOT pre-split (e.g. a full-span block passed
+			// directly) mirrors the pre-slice per-fragment identity
+			// hashID("split", block.ID, part). A block that ALREADY carries a
+			// per-fragment identity (preGrouped) keeps it unchanged, so
+			// re-confirming an existing split fragment updates in place.
+			fragKey = hashID("split", block.ID, strconv.Itoa(part))
 		}
 		upsertConfirmed(r, workflow.ConfirmedInterval{
-			ID:            hashID("conf-"+string(b.Kind), bDate, b.ID),
-			Date:          bDate,
-			StartTime:     b.Start,
-			EndTime:       b.End,
+			ID:            hashID("conf-"+string(block.Kind), fDate, fragKey),
+			Date:          fDate,
+			StartTime:     start,
+			EndTime:       end,
 			Project:       project,
-			Description:   b.Description,
+			Description:   block.Description,
 			Attendance:    attendance,
-			Kind:          string(b.Kind),
-			Manual:        b.Kind == proposal.BlockManual,
-			EvidenceIDs:   append([]string{}, b.EvidenceIDs...),
-			OriginalStart: b.Start,
-			OriginalEnd:   b.End,
-			GridAdjusted:  b.GridSuggested,
-			SplitGroupID:  b.SplitGroupID,
-			PartIndex:     b.PartIndex,
+			Kind:          string(block.Kind),
+			Manual:        block.Kind == proposal.BlockManual,
+			EvidenceIDs:   append([]string{}, block.EvidenceIDs...),
+			OriginalStart: start,
+			OriginalEnd:   end,
+			GridAdjusted:  !onGridTime(f.StartAt, loc),
+			SplitGroupID:  group,
+			PartIndex:     part,
+			Carryover:     carry,
 			ConfirmedAt:   now,
 		})
 	}
 	return nil
+}
+
+// RecordCarries reconciles this day's durable carry items and then records the
+// new ones. It first DROPS every carry whose SplitGroupID no longer has a live
+// confirmed interval ending at local midnight on this record (the source
+// interval was excluded or trimmed away), so no phantom carry survives to the
+// next day. It then records each new item ONLY when its SplitGroupID matches a
+// confirmed interval on this record, so a never-reviewed (or unconfirmed) day
+// leaves NO carry behind and the later day cannot surface a carry from work that
+// was never confirmed.
+func RecordCarries(r *workflow.Record, items []workflow.CarryItem) error {
+	if r == nil {
+		return ErrNilRecord
+	}
+	live := liveCarryGroups(r)
+
+	kept := r.Carries[:0]
+	for _, c := range r.Carries {
+		if live[c.SplitGroupID] {
+			kept = append(kept, c)
+		}
+	}
+	r.Carries = kept
+
+	for _, item := range items {
+		if strings.TrimSpace(item.SplitGroupID) == "" || !live[item.SplitGroupID] {
+			continue
+		}
+		if item.SourceDate == "" {
+			item.SourceDate = r.Date
+		}
+		upsertCarry(r, item)
+	}
+	return nil
+}
+
+// liveCarryGroups returns the split groups on this record that still justify a
+// carry: a confirmed interval with that group whose EndTime is the local-midnight
+// boundary "00:00". Excluding the interval removes the group; trimming it so it
+// no longer reaches midnight clears the boundary. Either way the carry is stale.
+func liveCarryGroups(r *workflow.Record) map[string]bool {
+	out := map[string]bool{}
+	for _, ci := range r.Confirmed {
+		g := strings.TrimSpace(ci.SplitGroupID)
+		if g != "" && ci.EndTime == "00:00" {
+			out[g] = true
+		}
+	}
+	return out
+}
+
+// SurfaceCarry turns a durable carry item into an UNCONFIRMED proposed block for
+// its later day. The block keeps the shared SplitGroupID/PartIndex so a later
+// confirmation provably links to the SAME split group, and it is NEVER
+// preselected: it requires an explicit confirmation exactly like a manual or
+// meeting block.
+func SurfaceCarry(item workflow.CarryItem) proposal.ProposedTimeBlock {
+	kind := proposal.BlockKind(item.Kind)
+	if kind != proposal.BlockMeeting && kind != proposal.BlockManual {
+		kind = proposal.BlockManual
+	}
+	project := proposal.ProjectResolution{Source: proposal.ProjectSourceHint}
+	if p := strings.TrimSpace(item.Project); p != "" {
+		project = proposal.ProjectResolution{Project: p, Source: proposal.ProjectSourceHint, Resolved: true}
+	}
+	return proposal.ProposedTimeBlock{
+		ID:           hashID("carry", item.SourceDate, item.Date, item.SplitGroupID, strconv.Itoa(item.PartIndex)),
+		Kind:         kind,
+		Date:         item.Date,
+		Start:        item.Start,
+		End:          item.End,
+		StartAt:      item.StartAt,
+		EndAt:        item.EndAt,
+		Duration:     evidence.KnownDuration(item.Minutes),
+		Project:      project,
+		Description:  item.Description,
+		EvidenceIDs:  append([]string{}, item.EvidenceIDs...),
+		Attendance:   proposal.AttendanceUnresolved,
+		Preselected:  false,
+		SplitGroupID: item.SplitGroupID,
+		PartIndex:    item.PartIndex,
+		Carryover:    true,
+	}
+}
+
+// ConfirmCarry surfaces a carry item on its later day and confirms it through the
+// NORMAL confirmation path. It is never auto-called: a caller must invoke it
+// deliberately, exactly like confirming any other proposed block.
+func ConfirmCarry(r *workflow.Record, item workflow.CarryItem, opts ConfirmOptions) error {
+	return ConfirmProposed(r, SurfaceCarry(item), opts)
 }
 
 // ResolveProject sets the project on a confirmed block.
@@ -645,6 +806,20 @@ func clearEmpty(r *workflow.Record) {
 	}
 }
 
+// upsertCarry records a carry item, keyed by (date, split group, part) so a
+// repeated confirmation updates the same item instead of duplicating it.
+func upsertCarry(r *workflow.Record, item workflow.CarryItem) {
+	for i := range r.Carries {
+		if r.Carries[i].Date == item.Date &&
+			r.Carries[i].SplitGroupID == item.SplitGroupID &&
+			r.Carries[i].PartIndex == item.PartIndex {
+			r.Carries[i] = item
+			return
+		}
+	}
+	r.Carries = append(r.Carries, item)
+}
+
 func removeConfirmed(r *workflow.Record, id string) {
 	kept := r.Confirmed[:0]
 	for _, ci := range r.Confirmed {
@@ -718,6 +893,13 @@ func onGridStr(s string) bool {
 		return false
 	}
 	return m%proposal.DefaultGridMinutes == 0
+}
+
+// onGridTime reports whether t sits on the review grid in loc (whole minutes,
+// zero seconds/nanoseconds).
+func onGridTime(t time.Time, loc *time.Location) bool {
+	lt := t.In(loc)
+	return lt.Minute()%proposal.DefaultGridMinutes == 0 && lt.Second() == 0 && lt.Nanosecond() == 0
 }
 
 func removeString(list []string, s string) []string {

@@ -3,6 +3,7 @@ package proposal
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -185,12 +186,14 @@ func TestBuild_MeetingOverlapCollisionInterrupted(t *testing.T) {
 	}
 }
 
-// TestBuild_MidnightSplitCarryover proves a cross-midnight manual interval keeps
-// only the same-day fragment and surfaces a carryover flag.
+// TestBuild_MidnightSplitCarryover proves a cross-midnight manual interval is
+// split into two LINKED fragments on consecutive local dates: the same-day
+// fragment stays on day D and the later-day fragment is surfaced as a durable
+// carry (prop.Carries). The exact total minutes are preserved.
 func TestBuild_MidnightSplitCarryover(t *testing.T) {
 	manual := evidence.Evidence{
 		ID: "man1", Kind: evidence.SourceManual, Title: "late work",
-		Start: at(6, 23, 30), End: at(7, 1, 0), Duration: evidence.UnknownDuration(),
+		Start: at(6, 23, 30), End: at(7, 0, 30), Duration: evidence.UnknownDuration(),
 	}
 	p, err := Build([]evidence.Evidence{manual}, testOpts())
 	if err != nil {
@@ -206,6 +209,42 @@ func TestBuild_MidnightSplitCarryover(t *testing.T) {
 	if !b.Duration.Known || b.Duration.Minutes != 30 {
 		t.Errorf("fragment duration = %+v, want known 30", b.Duration)
 	}
+	if b.Carryover {
+		t.Error("the same-day fragment must not be marked Carryover")
+	}
+	if b.SplitGroupID == "" || b.PartIndex != 0 {
+		t.Errorf("same-day fragment must be linked (group non-empty, part 0): group=%q part=%d", b.SplitGroupID, b.PartIndex)
+	}
+
+	if len(p.Carries) != 1 {
+		t.Fatalf("carries = %d, want 1 (the later-day fragment)", len(p.Carries))
+	}
+	c := p.Carries[0]
+	if c.Date != "2026-10-07" || c.Start != "00:00" || c.End != "00:30" {
+		t.Errorf("carry = %s %s-%s, want 2026-10-07 00:00-00:30", c.Date, c.Start, c.End)
+	}
+	if c.Minutes != 30 {
+		t.Errorf("carry minutes = %d, want 30", c.Minutes)
+	}
+	if c.SplitGroupID != b.SplitGroupID {
+		t.Errorf("carry group = %q, want the same group as the same-day fragment %q", c.SplitGroupID, b.SplitGroupID)
+	}
+	if c.PartIndex != 1 {
+		t.Errorf("carry part = %d, want 1", c.PartIndex)
+	}
+	if b.Duration.Minutes+c.Minutes != 60 {
+		t.Errorf("exact total = %d, want 60", b.Duration.Minutes+c.Minutes)
+	}
+
+	// The composed split itself marks the D+1 fragment Carryover.
+	frags := SplitInterval(at(6, 23, 30), at(7, 0, 30), DefaultMaxEntryMinutes, time.UTC)
+	if len(frags) != 2 || frags[0].Carryover || !frags[1].Carryover {
+		t.Fatalf("SplitInterval carryover flags wrong: %+v", frags)
+	}
+	if frags[0].SplitGroupID != frags[1].SplitGroupID {
+		t.Error("SplitInterval fragments must share SplitGroupID")
+	}
+
 	found := false
 	for _, w := range p.Warnings {
 		if w == "carryover:2026-10-07" {
@@ -214,6 +253,76 @@ func TestBuild_MidnightSplitCarryover(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected carryover:2026-10-07, got %v", p.Warnings)
+	}
+}
+
+// TestBuild_FragmentIdentityPreSlice pins the PRE-SLICE block identity scheme so
+// re-confirming an existing split fragment cannot insert a duplicate: a
+// four-hour fragment keeps hashID("split", baseID, part) and a midnight
+// same-day fragment keeps the baseID (it was never four-hour-split pre-slice).
+func TestBuild_FragmentIdentityPreSlice(t *testing.T) {
+	// Four-hour split: baseID is derived from the ORIGINAL interval start.
+	manual := evidence.Evidence{
+		ID: "man1", Kind: evidence.SourceManual, Title: "long",
+		Start: at(6, 8, 0), End: at(6, 14, 0), Duration: evidence.KnownDuration(360),
+	}
+	p, err := Build([]evidence.Evidence{manual}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p.Manual) != 2 {
+		t.Fatalf("manual fragments = %d, want 2", len(p.Manual))
+	}
+	base := hashID("manual", "2026-10-06", at(6, 8, 0).UTC().Format(time.RFC3339Nano), "man1")
+	for i, b := range p.Manual {
+		if want := hashID("split", base, strconv.Itoa(i)); b.ID != want {
+			t.Errorf("fragment %d id = %q, want pre-slice %q", i, b.ID, want)
+		}
+	}
+
+	// Midnight only (same-day portion <= 4h): the same-day fragment keeps baseID.
+	cross := evidence.Evidence{
+		ID: "man2", Kind: evidence.SourceManual, Title: "late",
+		Start: at(6, 23, 30), End: at(7, 0, 30), Duration: evidence.KnownDuration(60),
+	}
+	p2, err := Build([]evidence.Evidence{cross}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p2.Manual) != 1 {
+		t.Fatalf("same-day fragments = %d, want 1", len(p2.Manual))
+	}
+	base2 := hashID("manual", "2026-10-06", at(6, 23, 30).UTC().Format(time.RFC3339Nano), "man2")
+	if p2.Manual[0].ID != base2 {
+		t.Errorf("midnight same-day fragment id = %q, want pre-slice base %q", p2.Manual[0].ID, base2)
+	}
+}
+
+// TestBuild_WorkBlockCrossesMidnightSplits proves F6: a git Work block whose
+// group span crosses local midnight is split in the PROPOSAL (via the composed
+// SplitInterval), so review previews exactly what ConfirmProposed persists.
+func TestBuild_WorkBlockCrossesMidnightSplits(t *testing.T) {
+	pr := prEvidence("pr7", "acme/app", 7, "feature/a", map[string]time.Time{
+		"a": at(6, 23, 45), "b": at(7, 0, 15),
+	})
+	p, err := Build([]evidence.Evidence{pr}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p.Work) != 2 {
+		t.Fatalf("a midnight-crossing work block must be split into 2 fragments, got %d: %+v", len(p.Work), p.Work)
+	}
+	if p.Work[0].Date != "2026-10-06" || p.Work[0].End != "00:00" {
+		t.Errorf("fragment 0 = %s %s-%s, want 2026-10-06 23:45-00:00", p.Work[0].Date, p.Work[0].Start, p.Work[0].End)
+	}
+	if p.Work[1].Date != "2026-10-07" || p.Work[1].Start != "00:00" {
+		t.Errorf("fragment 1 = %s %s-%s, want 2026-10-07 00:00-00:15", p.Work[1].Date, p.Work[1].Start, p.Work[1].End)
+	}
+	if p.Work[0].SplitGroupID == "" || p.Work[0].SplitGroupID != p.Work[1].SplitGroupID {
+		t.Error("work fragments must share a SplitGroupID")
+	}
+	if p.Work[0].PartIndex != 0 || p.Work[1].PartIndex != 1 {
+		t.Errorf("work part indexes = %d,%d, want 0,1", p.Work[0].PartIndex, p.Work[1].PartIndex)
 	}
 }
 

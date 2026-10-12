@@ -332,3 +332,146 @@ func TestApplyReview_JoinCollision(t *testing.T) {
 		t.Fatalf("want a joint interval, got %+v", got.Confirmed)
 	}
 }
+
+// TestProposeAndConfirm_CarrySurfacesUnconfirmed proves a persisted carry from
+// the previous day is surfaced on D+1 as an UNCONFIRMED block, is persisted ONLY
+// by an explicit Confirm, and keeps the shared split linkage.
+func TestProposeAndConfirm_CarrySurfacesUnconfirmed(t *testing.T) {
+	d := "2026-10-06"
+	next := "2026-10-07"
+	store := newStore(t)
+	seedEvidence(t, store, d, nil)
+	if _, err := store.UpdateDay(ctx, d, func(rec *workflow.Record) error {
+		rec.Carries = []workflow.CarryItem{{
+			SourceDate: d, Date: next, Start: "00:00", End: "00:30",
+			StartAt:      time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC),
+			EndAt:        time.Date(2026, 10, 7, 0, 30, 0, 0, time.UTC),
+			Minutes:      30,
+			SplitGroupID: "split_x", PartIndex: 1,
+			Kind: string(proposal.BlockManual), Project: "Proj", Description: "late work",
+			EvidenceIDs: []string{"man1"},
+		}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed carry: %v", err)
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry()}, Config{})
+
+	prop, err := r.Propose(ctx, next)
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	var block proposal.ProposedTimeBlock
+	found := false
+	for _, b := range prop.Manual {
+		if b.SplitGroupID == "split_x" {
+			block = b
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the D+1 proposal must surface the carry as an unconfirmed block, got %+v", prop.Manual)
+	}
+	if !block.Carryover || block.Preselected || block.PartIndex != 1 || block.Start != "00:00" || block.End != "00:30" {
+		t.Fatalf("carry block wrong: %+v", block)
+	}
+
+	// Proposing writes nothing: no confirmed interval, no approval, until the
+	// explicit confirmation below.
+	if recNext, err := store.GetDay(ctx, next); err == nil {
+		if len(recNext.Confirmed) != 0 || len(recNext.Approvals) != 0 {
+			t.Fatalf("proposing must not confirm or approve: %+v", recNext)
+		}
+	}
+
+	// A review with NO confirm decision leaves the carry unconfirmed.
+	if err := r.ApplyReview(ctx, next, ReviewDecisions{}); err != nil {
+		t.Fatalf("ApplyReview(empty): %v", err)
+	}
+	afterEmpty, _ := store.GetDay(ctx, next)
+	if len(afterEmpty.Confirmed) != 0 {
+		t.Fatalf("an empty review must not auto-confirm the carry: %+v", afterEmpty.Confirmed)
+	}
+
+	// Only an explicit Confirm persists the interval, keeping the linkage.
+	if err := r.ApplyReview(ctx, next, ReviewDecisions{
+		Confirm: []ConfirmDecision{{BlockID: block.ID, Project: "Proj"}},
+	}); err != nil {
+		t.Fatalf("ApplyReview(confirm): %v", err)
+	}
+	got, _ := store.GetDay(ctx, next)
+	if len(got.Confirmed) != 1 {
+		t.Fatalf("explicit confirm must persist exactly one interval, got %+v", got.Confirmed)
+	}
+	ci := got.Confirmed[0]
+	if ci.SplitGroupID != "split_x" || ci.PartIndex != 1 || !ci.Carryover || ci.Date != next {
+		t.Fatalf("the confirmed carry lost its linkage: %+v", ci)
+	}
+	if len(got.Approvals) != 0 {
+		t.Fatalf("the carry path must create NO approval, got %+v", got.Approvals)
+	}
+}
+
+// TestPropose_SurfacesMultiMidnightCarry proves F1: a carry that targets a day
+// more than one day after its originating day is still surfaced, even when an
+// intermediate day exists with no carries.
+func TestPropose_SurfacesMultiMidnightCarry(t *testing.T) {
+	d0, d1, d2 := "2026-10-06", "2026-10-07", "2026-10-08"
+	store := newStore(t)
+	seedEvidence(t, store, d0, nil)
+	seedEvidence(t, store, d1, nil) // an intermediate day with NO carries
+	if _, err := store.UpdateDay(ctx, d0, func(rec *workflow.Record) error {
+		rec.Carries = []workflow.CarryItem{
+			{
+				SourceDate: d0, Date: d1, Start: "00:00", End: "00:00",
+				StartAt: time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC),
+				EndAt:   time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC),
+				Minutes: 1440, SplitGroupID: "split_multi", PartIndex: 1, Kind: string(proposal.BlockManual),
+			},
+			{
+				SourceDate: d0, Date: d2, Start: "00:00", End: "02:00",
+				StartAt: time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC),
+				EndAt:   time.Date(2026, 10, 8, 2, 0, 0, 0, time.UTC),
+				Minutes: 120, SplitGroupID: "split_multi", PartIndex: 2, Kind: string(proposal.BlockManual),
+			},
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed carries: %v", err)
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry()}, Config{})
+
+	prop, err := r.Propose(ctx, d2)
+	if err != nil {
+		t.Fatalf("Propose(D+2): %v", err)
+	}
+	found := false
+	for _, b := range prop.Manual {
+		if b.SplitGroupID == "split_multi" && b.PartIndex == 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("D+2 must surface the carry from D0, got %+v", prop.Manual)
+	}
+	if rec, err := store.GetDay(ctx, d2); err == nil && (len(rec.Confirmed) != 0 || len(rec.Approvals) != 0) {
+		t.Fatalf("proposing D+2 must not confirm or approve: %+v", rec)
+	}
+}
+
+// TestMergeCarryBlocks_Dedup proves a carry whose block id already exists in the
+// proposal is not added twice.
+func TestMergeCarryBlocks_Dedup(t *testing.T) {
+	item := workflow.CarryItem{
+		SourceDate: "2026-10-06", Date: "2026-10-07", Start: "00:00", End: "00:30",
+		StartAt: time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC),
+		EndAt:   time.Date(2026, 10, 7, 0, 30, 0, 0, time.UTC),
+		Minutes: 30, SplitGroupID: "split_x", PartIndex: 1, Kind: string(proposal.BlockManual),
+	}
+	block := review.SurfaceCarry(item)
+	prop := proposal.Proposal{Date: "2026-10-07", Manual: []proposal.ProposedTimeBlock{block}}
+	got := mergeCarryBlocks(prop, []workflow.CarryItem{item})
+	if len(got.Manual) != 1 {
+		t.Fatalf("a pre-existing block with the same id must not be duplicated: %+v", got.Manual)
+	}
+}

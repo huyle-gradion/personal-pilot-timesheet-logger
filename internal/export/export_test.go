@@ -151,6 +151,39 @@ func TestExport_LeavesNoTempFiles(t *testing.T) {
 	}
 }
 
+// TestBuildNote_CarryVisible proves a cross-midnight carry is visible on the
+// originating day's export: a carry marker/note naming the later date and the
+// linked group, plus a warning bullet.
+func TestBuildNote_CarryVisible(t *testing.T) {
+	rec := workflow.Record{Date: "2026-10-06", Carries: []workflow.CarryItem{{
+		SourceDate: "2026-10-06", Date: "2026-10-07", Start: "00:00", End: "00:30",
+		SplitGroupID: "split_ab12", PartIndex: 1, Minutes: 30,
+	}}}
+	note := BuildNote(rec)
+	if len(note.Carries) != 1 {
+		t.Fatalf("note carries = %d, want 1", len(note.Carries))
+	}
+	out := Render(note)
+	for _, want := range []string{"2026-10-07", "00:00-00:30", "split_ab12", "carry:", "Carryover"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered note missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestRender_CarryoverMarkerOnConfirmedRow proves F5: the WRITTEN note marks the
+// D+1 confirmed row as a carryover, naming the linked group.
+func TestRender_CarryoverMarkerOnConfirmedRow(t *testing.T) {
+	rec := workflow.Record{Date: "2026-10-07", Confirmed: []workflow.ConfirmedInterval{{
+		ID: "c1", Date: "2026-10-07", StartTime: "00:00", EndTime: "00:30",
+		Project: "P", Description: "late", Carryover: true, SplitGroupID: "split_ab12",
+	}}}
+	out := Render(BuildNote(rec))
+	if !strings.Contains(out, "carryover") || !strings.Contains(out, "split_ab12") {
+		t.Fatalf("the written note must mark the D+1 carryover row:\n%s", out)
+	}
+}
+
 func TestExport_AppendsWhenMarkersAbsentAndIsSecretFree(t *testing.T) {
 	ctx := context.Background()
 	vault := t.TempDir()

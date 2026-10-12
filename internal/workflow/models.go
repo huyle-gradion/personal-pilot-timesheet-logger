@@ -56,16 +56,21 @@ type ConfirmedInterval struct {
 	ConfirmedAt time.Time `json:"confirmed_at"`
 	Revision    int       `json:"revision"`
 
-	Kind           string   `json:"kind,omitempty"`
-	EvidenceIDs    []string `json:"evidence_ids,omitempty"`
-	Manual         bool     `json:"manual,omitempty"`
-	OriginalStart  string   `json:"original_start,omitempty"`
-	OriginalEnd    string   `json:"original_end,omitempty"`
-	GridAdjusted   bool     `json:"grid_adjusted,omitempty"`
-	SplitGroupID   string   `json:"split_group_id,omitempty"`
-	PartIndex      int      `json:"part_index,omitempty"`
-	StartOffsetMin int      `json:"start_offset_min,omitempty"`
-	EndOffsetMin   *int     `json:"end_offset_min,omitempty"`
+	Kind          string   `json:"kind,omitempty"`
+	EvidenceIDs   []string `json:"evidence_ids,omitempty"`
+	Manual        bool     `json:"manual,omitempty"`
+	OriginalStart string   `json:"original_start,omitempty"`
+	OriginalEnd   string   `json:"original_end,omitempty"`
+	GridAdjusted  bool     `json:"grid_adjusted,omitempty"`
+	SplitGroupID  string   `json:"split_group_id,omitempty"`
+	PartIndex     int      `json:"part_index,omitempty"`
+	// Carryover marks an interval that is the LATER-day fragment of a split
+	// interval (a carry from the previous local day). It is an ADDITIVE S9 field
+	// (omitempty). Such an interval was confirmed explicitly on its own day via
+	// the normal review path; it is never auto-confirmed.
+	Carryover      bool `json:"carryover,omitempty"`
+	StartOffsetMin int  `json:"start_offset_min,omitempty"`
+	EndOffsetMin   *int `json:"end_offset_min,omitempty"`
 	// ClassificationID is the ADDITIVE S6 explicit review choice for the Gradion
 	// classification. It is the ONLY source of a plan's classification: an empty
 	// value blocks submission (there is no resolver auto-fill). The project->
@@ -103,6 +108,29 @@ type AttendanceDecision struct {
 	EvidenceID string    `json:"evidence_id"`
 	Attended   bool      `json:"attended"`
 	DecidedAt  time.Time `json:"decided_at"`
+}
+
+// CarryItem is the durable surface of a cross-midnight carry: a fragment of a
+// split interval that belongs to a LATER local day than the record it is
+// attached to. It is recorded on the ORIGINATING day's record (SourceDate) and
+// surfaced on the later day (Date) as an UNCONFIRMED block. It is NEVER written
+// into the later day's record automatically, and it is never auto-confirmed,
+// auto-approved, or auto-submitted. It is an ADDITIVE S9 type (SchemaVersion
+// stays 1).
+type CarryItem struct {
+	SourceDate   string    `json:"source_date"`
+	Date         string    `json:"date"`
+	Start        string    `json:"start"`
+	End          string    `json:"end"`
+	StartAt      time.Time `json:"start_at"`
+	EndAt        time.Time `json:"end_at"`
+	Minutes      int       `json:"minutes"`
+	SplitGroupID string    `json:"split_group_id"`
+	PartIndex    int       `json:"part_index"`
+	Kind         string    `json:"kind,omitempty"`
+	Project      string    `json:"project,omitempty"`
+	Description  string    `json:"description,omitempty"`
+	EvidenceIDs  []string  `json:"evidence_ids,omitempty"`
 }
 
 // ReviewState records the durable review outcome for a day. A reviewed empty day
@@ -312,6 +340,10 @@ type EditorialUsage struct {
 // ONLY suggestions (never intervals/attendance/projects/evidence/approvals); Usage
 // holds the daily editorial/orchestration measurement report. SchemaVersion stays
 // 1.
+//
+// Carries is an ADDITIVE S9 field (omitempty). It holds the durable
+// cross-midnight carry items originating on this day, each targeting a later
+// local day. SchemaVersion stays 1.
 type Record struct {
 	SchemaVersion     int                         `json:"schema_version"`
 	Date              string                      `json:"date"`
@@ -324,8 +356,12 @@ type Record struct {
 	CollectedEvidence []evidence.Evidence         `json:"collected_evidence,omitempty"`
 	Collection        *evidence.CollectionSummary `json:"collection,omitempty"`
 	Review            *ReviewState                `json:"review,omitempty"`
-	Plans             []SubmissionPlan            `json:"plans,omitempty"`
-	Approvals         []Approval                  `json:"approvals,omitempty"`
-	Editorial         []EditorialSuggestion       `json:"editorial,omitempty"`
-	Usage             *EditorialUsage             `json:"usage,omitempty"`
+	// Carries holds the durable cross-midnight carry items originating on this
+	// day. Each targets a LATER local day and is surfaced there as an UNCONFIRMED
+	// block. It is an ADDITIVE S9 field (omitempty); SchemaVersion stays 1.
+	Carries   []CarryItem           `json:"carries,omitempty"`
+	Plans     []SubmissionPlan      `json:"plans,omitempty"`
+	Approvals []Approval            `json:"approvals,omitempty"`
+	Editorial []EditorialSuggestion `json:"editorial,omitempty"`
+	Usage     *EditorialUsage       `json:"usage,omitempty"`
 }

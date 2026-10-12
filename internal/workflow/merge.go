@@ -36,9 +36,9 @@ func MergeEvidence(r *Record, refs []EvidenceReference) {
 // MergeConfirmed upserts confirmed intervals by ID. A zero-valued incoming field
 // never clobbers an existing non-zero one: Description, Project, Kind, Attendance,
 // EvidenceIDs, Manual, OriginalStart/End, GridAdjusted, SplitGroupID, PartIndex,
-// offsets, and the Start/End/Date times are preserved when the incoming value is
-// empty/zero. ConfirmedAt is (re)set to now when incoming is zero. Evidence is
-// never mutated.
+// Carryover, offsets, and the Start/End/Date times are preserved when the incoming
+// value is empty/zero. ConfirmedAt is (re)set to now when incoming is zero.
+// Evidence is never mutated.
 func MergeConfirmed(r *Record, intervals []ConfirmedInterval) {
 	if r == nil {
 		return
@@ -113,6 +113,9 @@ func preserveConfirmedFields(incoming, existing ConfirmedInterval) ConfirmedInte
 	}
 	if incoming.PartIndex == 0 {
 		incoming.PartIndex = existing.PartIndex
+	}
+	if !incoming.Carryover {
+		incoming.Carryover = existing.Carryover
 	}
 	if incoming.StartOffsetMin == 0 {
 		incoming.StartOffsetMin = existing.StartOffsetMin
