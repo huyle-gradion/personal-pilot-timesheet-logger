@@ -335,6 +335,49 @@ authority. The one latent pre-existing defect (the `internal/evidence/plugins`
 time-window test) remains unaddressed and needs a separate disposition. Next
 bounded task is the owner's choice; no slice has been dispatched.
 
+### LOCAL-GIT-TIMEZONE-TEST-1 closure, 2026-10-12
+
+LOCAL-GIT-TIMEZONE-TEST-1 is source-accepted and committed locally at `9cebb13`
+(parent `28f44c4`), on `feat/s9-integrated-acceptance` (1 file, +108/-6;
+`internal/evidence/plugins/git_test.go` only). The test
+`TestLocalGitCollectorAdapter_UsesMessageReferencesOnly` used `time.Now()` (host
+local) for `FetchDayCommits` but `now.Format(...)` (a local date) for `CollectDay`,
+which the git plugin parses as UTC; when the host local date differed from the UTC
+date (e.g. `Asia/Ho_Chi_Minh` 00:00-06:59), the commit's UTC instant fell in the
+previous UTC day and `CollectDay` returned nothing. The test now pins the commit's
+author and committer dates to fixed instants and uses explicit `Asia/Ho_Chi_Minh`
+and `UTC` locations, with no `time.Now` and no TZ/clock mutation; the
+message-reference assertions are preserved and a boundary subtest covers
+00:00+07, 06:59+07, and 07:00+07. Implementer @fixer
+`ses_ed1206f8effegt88BauvnoI6Rq` (implement + fix); independent review and focused
+re-review @oracle `ses_ed119f495ffeb3TL8LMSM5xEGr` (accepted; F4 reworded to avoid
+enshrining the current UTC parsing, F2 boundary coverage added). Parent final checks
+exited 0 for gofmt, build, vet, the full uncached suite, `-race` on the git adapter
+tests, `./internal/evidence/plugins/`, `-tags e2e ./tests/`, and `git diff --check`.
+The full suite is green at this time. Test-only: no collector/production code
+changed. Source acceptance does not establish live-read compatibility or production
+readiness.
+
+### Confirmed production follow-up: git collector date-window timezone
+
+The slice confirmed a PRODUCTION defect (reported, deliberately NOT fixed here):
+the runner computes the target date in the CONFIGURED timezone
+(`internal/run/run.go` `Date()`), but the git plugin parses the zone-less
+`CollectRequest.Date` as UTC (`internal/evidence/plugins/git.go` `parseDate` ->
+`time.Parse`), and `FetchDayCommits`/`FetchDayActivity` build their window from
+`date.Location()`, so the git day window is UTC-anchored. For any non-UTC
+configured timezone, commits in the local 00:00-offset window are attributed to the
+previous UTC day and missed for the local day. Proposed bounded scope (unscheduled,
+no invented dates): thread an explicit `*time.Location` (or a resolved `time.Time`)
+through `evidence.CollectRequest` and use `time.ParseInLocation`, or have the runner
+pass a resolved `time.Time`; add a runner-level regression test (configured
+`Asia/Ho_Chi_Minh` + local git source, a commit in the 00:00-06:59 window).
+Affected files: `internal/evidence/registry.go`, `internal/evidence/plugins/git.go`,
+`internal/run/run.go`, `internal/run/collect.go`; the remote path
+`internal/git/github.go` shares the defect and is an affected consumer (no code
+change needed under the proposed fix). This follow-up must be dispositioned before
+any claim of timezone-correct git collection or a production pilot.
+
 Local record reconciliation, read-only, 2026-10-11:
 - October 8 current workflow schema 1, revision 8: 14 confirmed intervals,
   353 minutes, latest plan `0e871cf...` with 14 creates and no edits. One recorded
@@ -1324,6 +1367,19 @@ Open findings and disposition: F1/F2/F3 closed. Pre-existing internal/evidence/p
 Commit and publication status: committed locally 4b5b242; NOT pushed, no PR, no merge.
 Vault sync status: pending (delegated to @ai-database).
 Next gate and blockers: takeover queue complete (all seven slices closed). Production submission remains blocked; live-read compatibility and production readiness not established.
+```
+
+```text
+2026-10-12 / LOCAL-GIT-TIMEZONE-TEST-1 / authorized -> investigating -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: submission-revalidation takeover grant (direct specialist dispatch, bounded implementation, independent review/fix/re-review, accepted-slice local commits, repo records, vault sync). Not authorized: production creates/edits/deletes, Keychain changes, push/publication/merge/force-push, silent product-scope changes, collector behavior change without a proposed scope.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 9cebb13 (parent 28f44c4) / 1 file, +108/-6: internal/evidence/plugins/git_test.go. Accepted hash matched the fix1 manifest before staging.
+Root cause: internal/run/run.go Date() formats the target date in the CONFIGURED timezone; collect.go passes CollectRequest{Date} with no zone; internal/evidence/plugins/git.go parseDate uses time.Parse -> UTC; internal/git/local.go FetchDayCommits builds its window from date.Location() (UTC). The old test used time.Now() (host local) for FetchDayCommits but now.Format(...) (a local date) for CollectDay (UTC-parsed), so in the 00:00-06:59 +07 window the commit's UTC instant fell in the previous UTC day and CollectDay returned nothing.
+Worker/reviewer report references and verification level: implementer @fixer ses_ed1206f8effegt88BauvnoI6Rq (implement + fix); independent review + focused re-review @oracle ses_ed119f495ffeb3TL8LMSM5xEGr (accepted; F4 comment reworded to avoid enshrining current UTC parsing, F2 boundary coverage added). Parent log .../opencode/local-git-timezone-test-1-parent-checks.log: gofmt/build/vet/full uncached suite/-race git adapter tests/./internal/evidence/plugins/-tags e2e ./tests//diff-check all exit 0.
+Behavior (test-only): the test pins the commit's author+committer dates to fixed instants and uses explicit Asia/Ho_Chi_Minh and UTC locations (no time.Now, no TZ/clock mutation); message-reference assertions preserved; a boundary subtest covers 00:00+07, 06:59+07, 07:00+07. No collector/production code changed.
+Open findings and disposition: test findings closed. CONFIRMED production follow-up (reported, NOT fixed): the git collector's UTC day window vs the runner's configured-timezone date; proposed bounded scope recorded above (thread a *time.Location/time.Time through CollectRequest and use time.ParseInLocation, or pass a resolved time.Time; runner-level regression test; affected internal/evidence/registry.go, internal/evidence/plugins/git.go, internal/run/run.go, internal/run/collect.go; internal/git/github.go shares the defect).
+Commit and publication status: committed locally 9cebb13; NOT pushed, no PR, no merge.
+Vault sync status: pending (delegated to @ai-database).
+Next gate and blockers: owner's choice; the confirmed git date-window follow-up must be dispositioned before a production pilot. Production submission remains blocked.
 ```
 
 ## Documentation review

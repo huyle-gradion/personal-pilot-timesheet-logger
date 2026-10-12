@@ -71,3 +71,5 @@ TUI-USABILITY-1 (guided terminal usability): `ec6d47e`. Independently reviewed a
 BULK-REVIEW-1 (scoped bulk review): `cb813e7`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). Staged bulk confirm/exclude/assign-project with a safety-gated preview; closes the carried nonempty-day mark-empty guard. See [state](state.md) and [the implementation plan](implementation-plan.md).
 
 CLASSIFICATION-INTERACTION-1 (classification interaction): `4b5b242`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). Unapplied recent/first-run suggestions, searchable authoritative choices, and a staged bulk-classification action. See [state](state.md) and [the implementation plan](implementation-plan.md).
+
+LOCAL-GIT-TIMEZONE-TEST-1 (local-git day-window test determinism): `9cebb13`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). Test-only; a confirmed production git date-window timezone defect is recorded as a tracked follow-up (not fixed). See [state](state.md) and [the implementation plan](implementation-plan.md).

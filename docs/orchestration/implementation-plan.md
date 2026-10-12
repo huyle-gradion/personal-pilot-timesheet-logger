@@ -317,6 +317,25 @@ vault-synced; the owner queue is empty. See the takeover work graph in
 [state](state.md). No slice was pushed, merged, or published; production
 submission remains blocked.
 
+### LOCAL-GIT-TIMEZONE-TEST-1, local-git day-window test determinism
+
+Source-accepted and committed locally at `9cebb13`, parent `28f44c4`, after an
+independent review and a focused re-review (accepted). Test-only; no production
+writes, live access, publication, or private-record change.
+
+| Owner requirement | Evidence on the accepted snapshot |
+| --- | --- |
+| Deterministic at every wall-clock time and host timezone | fixed commit instants; explicit `Asia/Ho_Chi_Minh`/`UTC`; no `time.Now`/`TZ` mutation; focused `-count=50`, `-race -count=20`, and `TZ=UTC`/`+07`/`-07` runs green |
+| Fixed timestamps and explicit timezones, not today's date | `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` pinned to fixed instants |
+| Do not merely force UTC or drop `Asia/Ho_Chi_Minh` | `+07` is load-bearing; a forced-UTC window finds 1 vs the local window's 3 |
+| Preserve the original message-reference assertions | PR 42 present, branch 999 absent, one folded `SourceRemotePR` |
+| Cover local dates whose UTC date differs, incl. 00:00-06:59 +07 | boundary subtest at 00:00+07, 06:59+07, 07:00+07 |
+| Avoid shared timezone/clock mutations | no `t.Setenv("TZ")`/global clock |
+
+Confirmed production follow-up (reported, NOT fixed here): the git collector's day
+window is UTC-anchored while the runner's date is configured-timezone; see
+[state](state.md) for the bounded proposed scope. Test-only slice.
+
 ### Shared-workflow coverage
 
 | Specification step | Owning slices | Completion evidence |
