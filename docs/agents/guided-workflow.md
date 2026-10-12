@@ -34,6 +34,15 @@ endpoint is configured. `--offline` skips ONLY the Gradion remote; source fetche
 still run (see [collection configuration](collection-config.md)). Only the
 hermetic HARNESS test below is free of live services.
 
+## Binary provenance for an interactive session
+
+Run a **compiled binary** for a guided session: build once with
+`go build -o ./bin/timesheet ./cmd/timesheet`, then invoke
+`./bin/timesheet run --interactive` (or `--plain`). `go run ./cmd/timesheet`
+recompiles and links the program on every invocation, so a guided, multi-step run
+pays that build cost at each call; build once and reuse the binary. This is a
+build/provenance point only — it changes no command semantics.
+
 ## Interaction modes and precedence
 
 `run` picks one of three modes. Precedence, highest first:

@@ -9,7 +9,11 @@ here.
 - **`[AI]`**: the optional, bounded editorial agent invoked *by the core* through a
   configured command adapter. The skill never synthesizes text itself.
 
-Set `TS="go run ./cmd/timesheet"` (or the built binary) and `CFG=timesheet.json`.
+Set `TS` to a **prebuilt binary** — build once with
+`go build -o ./bin/timesheet ./cmd/timesheet` and use `TS="./bin/timesheet"`
+(rebuild only if it is missing). A prebuilt binary avoids recompiling on every
+invocation; `go run ./cmd/timesheet` still works but recompiles each call, which
+is wasteful for a multi-step guided session. Set `CFG=timesheet.json`.
 Default to today in the configured timezone; pass `--date` or `--from/--to` to
 target specific days. `--offline` skips **ONLY** the Gradion remote; configured
 source fetches (calendar ICS, git, journal) still run.

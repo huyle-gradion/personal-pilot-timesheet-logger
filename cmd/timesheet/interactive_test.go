@@ -15,6 +15,7 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/run"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/selection"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -1131,5 +1132,132 @@ func TestGuided_EOFFollowingInvalidTimePreservesPriorState(t *testing.T) {
 	}
 	if len(after.Approvals) != 1 || after.Approvals[0].InvalidatedAt != nil {
 		t.Fatalf("an abort must preserve the approval, got %+v", after.Approvals)
+	}
+}
+
+// --- in-run catalog memoization ---------------------------------------------
+
+// countingCatalogFetch is the injected catalogFetch seam for the guided run's
+// per-run memoization tests. It records every query it is asked for and returns
+// the fixed catalog (or err), so a test can prove exactly how many live fetches
+// a sequence of loadCatalog calls triggers. No live service is contacted.
+type countingCatalogFetch struct {
+	calls   []string
+	catalog gradion.Catalog
+	err     error
+}
+
+func (c *countingCatalogFetch) fetch(_ context.Context, _ cliConfig, _ bool, query string) (gradion.Catalog, error) {
+	c.calls = append(c.calls, query)
+	if c.err != nil {
+		return gradion.Catalog{}, c.err
+	}
+	cat := c.catalog
+	cat.Query = query
+	cat.Source = "live"
+	return cat, nil
+}
+
+// TestGuided_LoadCatalogMemoizesPerRun proves the guided run fetches each
+// distinct query AT MOST ONCE per run: a repeated query returns the memoized
+// catalog with the ORIGINAL fetch's provenance, while a different query fetches
+// separately (and memoizes in turn). On the pre-fix code the repeated query
+// fetched twice, so this is the regression guard.
+func TestGuided_LoadCatalogMemoizesPerRun(t *testing.T) {
+	t.Setenv(selection.EnvHome, t.TempDir())
+	fetch := &countingCatalogFetch{catalog: gradion.Catalog{
+		Complete: true, ObservedAt: time.Now().UTC(),
+		Options: []gradion.ClassificationOption{{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"}},
+	}}
+	g := &guided{catalogFetch: fetch.fetch}
+	ctx := context.Background()
+
+	c1, p1, err := g.loadCatalog(ctx, "")
+	if err != nil {
+		t.Fatalf("first loadCatalog: %v", err)
+	}
+	c2, p2, err := g.loadCatalog(ctx, "")
+	if err != nil {
+		t.Fatalf("second loadCatalog: %v", err)
+	}
+	if len(fetch.calls) != 1 {
+		t.Fatalf("a repeated query must fetch exactly once per run, got %d fetches %v", len(fetch.calls), fetch.calls)
+	}
+	if p2 != p1 {
+		t.Fatalf("the memoized provenance must equal the first fetch's, got %q then %q", p1, p2)
+	}
+	if len(c2.Options) != 1 || len(c1.Options) != 1 || c2.Options[0].ID != c1.Options[0].ID {
+		t.Fatalf("the memoized catalog must equal the first fetch's, got %+v then %+v", c1.Options, c2.Options)
+	}
+
+	// A DIFFERENT query is a separate fetch, and memoizes too.
+	if _, _, err := g.loadCatalog(ctx, "INTGRADI"); err != nil {
+		t.Fatalf("different-query loadCatalog: %v", err)
+	}
+	if len(fetch.calls) != 2 || fetch.calls[1] != "INTGRADI" {
+		t.Fatalf("a different query must fetch separately, got %v", fetch.calls)
+	}
+	if _, _, err := g.loadCatalog(ctx, "INTGRADI"); err != nil {
+		t.Fatalf("repeat different-query loadCatalog: %v", err)
+	}
+	if len(fetch.calls) != 2 {
+		t.Fatalf("the second query must also memoize, got %v", fetch.calls)
+	}
+}
+
+// TestGuided_LoadCatalogMemoIsPerRun proves the memo is scoped to ONE run: two
+// separate guided runs each fetch the same query once, so the memo never leaks
+// across runs.
+func TestGuided_LoadCatalogMemoIsPerRun(t *testing.T) {
+	t.Setenv(selection.EnvHome, t.TempDir())
+	fetch := &countingCatalogFetch{catalog: gradion.Catalog{Complete: true, ObservedAt: time.Now().UTC()}}
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		g := &guided{catalogFetch: fetch.fetch}
+		if _, _, err := g.loadCatalog(ctx, ""); err != nil {
+			t.Fatalf("run %d loadCatalog: %v", i, err)
+		}
+	}
+	if len(fetch.calls) != 2 {
+		t.Fatalf("the memo must not leak across runs, want 2 fetches, got %d", len(fetch.calls))
+	}
+}
+
+// TestGuided_LoadCatalogCacheFallbackOnLiveError proves the live-first cache
+// fallback is preserved AND never bypassed by the memo: a live error returns the
+// fresh cached catalog, and a repeat still tries live first (the error is not
+// memoized).
+func TestGuided_LoadCatalogCacheFallbackOnLiveError(t *testing.T) {
+	t.Setenv(selection.EnvHome, t.TempDir())
+	cachePath, err := selection.DefaultCatalogCachePath()
+	if err != nil {
+		t.Fatalf("cache path: %v", err)
+	}
+	cached := gradion.Catalog{
+		Complete: true, ObservedAt: time.Now().UTC(),
+		Options: []gradion.ClassificationOption{{ID: "cls-1", Name: "X", ActivityType: "internal project"}},
+	}
+	if err := selection.SaveCatalogCache(cachePath, cached); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	fetch := &countingCatalogFetch{err: errors.New("live catalog unavailable")}
+	g := &guided{catalogFetch: fetch.fetch}
+	ctx := context.Background()
+
+	got, prov, err := g.loadCatalog(ctx, "")
+	if err != nil {
+		t.Fatalf("a live error must still fall back to the fresh cache, got %v", err)
+	}
+	if len(got.Options) != 1 || got.Options[0].ID != "cls-1" {
+		t.Fatalf("want the cached catalog, got %+v", got.Options)
+	}
+	if !strings.Contains(prov, "cache") {
+		t.Fatalf("want cache provenance, got %q", prov)
+	}
+	if _, _, err := g.loadCatalog(ctx, ""); err != nil {
+		t.Fatalf("repeat fallback: %v", err)
+	}
+	if len(fetch.calls) != 2 {
+		t.Fatalf("a live error must not be memoized (live-first preserved), want 2 live attempts, got %d", len(fetch.calls))
 	}
 }

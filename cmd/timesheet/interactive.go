@@ -97,6 +97,23 @@ type guided struct {
 	// cat is the catalog loaded for the classification step, reused to validate
 	// every staged classification against the shared selection contract.
 	cat *gradion.Catalog
+	// catalogMemo memoizes catalogs fetched during THIS run, keyed by the
+	// normalized query, with the provenance line captured at fetch time so a
+	// reuse prints the ORIGINAL fetch's provenance. It is in-memory only: never
+	// persisted, never shared across runs, and it only ever reuses a SUCCESSFUL
+	// live fetch. A memoized catalog is a per-run reuse, never remote proof, and
+	// never substitutes for the submit-time live re-proof.
+	catalogMemo map[string]catalogMemoEntry
+	// catalogFetch is the catalog fetch seam. Production callers leave it nil so
+	// loadCatalog uses the real fetchCatalog; tests inject a counting fake.
+	catalogFetch func(ctx context.Context, cfg cliConfig, useCache bool, search string) (gradion.Catalog, error)
+}
+
+// catalogMemoEntry is one in-run memoized catalog fetch: the catalog and the
+// provenance line captured when it was fetched.
+type catalogMemoEntry struct {
+	cat  gradion.Catalog
+	prov string
 }
 
 // cmdRunGuided is the guided `run`: preflight -> collect -> proposal -> optional
@@ -828,11 +845,28 @@ func (g *guided) chooseClassification(ctx context.Context, t classTarget, cat gr
 
 // loadCatalog fetches a live catalog (cached under the query), falling back to a
 // FRESH cache entry. It reuses the classify path's fetchCatalog, so accounting is
-// not duplicated.
+// not duplicated. Within ONE guided run a query is fetched at most once: a repeat
+// returns the memoized catalog AND the provenance captured at the original fetch,
+// so the printed provenance stays stable. The memo is per-run only (in memory),
+// never persisted, and only ever holds a SUCCESSFUL live fetch — a live error
+// still runs the cache fallback, and the fallback result is never memoized.
 func (g *guided) loadCatalog(ctx context.Context, query string) (gradion.Catalog, string, error) {
-	cat, err := fetchCatalog(ctx, g.cfg, false, query)
+	key := strings.TrimSpace(query)
+	if e, ok := g.catalogMemo[key]; ok {
+		return e.cat, e.prov, nil
+	}
+	fetch := g.catalogFetch
+	if fetch == nil {
+		fetch = fetchCatalog
+	}
+	cat, err := fetch(ctx, g.cfg, false, query)
 	if err == nil {
-		return cat, selectionProvenanceLine(cat, time.Now().UTC()), nil
+		prov := selectionProvenanceLine(cat, time.Now().UTC())
+		if g.catalogMemo == nil {
+			g.catalogMemo = make(map[string]catalogMemoEntry)
+		}
+		g.catalogMemo[key] = catalogMemoEntry{cat: cat, prov: prov}
+		return cat, prov, nil
 	}
 	cachePath, perr := selection.DefaultCatalogCachePath()
 	if perr == nil {

@@ -38,10 +38,15 @@ Build a local binary once and use it as `$TS`:
 
 ```bash
 cd /Users/you/src/assignment-1
-go build -o ./bin/timesheet ./cmd/timesheet      # repository-relative binary
+go build -o ./bin/timesheet ./cmd/timesheet      # build once
 TS="./bin/timesheet"
-# or run without building: TS="go run ./cmd/timesheet"
 ```
+
+Use the compiled binary for interactive sessions (`run --interactive` and
+`run --plain`). `go run ./cmd/timesheet` still works — keep it for a one-off
+headless command — but it **recompiles and links the program on every
+invocation**, so a guided, multi-step session pays that build cost at each call.
+Build once and reuse `./bin/timesheet` instead.
 
 Use a **private** storage directory under your home for records and selection
 state — never a shared `/tmp` path. `--storage-dir` overrides the config's

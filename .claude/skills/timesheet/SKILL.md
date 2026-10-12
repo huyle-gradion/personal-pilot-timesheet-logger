@@ -95,6 +95,12 @@ persisted their own durable state. The guided run stops at the exact preview and
 export and prints the `approve --plan` follow-up — it never approves or submits.
 Details: [guided workflow](../../../docs/agents/guided-workflow.md).
 
+For a guided/interactive run, prefer a **prebuilt binary**: build once
+(`go build -o ./bin/timesheet ./cmd/timesheet`) and invoke `./bin/timesheet`,
+rebuilding only if it is missing. `go run ./cmd/timesheet` recompiles and links
+on every invocation, which is wasteful for a multi-step session. The choice is
+harness-agnostic and changes no command semantics.
+
 Classification is an **explicit user choice**. Repository mappings, calendar text,
 AI, and config defaults may **suggest** only — they are never applied silently. The
 skill fetches the catalog (`timesheet classify list`), ASKS the user to choose, and
