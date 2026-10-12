@@ -52,6 +52,12 @@ Current work graph, in priority order, with no invented deadlines:
    (`4b5b242`); searchable authoritative choices, unapplied recent/first-run
    suggestions, and a staged bulk-classification action. All seven takeover
    slices are now closed.
+8. LOCAL-GIT-TIMEZONE-TEST-1 (post-queue): closed (`9cebb13`); the local-git
+   day-window test is deterministic across wall-clock time and host timezone.
+9. GIT-DATE-WINDOW-1 (post-queue): closed (`4e50ae6`); the git collection window
+   is anchored to the configured timezone (calendrical half-open local-day
+   interval). A future owner-gated evidence-window correction is documented, not
+   built.
 
 Parent orchestrator owns validation/integration and records. Read-only inventory
 @explorer `ses_ed4469c43ffeW2q51AzMtxTbns` completed with a correction distinguishing
@@ -377,6 +383,60 @@ Affected files: `internal/evidence/registry.go`, `internal/evidence/plugins/git.
 `internal/git/github.go` shares the defect and is an affected consumer (no code
 change needed under the proposed fix). This follow-up must be dispositioned before
 any claim of timezone-correct git collection or a production pilot.
+
+### GIT-DATE-WINDOW-1 closure, 2026-10-12
+
+GIT-DATE-WINDOW-1 is source-accepted and committed locally at `4e50ae6` (parent
+`7084ede`), on `feat/s9-integrated-acceptance` (9 files, +635/-39: 8 modified + 1
+new test). It fixes the confirmed production defect above. The zone is carried
+explicitly: `evidence.CollectRequest` gains `Location *time.Location` (`json:"-"`,
+nil means UTC for back-compat), the runner sets it from the configured timezone,
+and the git plugin parses the date with `time.ParseInLocation`. The window is
+`[start, end)` where `end` is the CALENDRICAL next local midnight (not +24h, so a
+DST day of 23h/25h stays one calendar day): start inclusive, end exclusive — local
+git uses `--since=start` and `--until=end-1ns` (git's bounds are inclusive); the
+remote path over-fetches `since=start-1s` and applies an authoritative client-side
+half-open filter, with `isTimeWithin` made half-open. The local nil-location
+default changed from host `time.Local` to UTC. Evidence identity, dedup,
+provenance, and limits are unchanged; only the included boundary set changes.
+Implementer @fixer `ses_ed0fb2055ffeIz6PWHEg1l8ukD` (implement + fix);
+independent review and focused re-review @oracle `ses_ed0e75233ffe2VaH5XYckpsvSN`
+(accepted; the reviewer independently reproduced the inclusive/exclusive boundary
+and the DST 23h/25h windows; F1 stale comment, F2 commit-level filter test, F3
+tzdata hermeticity fixed, F4 documented). Parent final checks exited 0 for gofmt,
+build, vet, the full uncached suite, `go test -count=20 ./internal/git -run
+FetchDayCommits`, `-race` on git/run, `-tags e2e ./tests/`, and `git diff --check`.
+The full suite is green at this time.
+
+Journalistic note: this slice closes the LOCAL-GIT-TIMEZONE-TEST-1 follow-up. The
+git collection window is now timezone-correct; source acceptance does not
+establish live-read compatibility or production readiness.
+
+EVIDENCE-WINDOW-CORRECTION-1 (documented procedure, NOT built): historical git
+evidence collected under the old UTC windows is NOT rewritten and approved days
+are NOT silently recollected. `mergeEvidenceIntoRecord` is upsert-by-ID (additive),
+so a corrected re-collect adds/updates evidence but does not purge out-of-window
+git evidence. A future, owner-gated correction must: (1) require an explicit
+day/flag; (2) record correction provenance (old vs new window); (3) re-collect git
+evidence for that day; (4) mark the day's `Approval` superseded/invalidated with a
+reason; and (5) never delete evidence or rewrite approved records implicitly. The
+durable approval gate is `Record.LocalFingerprint` + `SubmissionPlan.PlanID`/
+`PlanHash`; a corrected set that changes confirmed interval content invalidates the
+approval via those fingerprints. No corrective CLI is built in this slice.
+
+Adjacent findings (documented, NOT fixed): the calendar plugin's per-source
+`timezone` is independent of `evidence.timezone` (a `Asia/Ho_Chi_Minh` runner with
+a calendar source lacking `timezone` still uses a UTC day); journal/agent use the
+date only as a path/identity string; `cmd/fetch-git` uses a host fallback
+(`cfg.Timezone` else `time.Local`); git `--since/--until` filter on the committer
+date while the reported field is the author date (`%aI`); `Collect` does not
+consult `locErr` (an invalid configured timezone yields nil location -> UTC, gated
+by `Preflight`). Design open questions recorded for the owner: (Q1) a corrected
+day's re-collection purge vs additive semantics (decides whether approved days can
+change); (Q2) remote deterministic over-fetch+filter (adopted) vs mirroring local;
+(Q3) whether the calendar per-source timezone should default to `evidence.timezone`
+(follow-up); (Q4) fail closed vs UTC when `loadLocation` fails but an explicit
+date is set; (Q5) scope = git local+remote only (adopted).
 
 Local record reconciliation, read-only, 2026-10-11:
 - October 8 current workflow schema 1, revision 8: 14 confirmed intervals,
@@ -1380,6 +1440,18 @@ Open findings and disposition: test findings closed. CONFIRMED production follow
 Commit and publication status: committed locally 9cebb13; NOT pushed, no PR, no merge.
 Vault sync status: pending (delegated to @ai-database).
 Next gate and blockers: owner's choice; the confirmed git date-window follow-up must be dispositioned before a production pilot. Production submission remains blocked.
+```
+
+```text
+2026-10-12 / GIT-DATE-WINDOW-1 / authorized -> designing -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: submission-revalidation takeover grant (direct specialist dispatch, bounded implementation, independent review/fix/re-review, accepted-slice local commits, repo records, vault sync). Not authorized: live services, Keychain changes, private-record migration, approve/submit, remote writes, push/publication/merge/force-push, silent product-scope changes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 4e50ae6 (parent 7084ede) / 9 files, +635/-39 (8 modified + 1 new test). Accepted hashes matched the fix1 manifest before staging.
+Worker/reviewer report references and verification level: design pass @oracle ses_ed10279faffePmm98LsXMd24R5; implementer @fixer ses_ed0fb2055ffeIz6PWHEg1l8ukD (implement + fix); independent review + focused re-review @oracle ses_ed0e75233ffe2VaH5XYckpsvSN (accepted; reviewer independently reproduced the inclusive/exclusive and DST 23h/25h windows). Parent log .../opencode/git-date-window-1-parent-checks.log: gofmt/build/vet/full uncached suite/-count=20 internal/git FetchDayCommits/-race git+run/-tags e2e tests/diff-check all exit 0.
+Behavior: evidence.CollectRequest gains Location (*time.Location, json:"-", nil => UTC); run.Collect sets it from the configured timezone; plugins/git.go parses with time.ParseInLocation; local git window [start=time.Date(y,m,d,0,0,0,0,loc), end=time.Date(y,m,d+1,0,0,0,0,loc)) with --since=start, --until=end-1ns; remote over-fetches since=start-1s.UTC()/until=end.UTC() and applies a client-side half-open commit filter with isTimeWithin half-open; the local nil-location default changed from host time.Local to UTC. Identity/dedup/provenance/limits and machine-readable lines unchanged.
+Open findings and disposition: F1 stale comment fixed; F2 commit-level filter test added; F3 tzdata hermeticity fixed (test-only blank import); F4 committer-vs-author limitation documented. Adjacent documented (not fixed): calendar per-source timezone, cmd/fetch-git host fallback, git committer-vs-author, Collect ignoring locErr.
+Commit and publication status: committed locally 4e50ae6; NOT pushed, no PR, no merge.
+Vault sync status: pending (delegated to @ai-database).
+Next gate and blockers: none scheduled; a future owner-gated evidence-window correction (documented, not built) and the adjacent collector timezone items remain open. Production submission remains blocked.
 ```
 
 ## Documentation review

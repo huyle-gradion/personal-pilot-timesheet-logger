@@ -336,6 +336,26 @@ Confirmed production follow-up (reported, NOT fixed here): the git collector's d
 window is UTC-anchored while the runner's date is configured-timezone; see
 [state](state.md) for the bounded proposed scope. Test-only slice.
 
+### GIT-DATE-WINDOW-1, git day-window timezone anchoring
+
+Source-accepted and committed locally at `4e50ae6`, parent `7084ede`, after an
+independent review and a focused re-review (accepted). Production change.
+
+| Owner requirement | Evidence on the accepted snapshot |
+| --- | --- |
+| Interpret the requested date in the configured timezone | `CollectRequest.Location` set by the runner; plugin parses with `time.ParseInLocation`; runner-level HCM test asserts the collector receives the +07 instant |
+| Local midnight to next local midnight | window `[time.Date(y,m,d,0,0,0,0,loc), time.Date(y,m,d+1,0,0,0,0,loc))` |
+| Construct next midnight calendrically, not +24h | DST tests: NY `2026-11-01` (25h) includes 23:30 local; `2026-03-08` (23h) excludes next-day 00:30 local |
+| Convert boundaries to instants for local and remote | local `--since=start`, `--until=end-1ns`; remote `since=start-1s.UTC()`, `until=end.UTC()` + client half-open filter |
+| Consistent inclusion: start inclusive, end exclusive | reviewer independently reproduced inclusive/exclusive on real `git log`; commit-level test at `start-1s`/`start`/`end-1s`/`end` |
+| Host timezone must not affect results | `loc` default changed from host `time.Local` to UTC; nil⇒UTC back-compat; no `time.Local` on the path |
+| Preserve identity, dedup, provenance, limits | evidence IDs/dedup/`SourceRefs`/limits unchanged; only the included boundary set changes |
+
+Adjacent defects documented (not fixed): calendar per-source timezone vs
+`evidence.timezone`; `cmd/fetch-git` host fallback; git committer-vs-author date
+filtering; `Collect` ignoring `locErr`. A future owner-gated evidence-window
+correction procedure is documented in [state](state.md) (no corrective CLI built).
+
 ### Shared-workflow coverage
 
 | Specification step | Owning slices | Completion evidence |
