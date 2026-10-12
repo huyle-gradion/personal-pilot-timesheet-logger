@@ -22,16 +22,30 @@ import (
 type plainPrompter struct {
 	in  *bufio.Reader
 	out io.Writer
+	// helped is set after the first one-time hint line is printed, so the session
+	// explains how to answer exactly once.
+	helped bool
 }
 
 func newPlainPrompter(in io.Reader, out io.Writer) *plainPrompter {
 	return &plainPrompter{in: bufio.NewReader(in), out: out}
 }
 
+// helpOnce prints a single line, before the first prompt, telling the user how to
+// answer and how to abort safely. It is text only and appears once per session.
+func (p *plainPrompter) helpOnce() {
+	if p.helped {
+		return
+	}
+	p.helped = true
+	fmt.Fprintln(p.out, "(answer with a number; blank keeps the shown default; EOF or Ctrl-C aborts and applies nothing)")
+}
+
 func (p *plainPrompter) Choose(ctx context.Context, title string, options []promptOption, def int) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, errAborted
 	}
+	p.helpOnce()
 	fmt.Fprintln(p.out, title)
 	for i, o := range options {
 		line := fmt.Sprintf("  %d) %s", i+1, o.Label)
@@ -62,6 +76,7 @@ func (p *plainPrompter) MultiChoose(ctx context.Context, title string, options [
 	if err := ctx.Err(); err != nil {
 		return nil, errAborted
 	}
+	p.helpOnce()
 	fmt.Fprintln(p.out, title)
 	for i, o := range options {
 		line := fmt.Sprintf("  %d) %s", i+1, o.Label)
@@ -99,6 +114,7 @@ func (p *plainPrompter) Input(ctx context.Context, title, placeholder, initial s
 	if err := ctx.Err(); err != nil {
 		return "", errAborted
 	}
+	p.helpOnce()
 	prompt := title
 	if placeholder != "" {
 		prompt += " (" + placeholder + ")"
@@ -121,6 +137,7 @@ func (p *plainPrompter) Confirm(ctx context.Context, title string, def bool) (bo
 	if err := ctx.Err(); err != nil {
 		return false, errAborted
 	}
+	p.helpOnce()
 	hint := "[y/N]"
 	if def {
 		hint = "[Y/n]"

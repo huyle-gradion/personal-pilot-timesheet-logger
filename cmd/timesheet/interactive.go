@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
@@ -111,6 +112,10 @@ type guided struct {
 	// (carries originating on this day plus carry blocks surfaced from the
 	// previous day). It is shown in the confirmation summary.
 	carryCount int
+	// evByID indexes the day's collected evidence by id, so a proposed block or
+	// narrative can render its SOURCE provenance (git repo/branch, calendar,
+	// journal note/heading/lines) instead of only an opaque evidence id.
+	evByID map[string]evidence.Evidence
 }
 
 // catalogMemoEntry is one in-run memoized catalog fetch: the catalog and the
@@ -151,7 +156,16 @@ func cmdRunGuided(ctx context.Context, r *run.Runner, cfg cliConfig, store workf
 		fmt.Fprintf(stderr, "timesheet: collect %s: %v\n", d, err)
 		return exitError
 	}
-	g.printCollection(collectRes)
+	// Read the day's record BEFORE the proposal: Propose persists nothing (a pure
+	// view), so this record is still current, and the Sources section can report
+	// the day's DURABLE collection state (the same state the acknowledgment step
+	// uses) rather than only this pass's summary.
+	rec, err := store.GetDay(ctx, d)
+	if err != nil {
+		fmt.Fprintf(stderr, "timesheet: record %s: %v\n", d, err)
+		return exitError
+	}
+	g.printCollection(collectRes, rec)
 
 	// Proposal.
 	prop, err := r.Propose(ctx, d)
@@ -172,12 +186,8 @@ func cmdRunGuided(ctx context.Context, r *run.Runner, cfg cliConfig, store workf
 		}
 	}
 
-	rec, err := store.GetDay(ctx, d)
-	if err != nil {
-		fmt.Fprintf(stderr, "timesheet: record %s: %v\n", d, err)
-		return exitError
-	}
 	evByID := evidenceIndex(rec)
+	g.evByID = evByID
 	g.printOverview(prop, rec, evByID)
 
 	// Staged interactive review.
@@ -250,9 +260,10 @@ func (g *guided) gatherReview(ctx context.Context, prop proposal.Proposal, rec *
 
 	existing := existingConfirmed(rec)
 	if len(existing) > 0 {
-		fmt.Fprintf(g.stdout, "\nExisting confirmed work for %s:\n", g.date)
+		g.section("Existing confirmed work")
 		for _, ci := range existing {
-			fmt.Fprintf(g.stdout, "  %s  %s-%s  %s  %s\n", shortID(ci.ID), ci.StartTime, ci.EndTime, orDash(ci.Project), oneLine(ci.Description))
+			fmt.Fprintf(g.stdout, "  %-9s %s  %s-%s  %s  %s\n",
+				"existing", shortID(ci.ID), ci.StartTime, ci.EndTime, orDash(ci.Project), oneLine(ci.Description))
 		}
 		for _, ci := range existing {
 			if err := g.reviewExisting(ctx, ci, &dec); err != nil {
@@ -346,11 +357,12 @@ func (g *guided) seedAcks(rec *workflow.Record, dec *run.ReviewDecisions) {
 	}
 }
 
-// reviewIncompleteSources surfaces every incomplete source that is not yet
-// acknowledged and offers to acknowledge it, so the day can proceed without
-// silently presenting a partial collection as complete.
-func (g *guided) reviewIncompleteSources(ctx context.Context, rec *workflow.Record, dec *run.ReviewDecisions) error {
-	if rec.Collection == nil || rec.Collection.Complete {
+// pendingIncompleteSources returns the collection's sources that are neither
+// complete nor skipped and are not yet acknowledged, either durably (rec.Review)
+// or by a staged decision. It is the ONE source of truth for both the Sources
+// summary line and the acknowledgment step, so the two never disagree.
+func pendingIncompleteSources(rec *workflow.Record, stagedAcks []string) []evidence.SourceResult {
+	if rec == nil || rec.Collection == nil || rec.Collection.Complete {
 		return nil
 	}
 	ack := map[string]bool{}
@@ -359,7 +371,7 @@ func (g *guided) reviewIncompleteSources(ctx context.Context, rec *workflow.Reco
 			ack[s] = true
 		}
 	}
-	for _, s := range dec.Acknowledge {
+	for _, s := range stagedAcks {
 		ack[s] = true
 	}
 	var pending []evidence.SourceResult
@@ -369,12 +381,21 @@ func (g *guided) reviewIncompleteSources(ctx context.Context, rec *workflow.Reco
 		}
 		pending = append(pending, sr)
 	}
+	return pending
+}
+
+// reviewIncompleteSources surfaces every incomplete source that is not yet
+// acknowledged and offers to acknowledge it, so the day can proceed without
+// silently presenting a partial collection as complete.
+func (g *guided) reviewIncompleteSources(ctx context.Context, rec *workflow.Record, dec *run.ReviewDecisions) error {
+	pending := pendingIncompleteSources(rec, dec.Acknowledge)
 	if len(pending) == 0 {
 		return nil
 	}
-	fmt.Fprintf(g.stdout, "\nIncomplete sources (the preview blocks until acknowledged):\n")
+	g.section("Incomplete sources")
+	fmt.Fprintf(g.stdout, "  %d source(s) did not complete. The preview is BLOCKED until each is acknowledged.\n", len(pending))
 	for _, sr := range pending {
-		fmt.Fprintf(g.stdout, "  %s: %s\n", sr.SourceID, sr.Status)
+		fmt.Fprintf(g.stdout, "  ! %s (%s): %s\n", sr.SourceID, sourceKindLabel(sr.Type), incompleteDetail(sr))
 	}
 	ok, err := g.p.Confirm(ctx, "Acknowledge these incomplete sources?", false)
 	if err != nil {
@@ -566,13 +587,15 @@ func (g *guided) reviewNarratives(ctx context.Context, prop proposal.Proposal, e
 	if len(prop.Narratives) == 0 {
 		return nil
 	}
-	fmt.Fprintf(g.stdout, "\nJournal narrative candidates (untimed, duration unknown):\n")
+	g.section("Journal narratives")
+	fmt.Fprintf(g.stdout, "  Untimed context only (%s): a narrative never establishes working time by itself.\n", unknownDuration)
 	for _, n := range prop.Narratives {
-		fmt.Fprintf(g.stdout, "  %s  %s\n", narrativeProvenance(n, evByID), oneLine(n.Description))
+		fmt.Fprintf(g.stdout, "  %s\n", narrativeProvenance(n, evByID))
+		fmt.Fprintf(g.stdout, "    %s\n", oneLine(n.Description))
 	}
 	for _, n := range prop.Narratives {
 		idx, err := g.p.Choose(ctx,
-			fmt.Sprintf("Journal note [%s]: %s", n.Section, oneLine(n.Description)),
+			fmt.Sprintf("Journal narrative · %s · %s · %s", orDash(n.Section), oneLine(n.Description), unknownDuration),
 			[]promptOption{
 				{Label: "Skip (context only, no time)"},
 				{Label: "Exclude from this day"},
@@ -642,7 +665,7 @@ func (g *guided) chooseLinks(ctx context.Context, prop proposal.Proposal, evByID
 	var opts []promptOption
 	var ids []string
 	for _, n := range prop.Narratives {
-		opts = append(opts, promptOption{Label: "journal: " + oneLine(n.Description), Hint: narrativeProvenance(n, evByID)})
+		opts = append(opts, promptOption{Label: "journal: " + oneLine(n.Description), Hint: narrativeHint(n, evByID)})
 		ids = append(ids, n.ID)
 	}
 	for _, b := range append(append([]proposal.ProposedTimeBlock{}, prop.Work...), prop.Meetings...) {
@@ -681,7 +704,7 @@ func (g *guided) classTargets(prop proposal.Proposal, rec *workflow.Record, dec 
 	var out []classTarget
 	blocks := proposalBlockIndex(prop)
 	for _, ci := range existingConfirmed(rec) {
-		out = append(out, classTarget{key: ci.ID, label: fmt.Sprintf("%s %s-%s", shortID(ci.ID), ci.StartTime, ci.EndTime), project: ci.Project, current: ci.ClassificationID})
+		out = append(out, classTarget{key: ci.ID, label: fmt.Sprintf("existing interval %s · %s-%s", shortID(ci.ID), ci.StartTime, ci.EndTime), project: ci.Project, current: ci.ClassificationID})
 	}
 	for _, c := range dec.Confirm {
 		b, ok := blocks[c.BlockID]
@@ -700,7 +723,7 @@ func (g *guided) classTargets(prop proposal.Proposal, rec *workflow.Record, dec 
 		}
 		m := &dec.Manual[i]
 		out = append(out, classTarget{
-			label:   fmt.Sprintf("manual %s-%s", m.Start.Format("15:04"), m.End.Format("15:04")),
+			label:   fmt.Sprintf("manual interval %s-%s", m.Start.Format("15:04"), m.End.Format("15:04")),
 			project: m.Project,
 			current: m.ClassificationID,
 			manual:  m,
@@ -714,13 +737,14 @@ func (g *guided) classificationStep(ctx context.Context, prop proposal.Proposal,
 	if len(targets) == 0 {
 		return nil
 	}
+	g.section("Classification")
 	cat, prov, err := g.loadCatalog(ctx, "")
 	if err != nil {
-		fmt.Fprintf(g.stdout, "\nclassification: catalog unavailable (%v); classification stays unset and the preview will block honestly\n", err)
+		fmt.Fprintf(g.stdout, "  catalog unavailable (%v); classification stays unset and the preview will block honestly\n", err)
 		return nil
 	}
 	g.cat = &cat
-	fmt.Fprintf(g.stdout, "\nclassification catalog: %s\n", prov)
+	fmt.Fprintf(g.stdout, "  catalog: %s\n", prov)
 	g.printUnappliedSuggestions(targets)
 	retained := 0
 	for i := range targets {
@@ -906,25 +930,59 @@ func (g *guided) printUnappliedSuggestions(targets []classTarget) {
 }
 
 // --- confirmation + rendering ----------------------------------------------
+//
+// The guided report is TEXT ONLY (no ANSI color): a piped, logged, or
+// screen-reader session reads exactly the same facts, and the machine-readable
+// lines (plan_id:, operations:, preview blocked:, total:, the per-operation
+// lines) are never altered by presentation. Sections are titled and underlined
+// so the day reads top-down. The REAL order is:
+//
+//	header -> sources -> proposal -> review -> summary -> plan
+//
+// where the "review" phase is itself ordered:
+//
+//	incomplete sources (acknowledged) -> existing work -> proposed blocks ->
+//	journal narratives -> classification
+//
+// The Sources section points forward to the acknowledgment step, so an incomplete
+// source is visible where it is collected and confirmed where it is acknowledged.
+
+// guidedTitle heads the report, so the day's flow has an obvious entry point.
+const guidedTitle = "timesheet · guided review"
+
+// unknownDuration is the ONE unmistakable marker for an item whose duration is
+// NOT known: an untimed journal narrative, or a git work block whose start-end is
+// an observation window, never confirmed working time. It is deliberately never a
+// number, so an unknown duration can never be mistaken for timed work.
+const unknownDuration = "duration=unknown"
+
+// section prints a titled section header: a blank line, the title, then an
+// underline of the same width. It is text only (no color), so the structure is
+// preserved in a pipe, a log, or a screen reader.
+func (g *guided) section(title string) {
+	fmt.Fprintf(g.stdout, "\n%s\n%s\n", title, strings.Repeat("─", utf8.RuneCountInString(title)))
+}
 
 func (g *guided) confirmSummary(ctx context.Context, dec run.ReviewDecisions) (bool, error) {
-	fmt.Fprintf(g.stdout, "\nReview summary for %s (%s):\n", g.date, g.tz)
-	fmt.Fprintf(g.stdout, "  confirm: %d\n", len(dec.Confirm))
-	fmt.Fprintf(g.stdout, "  exclude: %d\n", len(dec.Exclude))
-	fmt.Fprintf(g.stdout, "  edits: %d time, %d project, %d description\n", len(dec.Trim), len(dec.Project), len(dec.Description))
-	fmt.Fprintf(g.stdout, "  manual intervals: %d\n", len(dec.Manual))
-	fmt.Fprintf(g.stdout, "  classification chosen: %d\n", len(dec.Classification)+manualClassified(dec))
+	g.section(fmt.Sprintf("Review summary (%s, %s)", g.date, g.tz))
+	fmt.Fprintf(g.stdout, "  %-22s %d\n", "confirm:", len(dec.Confirm))
+	fmt.Fprintf(g.stdout, "  %-22s %d\n", "exclude:", len(dec.Exclude))
+	fmt.Fprintf(g.stdout, "  %-22s %d time · %d project · %d description\n", "edits:", len(dec.Trim), len(dec.Project), len(dec.Description))
+	fmt.Fprintf(g.stdout, "  %-22s %d\n", "manual intervals:", len(dec.Manual))
+	fmt.Fprintf(g.stdout, "  %-22s %d\n", "classification chosen:", len(dec.Classification)+manualClassified(dec))
 	if g.carryCount > 0 {
-		fmt.Fprintf(g.stdout, "  carryover items: %d (a carry on the next day is confirmed separately)\n", g.carryCount)
+		fmt.Fprintf(g.stdout, "  %-22s %d (a carry on the next day is confirmed separately)\n", "carryover items:", g.carryCount)
 	}
 	if dec.MarkEmpty {
-		fmt.Fprintln(g.stdout, "  result: reviewed with no work (no entries)")
+		fmt.Fprintf(g.stdout, "  %-22s reviewed with no work (no entries)\n", "result:")
 	}
 	return g.p.Confirm(ctx, "Apply this review and mark the day reviewed?", false)
 }
 
 func (g *guided) printHeader(pre run.PreflightResult) {
+	fmt.Fprintln(g.stdout, guidedTitle)
 	fmt.Fprintf(g.stdout, "date: %s  timezone: %s\n", g.date, g.tz)
+	g.section("Preflight")
 	for _, c := range pre.Checks {
 		status := "ok"
 		if !c.Passed {
@@ -938,51 +996,83 @@ func (g *guided) printHeader(pre run.PreflightResult) {
 	}
 }
 
-func (g *guided) printCollection(cr run.CollectResult) {
+func (g *guided) printCollection(cr run.CollectResult, rec *workflow.Record) {
+	g.section("Sources")
 	if cr.NoSourcesConfigured {
 		fmt.Fprintf(g.stdout, "%s: No evidence sources configured.\n", g.date)
+	} else {
+		var b strings.Builder
+		printSourceStatus(&b, cr.Summary)
+		switch {
+		case b.Len() > 0:
+			fmt.Fprint(g.stdout, b.String())
+		case len(cr.Evidence) == 0 && collectionComplete(cr.Summary):
+			fmt.Fprintf(g.stdout, "%s: no evidence collected.\n", g.date)
+		default:
+			fmt.Fprintf(g.stdout, "  all enabled sources complete (%d evidence item(s))\n", len(cr.Evidence))
+		}
 	}
-	printSourceStatus(g.stdout, cr.Summary)
-	if !cr.NoSourcesConfigured && len(cr.Evidence) == 0 && collectionComplete(cr.Summary) {
-		fmt.Fprintf(g.stdout, "%s: no evidence collected.\n", g.date)
+	// Surface an incomplete-source pointer HERE, next to the sources it names, so
+	// the warning is easy to find. The acknowledgment step itself stays in the
+	// review phase (see reviewIncompleteSources); both read the SAME durable
+	// collection state, so they never disagree.
+	if pending := pendingIncompleteSources(rec, splitCSV(g.ack)); len(pending) > 0 {
+		fmt.Fprintf(g.stdout, "  %d source(s) incomplete -> the preview blocks until acknowledged in the review step below\n", len(pending))
 	}
 }
 
 func (g *guided) printOverview(prop proposal.Proposal, rec *workflow.Record, evByID map[string]evidence.Evidence) {
 	blocks := len(prop.Work) + len(prop.Meetings) + len(prop.Manual)
-	fmt.Fprintf(g.stdout, "\nProposal for %s: %d block(s), %d journal narrative(s), %d excluded\n",
-		g.date, blocks, len(prop.Narratives), len(prop.Excluded))
+	g.section("Proposal")
+	fmt.Fprintf(g.stdout, "  %d block(s) · %d journal narrative(s) · %d excluded\n",
+		blocks, len(prop.Narratives), len(prop.Excluded))
 	for _, b := range prop.Work {
-		fmt.Fprintf(g.stdout, "  work     %s\n", g.blockLabel(b))
+		fmt.Fprintf(g.stdout, "  %-9s %s\n", blockKindLabel(b.Kind), g.blockLabel(b))
 	}
 	for _, b := range prop.Meetings {
-		fmt.Fprintf(g.stdout, "  meeting  %s\n", g.blockLabel(b))
+		fmt.Fprintf(g.stdout, "  %-9s %s\n", blockKindLabel(b.Kind), g.blockLabel(b))
 	}
 	for _, b := range prop.Manual {
-		fmt.Fprintf(g.stdout, "  manual   %s\n", g.blockLabel(b))
+		fmt.Fprintf(g.stdout, "  %-9s %s\n", blockKindLabel(b.Kind), g.blockLabel(b))
 	}
 	for _, n := range prop.Narratives {
-		fmt.Fprintf(g.stdout, "  narrative %s  %s\n", narrativeProvenance(n, evByID), oneLine(n.Description))
+		fmt.Fprintf(g.stdout, "  %-9s %s\n", "narrative", oneLine(n.Description))
+		fmt.Fprintf(g.stdout, "  %-9s %s\n", "", narrativeProvenance(n, evByID))
 	}
 	for _, c := range prop.Carries {
-		fmt.Fprintf(g.stdout, "  carry    -> %s %s-%s (group %s)\n", c.Date, c.Start, c.End, shortID(c.SplitGroupID))
+		fmt.Fprintf(g.stdout, "  %-9s -> %s %s-%s  split-group %s\n", "carry", c.Date, c.Start, c.End, shortID(c.SplitGroupID))
 	}
 	for _, ex := range prop.Excluded {
-		line := fmt.Sprintf("  excluded %s reason=%s", shortID(ex.EvidenceID), ex.Reason)
-		if ex.NotePath != "" {
-			line += " note=" + oneLine(ex.NotePath)
-		}
-		if ex.HeadingPath != "" {
-			line += " heading=" + oneLine(ex.HeadingPath)
-		}
-		if ex.LineStart > 0 {
-			line += fmt.Sprintf(" lines=%d-%d", ex.LineStart, ex.LineEnd)
-		}
-		fmt.Fprintln(g.stdout, line)
+		fmt.Fprintf(g.stdout, "  %-9s %s\n", "excluded", excludedLabel(ex))
 	}
 }
 
+// excludedLabel renders one excluded-evidence line with its human reason and any
+// journal provenance, so a detached note item is identifiable even when it has no
+// heading. Title and the note's own stated date are included because they are the
+// two fields that most often identify a detached item.
+func excludedLabel(ex proposal.ExcludedEvidence) string {
+	line := fmt.Sprintf("%s  reason=%s", shortID(ex.EvidenceID), exclusionReasonLabel(ex.Reason))
+	if ex.Title != "" {
+		line += "  title=" + oneLine(ex.Title)
+	}
+	if ex.NotePath != "" {
+		line += "  note=" + oneLine(ex.NotePath)
+	}
+	if ex.HeadingPath != "" {
+		line += "  heading=" + oneLine(ex.HeadingPath)
+	}
+	if ex.LineStart > 0 {
+		line += fmt.Sprintf("  lines=%d-%d", ex.LineStart, ex.LineEnd)
+	}
+	if ex.StatedDate != "" {
+		line += "  stated=" + ex.StatedDate
+	}
+	return line
+}
+
 func (g *guided) printPlan(res run.PlanResult) {
+	g.section("Submission plan")
 	if res.Blocked {
 		printSuggestions(g.stdout, res.Suggestions)
 		fmt.Fprintf(g.stdout, "preview blocked: %s\n", strings.Join(res.BlockReasons, ", "))
@@ -1002,30 +1092,196 @@ func (g *guided) printPlan(res run.PlanResult) {
 	fmt.Fprintf(g.stdout, "total: %dh %dm across %d operation(s)\n", total/60, total%60, len(res.Plan.Operations))
 }
 
-// blockTitle is the block line used as a prompt title.
+// blockTitle is the block line used as a prompt title: the human kind, then the
+// structured label with its span, duration, project, markers, and provenance.
 func (g *guided) blockTitle(b proposal.ProposedTimeBlock) string {
-	return fmt.Sprintf("%s %s  %s", blockKindLabel(b.Kind), b.Start+"-"+b.End, g.blockLabel(b))
+	return fmt.Sprintf("%s · %s", blockKindLabel(b.Kind), g.blockLabel(b))
 }
 
+// blockLabel renders one proposed block as a consistent, human line:
+//
+//	<id>  <start>-<end>  <duration|duration=unknown>  <project>  [markers]  [provenance]  <description>
+//
+// The duration is a number ONLY when it is known; otherwise it is the unmistakable
+// unknownDuration marker, so an untimed block never reads as timed work.
 func (g *guided) blockLabel(b proposal.ProposedTimeBlock) string {
-	dur := "duration unknown"
-	if b.Duration.Known {
-		dur = fmt.Sprintf("%dm", b.Duration.Minutes)
+	fields := []string{
+		shortID(b.ID),
+		b.Start + "-" + b.End,
+		durationLabel(b.Duration),
+		orDash(b.Project.Project),
 	}
-	line := fmt.Sprintf("%s %s-%s %s %s", shortID(b.ID), b.Start, b.End, orDash(b.Project.Project), dur)
-	if b.Kind == proposal.BlockMeeting {
-		line += " attendance=" + string(b.Attendance)
+	if markers := g.blockMarkers(b); markers != "" {
+		fields = append(fields, markers)
 	}
-	if b.Collision {
-		line += " collision"
+	if prov := g.blockProvenance(b); prov != "" {
+		fields = append(fields, prov)
 	}
-	if b.Carryover {
-		line += " carryover"
-	}
-	if strings.TrimSpace(b.Description) != "" {
-		line += "  " + oneLine(b.Description)
+	line := strings.Join(fields, "  ")
+	if d := strings.TrimSpace(b.Description); d != "" {
+		line += "  " + oneLine(d)
 	}
 	return line
+}
+
+// blockMarkers renders the block's status markers: attendance (meetings only),
+// a collision, a carryover, and a split-group link.
+func (g *guided) blockMarkers(b proposal.ProposedTimeBlock) string {
+	var m []string
+	if b.Kind == proposal.BlockMeeting {
+		m = append(m, attendanceLabel(b.Attendance))
+	}
+	if b.Collision {
+		m = append(m, "collision")
+	}
+	if b.Carryover {
+		m = append(m, "carryover")
+	}
+	if b.SplitGroupID != "" {
+		m = append(m, "split-group "+shortID(b.SplitGroupID))
+	}
+	return strings.Join(m, "  ")
+}
+
+// blockProvenance renders the block's SOURCE provenance from its evidence, so a
+// git block names its repo/branch and a calendar block names its kind instead of
+// showing only an opaque evidence id. Duplicate labels are collapsed.
+func (g *guided) blockProvenance(b proposal.ProposedTimeBlock) string {
+	seen := map[string]bool{}
+	var parts []string
+	add := func(s string) {
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		parts = append(parts, s)
+	}
+	for _, id := range b.EvidenceIDs {
+		e, ok := g.evByID[id]
+		if !ok {
+			continue
+		}
+		if len(e.SourceRefs) == 0 {
+			add(sourceKindLabel(e.Kind))
+			continue
+		}
+		for _, ref := range e.SourceRefs {
+			add(sourceRefLabel(ref))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func durationLabel(d evidence.Duration) string {
+	if !d.Known {
+		return unknownDuration
+	}
+	return humanMinutes(d.Minutes)
+}
+
+// humanMinutes renders a known minute count as "45m" or "1h 30m".
+func humanMinutes(m int) string {
+	if m < 60 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dh %dm", m/60, m%60)
+}
+
+func attendanceLabel(a proposal.AttendanceState) string {
+	switch a {
+	case proposal.AttendanceAttended:
+		return "attendance: attended"
+	case proposal.AttendanceNotAttended:
+		return "attendance: not attended"
+	case proposal.AttendanceUnresolved:
+		return "attendance: unconfirmed"
+	default:
+		return "attendance: " + string(a)
+	}
+}
+
+func sourceKindLabel(k evidence.SourceKind) string {
+	switch k {
+	case evidence.SourceJournal:
+		return "journal"
+	case evidence.SourceCalendar:
+		return "calendar"
+	case evidence.SourceLocalGit:
+		return "git"
+	case evidence.SourceRemotePR:
+		return "git (remote)"
+	case evidence.SourceManual:
+		return "manual"
+	case evidence.SourceAgentSession:
+		return "agent session"
+	default:
+		return string(k)
+	}
+}
+
+// sourceRefLabel renders one non-secret provenance reference as a short, human
+// label. It never prints a path outside the journal's RELATIVE note path or a URL.
+func sourceRefLabel(ref evidence.SourceRef) string {
+	switch ref.Kind {
+	case evidence.SourceLocalGit, evidence.SourceRemotePR:
+		label := "git"
+		if r := strings.TrimSpace(ref.Repository); r != "" {
+			label += " " + oneLine(r)
+		}
+		if br := strings.TrimSpace(ref.Branch); br != "" {
+			label += "@" + oneLine(br)
+		}
+		return label
+	case evidence.SourceCalendar:
+		return "calendar"
+	case evidence.SourceJournal:
+		if p := strings.TrimSpace(ref.NotePath); p != "" {
+			return "journal " + oneLine(p)
+		}
+		return "journal"
+	case evidence.SourceManual:
+		return "manual"
+	case evidence.SourceAgentSession:
+		return "agent session"
+	default:
+		return sourceKindLabel(ref.Kind)
+	}
+}
+
+func exclusionReasonLabel(r proposal.ExclusionReason) string {
+	switch r {
+	case proposal.ExcludeCancelled:
+		return "cancelled"
+	case proposal.ExcludeDeclined:
+		return "declined"
+	case proposal.ExcludeUnknownInvitation:
+		return "unknown invitation"
+	case proposal.ExcludeAgentContextOnly:
+		return "agent context only"
+	case proposal.ExcludeUnsupportedKind:
+		return "unsupported kind"
+	case proposal.ExcludeMissingRepository:
+		return "missing repository"
+	case proposal.ExcludeDetached:
+		return "detached"
+	default:
+		return string(r)
+	}
+}
+
+// incompleteDetail picks the most useful secret-free detail for an incomplete
+// source: the stable error code, else its warnings, else its message.
+func incompleteDetail(sr evidence.SourceResult) string {
+	if sr.ErrorCode != "" {
+		return sr.ErrorCode
+	}
+	if len(sr.Warnings) > 0 {
+		return strings.Join(sr.Warnings, ", ")
+	}
+	if sr.Message != "" {
+		return sr.Message
+	}
+	return "no detail"
 }
 
 // parseClock parses an "HH:MM" clock on the guided day in the configured zone.
@@ -1114,7 +1370,7 @@ func countCarries(prop proposal.Proposal) int {
 }
 
 func narrativeProvenance(n proposal.NarrativeCandidate, evByID map[string]evidence.Evidence) string {
-	parts := []string{}
+	parts := []string{"journal"}
 	if n.Section != "" {
 		parts = append(parts, "section="+n.Section)
 	}
@@ -1144,8 +1400,14 @@ func narrativeProvenance(n proposal.NarrativeCandidate, evByID map[string]eviden
 			break
 		}
 	}
-	parts = append(parts, "duration=unknown")
-	return strings.Join(parts, " ")
+	parts = append(parts, unknownDuration)
+	return strings.Join(parts, "  ")
+}
+
+// narrativeHint is a narrative's provenance WITHOUT its leading "journal" label,
+// for a context (a link option) that already labels the item as a journal item.
+func narrativeHint(n proposal.NarrativeCandidate, evByID map[string]evidence.Evidence) string {
+	return strings.TrimPrefix(narrativeProvenance(n, evByID), "journal  ")
 }
 
 // collisionCandidates returns the blocks a meeting may collide with: work and

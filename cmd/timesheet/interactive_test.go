@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/huh/v2"
+
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
@@ -962,6 +964,9 @@ func TestGuided_CarrySurfacedAndExplicit(t *testing.T) {
 	if !strings.Contains(out.String(), "carryover") {
 		t.Fatalf("the guided run must label the carry block:\n%s", out.String())
 	}
+	if !strings.Contains(out.String(), "carryover items:") {
+		t.Fatalf("the review summary must disclose the carryover count:\n%s", out.String())
+	}
 	rec := loadRecord(t, storage, testDate)
 	if len(rec.Confirmed) != 1 || !rec.Confirmed[0].Carryover {
 		t.Fatalf("the carry must be confirmed ONLY by the explicit choice: %+v", rec.Confirmed)
@@ -1342,5 +1347,253 @@ func TestGuided_LoadCatalogCacheFallbackOnLiveError(t *testing.T) {
 	}
 	if len(fetch.calls) != 2 {
 		t.Fatalf("a live error must not be memoized (live-first preserved), want 2 live attempts, got %d", len(fetch.calls))
+	}
+}
+
+// --- TUI-USABILITY-1: hierarchy, readable labels, provenance, markers --------
+
+// firstLineWith returns the first line whose trimmed form starts with prefix.
+func firstLineWith(out, prefix string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if t := strings.TrimSpace(line); strings.HasPrefix(t, prefix) {
+			return t
+		}
+	}
+	return ""
+}
+
+// TestGuided_SectionHierarchyAndProvenance proves the guided report reads
+// top-down with titled sections, and that a proposed block renders its SOURCE
+// provenance (git repo/branch) rather than only an opaque evidence id.
+func TestGuided_SectionHierarchyAndProvenance(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence(), journalEvidence())
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// exclude the git work block (1), skip the narrative (0), no missing work,
+	// confirm the review.
+	p := &fakePrompter{choose: []int{1, 0}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"timesheet · guided review",
+		"Preflight", "Sources", "Proposal", "Journal narratives", "Review summary", "Submission plan",
+		"git acme/repo@feat/x",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("guided output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestGuided_UnknownDurationMarkerIsExplicit proves an item whose duration is NOT
+// known is marked with the ONE unmistakable marker and never a numeric duration,
+// for BOTH a git work block (an observation window, not timed work) and an untimed
+// journal narrative.
+func TestGuided_UnknownDurationMarkerIsExplicit(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence(), journalEvidence())
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// leave the work block unconfirmed (3), skip the narrative (0), no missing
+	// work, confirm the review.
+	p := &fakePrompter{choose: []int{3, 0}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	got := out.String()
+	work := firstLineWith(got, "work ")
+	if work == "" {
+		t.Fatalf("want a work block line:\n%s", got)
+	}
+	if !strings.Contains(work, "duration=unknown") {
+		t.Fatalf("the git work block must be marked duration=unknown, got %q", work)
+	}
+	// A span is shown, but never a numeric duration for the unknown block.
+	if !strings.Contains(work, "16:00") {
+		t.Fatalf("the work block must still show its observed span, got %q", work)
+	}
+	if !strings.Contains(got, "duration=unknown") {
+		t.Fatalf("want the unknown-duration marker in the report:\n%s", got)
+	}
+	// The untimed narrative carries the marker and its quoted provenance.
+	if !strings.Contains(got, "stated=2026-10-06") {
+		t.Fatalf("want the narrative's quoted provenance:\n%s", got)
+	}
+}
+
+// TestGuided_IncompleteSourceWarningIsProminent proves the guided run names the
+// incomplete source(s), states the preview is BLOCKED until acknowledged, and
+// gives a secret-free detail, not just a bare status word.
+func TestGuided_IncompleteSourceWarningIsProminent(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Collection = incompleteCollection()
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// keep existing (0); do NOT acknowledge (false); no missing work; confirm.
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, false, true}}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
+	if code != exitBlocked {
+		t.Fatalf("want a blocked preview, got %d\n%s", code, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Incomplete sources",
+		"BLOCKED until each is acknowledged",
+		"cal-work",
+		"calendar",
+		"SOURCE_ERROR",
+		"incomplete_collection",
+		// The Sources section points forward to the acknowledgment step, so an
+		// incomplete source is findable where it is collected, not only later.
+		"incomplete -> the preview blocks",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("guided output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestGuided_MeetingAttendanceLabelAndCalendarProvenance proves a meeting shows a
+// human attendance label (never the raw enum) and names its calendar provenance.
+func TestGuided_MeetingAttendanceLabelAndCalendarProvenance(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence,
+			meetingEvidenceAt("cal1", time.Date(2026, 10, 6, 9, 0, 0, 0, loc), time.Date(2026, 10, 6, 10, 0, 0, 0, loc)))
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// leave the meeting unconfirmed (3); no missing work; confirm.
+	p := &fakePrompter{choose: []int{3}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	got := out.String()
+	meeting := firstLineWith(got, "meeting ")
+	if meeting == "" {
+		t.Fatalf("want a meeting block line:\n%s", got)
+	}
+	if !strings.Contains(meeting, "attendance: unconfirmed") {
+		t.Fatalf("a meeting must show a human attendance label, got %q", meeting)
+	}
+	if strings.Contains(meeting, "attendance=unresolved") {
+		t.Fatalf("the raw attendance enum must not be printed, got %q", meeting)
+	}
+	if !strings.Contains(meeting, "calendar") {
+		t.Fatalf("a meeting must name its calendar provenance, got %q", meeting)
+	}
+}
+
+// TestTUIHelpNamesAbortPath proves every huh key-hint line names the abort key, so
+// the abort path is never hidden in the terminal UI.
+func TestTUIHelpNamesAbortPath(t *testing.T) {
+	for name, help := range map[string]string{
+		"select": helpSelect, "multi": helpMulti, "input": helpInput, "confirm": helpConfirm,
+	} {
+		if !strings.Contains(help, "abort") || !strings.Contains(help, "ctrl+c") {
+			t.Errorf("%s help must name the abort key, got %q", name, help)
+		}
+	}
+}
+
+// TestTUIHelpReachesGroupHeader proves the key-hint line is actually carried into
+// the rendered huh group header, not merely held in a constant: huh renders the
+// group description as the header, which Group.View includes above the field.
+func TestTUIHelpReachesGroupHeader(t *testing.T) {
+	tp := newTUIPrompter(strings.NewReader(""), &bytes.Buffer{})
+	cases := []struct {
+		name  string
+		field huh.Field
+		help  string
+	}{
+		{"select", huh.NewSelect[int]().Title("t"), helpSelect},
+		{"multi", huh.NewMultiSelect[int]().Title("t"), helpMulti},
+		{"input", huh.NewInput().Title("t"), helpInput},
+		{"confirm", huh.NewConfirm().Title("t"), helpConfirm},
+	}
+	for _, tc := range cases {
+		if header := tp.newGroup(tc.field, tc.help).Header(); !strings.Contains(header, tc.help) {
+			t.Errorf("%s help must reach the rendered group header, got %q", tc.name, header)
+		}
+	}
+}
+
+// TestExcludedLabelIdentifiesDetachedItem proves a detached excluded item is
+// identifiable by its TITLE and the note's own STATED date, even with no heading.
+func TestExcludedLabelIdentifiesDetachedItem(t *testing.T) {
+	ex := proposal.ExcludedEvidence{
+		EvidenceID: "j-detached-1", Reason: proposal.ExcludeDetached,
+		Title: "Old parser note", NotePath: "02 - Daily & Logs/2026-10-05.md",
+		StatedDate: "2026-10-05", LineStart: 4, LineEnd: 6,
+	}
+	got := excludedLabel(ex)
+	for _, want := range []string{
+		"reason=detached", "title=Old parser note", "stated=2026-10-05",
+		"note=02 - Daily & Logs/2026-10-05.md", "lines=4-6",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("excluded label missing %q: %q", want, got)
+		}
+	}
+}
+
+// TestNarrativeHintDropsRedundantJournalLabel proves the link-option hint drops the
+// leading "journal" label (the option is already labeled "journal:"), while keeping
+// the unknown-duration marker.
+func TestNarrativeHintDropsRedundantJournalLabel(t *testing.T) {
+	evByID := map[string]evidence.Evidence{"j1": journalEvidence()}
+	n := proposal.NarrativeCandidate{ID: "j1", Section: "Work", Description: "x", EvidenceIDs: []string{"j1"}}
+	hint := narrativeHint(n, evByID)
+	if strings.HasPrefix(hint, "journal") {
+		t.Fatalf("the link hint must not repeat the journal label, got %q", hint)
+	}
+	if !strings.Contains(hint, "duration=unknown") {
+		t.Fatalf("the link hint must keep the unknown-duration marker, got %q", hint)
+	}
+}
+
+// TestPlainPrompter_PrintsOneTimeHelp proves the plain path prints its answer/abort
+// hint exactly once per session (and never hides the abort path).
+func TestPlainPrompter_PrintsOneTimeHelp(t *testing.T) {
+	var out bytes.Buffer
+	p := newPlainPrompter(strings.NewReader("1\ny\n"), &out)
+	if _, err := p.Choose(context.Background(), "t", []promptOption{{Label: "a"}}, 0); err != nil {
+		t.Fatalf("choose: %v", err)
+	}
+	if _, err := p.Confirm(context.Background(), "t", true); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if n := strings.Count(out.String(), "EOF or Ctrl-C aborts"); n != 1 {
+		t.Fatalf("the help hint must print exactly once, got %d:\n%s", n, out.String())
 	}
 }
