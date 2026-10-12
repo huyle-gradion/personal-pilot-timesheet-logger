@@ -48,8 +48,10 @@ Current work graph, in priority order, with no invented deadlines:
    staged bulk confirm/exclude/assign-project with an exact affected-block
    preview, collision surface-skip, per-block override precedence and safe
    cancellation; the nonempty-day mark-empty guard (carried F3) is closed.
-7. CLASSIFICATION-INTERACTION-1: planned, searchable authoritative choices and
-   unapplied recent/first-run suggestions with explicit bulk targets.
+7. CLASSIFICATION-INTERACTION-1: closed, source-accepted and committed locally
+   (`4b5b242`); searchable authoritative choices, unapplied recent/first-run
+   suggestions, and a staged bulk-classification action. All seven takeover
+   slices are now closed.
 
 Parent orchestrator owns validation/integration and records. Read-only inventory
 @explorer `ses_ed4469c43ffeW2q51AzMtxTbns` completed with a correction distinguishing
@@ -288,6 +290,50 @@ establish live-read compatibility or production readiness; production submission
 remains blocked. Next dependency-ready bounded task is CLASSIFICATION-INTERACTION-1
 (searchable authoritative choices plus recent and first-run suggestions that stay
 unapplied until explicitly targeted; suggestions are never assignments).
+
+### CLASSIFICATION-INTERACTION-1 closure, 2026-10-12
+
+CLASSIFICATION-INTERACTION-1 is source-accepted and committed locally at
+`4b5b242` (parent `3471183`), on `feat/s9-integrated-acceptance` (8 files,
++764/-31). Suggestions are now surfaced UNAPPLIED in both `classify list` and the
+guided classification step: up to three recent selections, or, when none exist,
+the first-run suggestion (`INTGRADI2610` / Gradion Intern Academy 2026 with its
+derived `Internal Project` activity type, resolved against the real fetched
+catalog by exact code, never fabricated). A guided catalog search that returns
+nothing prints a partial/no-match caveat that offers search and never asserts
+absence; a beyond-page pick stays resolvable by unioning the searched catalog into
+the validation catalog. The guided Bulk actions step gains a staged
+bulk-assign-classification action (searchable picker, exact affected-interval
+preview with counts, explicit consent, staged only). Implementer @fixer
+`ses_ed1497433ffeyhjjtuMyfpGAX2` (implement + fix); independent review and focused
+re-review @oracle `ses_ed139818affe8QBFCqcdn6haFj` (changes required: a beyond-page
+bulk pick aborted and the docs overstated the in-run override; then accepted).
+Parent final checks exited 0 for gofmt (changed files), build, vet, the full
+uncached suite, `-race` on cmd/timesheet/selection/run/submit, `./tests/...`, the
+guided offline harness, and `git diff --check`. The full suite is green at this
+time; the pre-existing `internal/evidence/plugins` time-window failure remains
+latent and unaddressed. Contract C1-C7 held throughout: suggestions retrieval-only
+and never auto-applied; recent precedes first-run; explicit-only bulk with exact
+preview + consent, staged only; a filtered/truncated catalog never proves absence;
+every staged/applied choice re-resolved via `AuthoritativeClassificationOption`;
+approval-fingerprint inputs stay the classification id plus derived activity type;
+`code`/`name` retrieval-only; only the id sent remotely; no new persisted schema;
+the submit-time fresh-live re-proof unchanged. Source acceptance does not establish
+live-read compatibility or production readiness; production submission remains
+blocked.
+
+### Takeover queue complete, 2026-10-12
+
+All seven takeover work-graph slices are closed, source-accepted, committed
+locally, and vault-synced: SUBMISSION-REVALIDATION-1 (verified already closed),
+CONFIG-GUIDED-1 (`59991a8`), INTERACTIVE-PERFORMANCE-1 (`2d67de3`),
+MIDNIGHT-CARRY-1 (`aee253c`), TUI-USABILITY-1 (`ec6d47e`), BULK-REVIEW-1
+(`cb813e7`), CLASSIFICATION-INTERACTION-1 (`4b5b242`). The unscheduled owner queue
+is empty. No slice was pushed, merged, or published; production submission remains
+blocked and requires a separately approved exact daily plan plus live-write
+authority. The one latent pre-existing defect (the `internal/evidence/plugins`
+time-window test) remains unaddressed and needs a separate disposition. Next
+bounded task is the owner's choice; no slice has been dispatched.
 
 Local record reconciliation, read-only, 2026-10-11:
 - October 8 current workflow schema 1, revision 8: 14 confirmed intervals,
@@ -1266,6 +1312,18 @@ Open findings and disposition: all accepted findings closed. Carried documented 
 Commit and publication status: committed locally cb813e7; NOT pushed, no PR, no merge.
 Vault sync status: pending (delegated to @ai-database).
 Next gate and blockers: CLASSIFICATION-INTERACTION-1 (searchable authoritative choices plus recent and first-run suggestions that stay unapplied until explicitly targeted). Production submission remains blocked.
+```
+
+```text
+2026-10-12 / CLASSIFICATION-INTERACTION-1 / authorized -> designing -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: submission-revalidation takeover grant (direct specialist dispatch, bounded implementation, independent review/fix/re-review, accepted-slice local commits, repo records, vault sync). Owner confirmed the first-run set, bulk placement, and recent count. Not authorized: production creates/edits/deletes, Keychain changes, push/publication/merge/force-push, silent product-scope changes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 4b5b242 (parent 3471183) / 8 files, +764/-31. Accepted hashes matched the fix1 manifest before staging.
+Worker/reviewer report references and verification level: design pass @oracle ses_ed14f6a0cffegxNvbzezAXl7Eq; implementer @fixer ses_ed1497433ffeyhjjtuMyfpGAX2 (implement + fix); independent review + focused re-review @oracle ses_ed139818affe8QBFCqcdn6haFj (changes required -> accepted). Parent log .../opencode/classification-interaction-1-parent-checks.log: gofmt/build/vet/full uncached suite/-race cmd/timesheet,selection,run,submit/./tests/.../guided harness/diff-check all exit 0.
+Behavior: first-run suggestion (INTGRADI2610 / Gradion Intern Academy 2026 with derived Internal Project activity type, resolved against the real catalog by exact code) and up to three recent selections surfaced UNAPPLIED in classify list and the guided step; guided no-match search prints a partial/no-match caveat that offers search and never asserts absence; a beyond-page pick stays resolvable by unioning the searched catalog into the validation catalog; a staged bulk-assign-classification action in the guided Bulk actions step (searchable picker, exact affected-interval preview + counts, explicit consent, staged only). Fix round: F1 (beyond-page bulk pick aborted) fixed; F2 docs qualified; F3 tests added. C1-C7 held: suggestions retrieval-only/never auto-applied; recent precedes first-run; explicit-only bulk; partial never proves absence; every choice re-resolved via AuthoritativeClassificationOption; fingerprint inputs (id + derived activity type), remote payload (id only), persisted schema, and the submit-time fresh-live re-proof unchanged; machine-readable lines and TUI/plain parity unchanged.
+Open findings and disposition: F1/F2/F3 closed. Pre-existing internal/evidence/plugins time-window test unaddressed (not this slice).
+Commit and publication status: committed locally 4b5b242; NOT pushed, no PR, no merge.
+Vault sync status: pending (delegated to @ai-database).
+Next gate and blockers: takeover queue complete (all seven slices closed). Production submission remains blocked; live-read compatibility and production readiness not established.
 ```
 
 ## Documentation review

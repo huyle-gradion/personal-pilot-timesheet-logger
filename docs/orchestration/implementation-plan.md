@@ -176,8 +176,9 @@ updated; unless a genuine full live complete catalog proves the choice, explicit
 authoritative reselection is required and invalidates the old approval. No automatic
 submit rerun.
 
-Next bounded slice: CLASSIFICATION-INTERACTION-1. Remaining priorities and unchanged
-production boundaries are recorded in the takeover work graph in [state](state.md).
+Next bounded slice: none scheduled. All seven takeover slices are closed; the
+owner queue is empty. Remaining priorities and unchanged production boundaries are
+recorded in the takeover work graph in [state](state.md).
 
 ### CONFIG-GUIDED-1, guided configuration
 
@@ -284,6 +285,37 @@ sets `MarkEmpty` but the pre-existing "no staged work" rule can still mark a day
 empty when every in-scope block is skipped. The pre-existing
 `internal/evidence/plugins` time-window test is unaddressed and is not this
 slice's regression.
+
+### CLASSIFICATION-INTERACTION-1, classification interaction
+
+Source-accepted and committed locally at `4b5b242`, parent `3471183`, after an
+independent review (changes required) and a focused re-review (accepted). No
+production writes, live access, publication, or private-record change.
+
+| Owner requirement | Evidence on the accepted snapshot |
+| --- | --- |
+| Searchable authoritative choices | guided `chooseClassification` search + `classify list --search`; a no-match search prints a partial/no-match caveat and never asserts absence; `TestGuided_ClassificationSearchNoMatchCaveat` |
+| Recent selections | up to three recent selections surfaced unapplied; `TestClassifyList_SurfacesUpToThreeRecentUnapplied`, `TestGuided_SurfacesUpToThreeRecentUnapplied` |
+| First-run suggestions (Internal Project; INTGRADI2610 / Gradion Intern Academy 2026) | surfaced unapplied in both surfaces, resolved against the real catalog by exact code; `TestGuided_FirstRunSuggestionUnappliedWhenNoRecent`, `TestClassifyList_SuppressesFirstRunHintWhenRecentExists` |
+| Suggestions are never assignments | print-only; `TestGuided_FirstRunSuggestionShownButNotApplied` |
+| Explicit bulk selection with affected blocks shown | staged bulk-assign-classification in the guided Bulk actions step with exact affected-interval preview + counts + consent; `TestBulk_ClassificationPreviewAndStaging`, `TestBulk_ClassificationAbortStagesNothing` |
+| Partial results must not hide a choice without offering search | beyond-page pick stays resolvable via the search union; `TestGuided_ClassificationSearchBeyondPageSelectable`, `TestBulk_ClassificationSearchBeyondPageValidates` |
+| Validate the selected ID/activity relationship | every staged/applied choice re-resolved via `AuthoritativeClassificationOption`; existing proof tests stay green |
+
+Contract C1-C7 held: suggestions retrieval-only and never auto-applied; recent
+precedes first-run; explicit-only bulk with preview + consent, staged only; a
+filtered/truncated catalog never proves absence; approval-fingerprint inputs stay
+the classification id plus derived activity type; `code`/`name` retrieval-only;
+only the id sent remotely; no new persisted schema; the submit-time fresh-live
+re-proof unchanged. The pre-existing `internal/evidence/plugins` time-window test
+is unaddressed and is not this slice's regression.
+
+### Takeover queue complete
+
+All seven takeover slices are closed, source-accepted, committed locally, and
+vault-synced; the owner queue is empty. See the takeover work graph in
+[state](state.md). No slice was pushed, merged, or published; production
+submission remains blocked.
 
 ### Shared-workflow coverage
 
