@@ -44,8 +44,10 @@ Current work graph, in priority order, with no invented deadlines:
 5. TUI-USABILITY-1: closed, source-accepted and committed locally (`ec6d47e`);
    designer-owned hierarchy, labels, provenance, unknown-duration indicators,
    keyboard help and incomplete-source warnings. Presentation only.
-6. BULK-REVIEW-1: planned, explicit scoped preview, per-block overrides and safe
-   cancellation; no unknown-duration confirmation or silent collision resolution.
+6. BULK-REVIEW-1: closed, source-accepted and committed locally (`cb813e7`);
+   staged bulk confirm/exclude/assign-project with an exact affected-block
+   preview, collision surface-skip, per-block override precedence and safe
+   cancellation; the nonempty-day mark-empty guard (carried F3) is closed.
 7. CLASSIFICATION-INTERACTION-1: planned, searchable authoritative choices and
    unapplied recent/first-run suggestions with explicit bulk targets.
 
@@ -252,6 +254,40 @@ submission remains blocked. Next dependency-ready bounded task is BULK-REVIEW-1
 (explicit scoped bulk actions with an affected-block preview, per-block overrides
 and safe cancellation; no bulk-confirm of unknown durations, no silent collision
 resolution, no marking a nonempty day empty).
+
+### BULK-REVIEW-1 closure, 2026-10-12
+
+BULK-REVIEW-1 is source-accepted and committed locally at `cb813e7` (parent
+`0b24640`), on `feat/s9-integrated-acceptance` (8 files, +1261/-47). The guided
+review gains an optional Bulk actions step: bulk-confirm, bulk-exclude, and
+bulk-assign-project over exactly one scope (all / by kind / by project / explicit
+id list). Bulk actions are staged into the review decision set and applied only at
+the single atomic confirmation; an abort applies nothing; the exact affected
+blocks and counts are printed before staging with explicit consent; an empty scope
+stages nothing. Safety gates: unknown-duration, non-preselected, and joint blocks
+are never bulk-confirmed; a meeting overlapping any block that is or will be
+confirmed (durable, per-block, bulk-applied, or staged manual) is skipped as
+requiring an explicit collision decision; bulk-exclude stages every evidence id;
+per-block decisions always win (bulk add-if-absent); a nonempty day can no longer
+be marked empty (`MarkReviewedEmpty`/`applyDecisions` now refuse, closing carried
+F3). Implementer @fixer `ses_ed1cb6a1bffeJu2mE9hOqxVB16` (implement + two fix
+rounds); independent review and focused re-reviews @oracle
+`ses_ed1aee84fffewl4flYk3WJfBvf` (returned changes required, then accepted). Parent
+final checks exited 0 for gofmt (changed files), build, vet, the full uncached
+suite, `-race` on cmd/timesheet/review/run, `./tests/...`, the guided offline
+harness, and `git diff --check`. The full suite is green at this time; the
+pre-existing `internal/evidence/plugins` time-window failure remains latent and
+unaddressed. Carried documented boundaries: bulk-confirm/assign is effectively
+accepted-meetings-only (work is unknown-duration; manual/joint are not
+preselected); a bare per-block "leave unconfirmed" is authoritative-over by a
+later bulk-confirm; the collision gate treats a degenerate zero-length interval as
+a full-day span; it compares same-day clock-minute spans (post-midnight edge);
+bulk never sets `MarkEmpty` but the pre-existing "no staged work" rule can still
+mark a day empty when every in-scope block is skipped. Source acceptance does not
+establish live-read compatibility or production readiness; production submission
+remains blocked. Next dependency-ready bounded task is CLASSIFICATION-INTERACTION-1
+(searchable authoritative choices plus recent and first-run suggestions that stay
+unapplied until explicitly targeted; suggestions are never assignments).
 
 Local record reconciliation, read-only, 2026-10-11:
 - October 8 current workflow schema 1, revision 8: 14 confirmed intervals,
@@ -1218,6 +1254,18 @@ Open findings and disposition: F1/F2/F3/F5 closed. Carried documented nits: non-
 Commit and publication status: committed locally ec6d47e; NOT pushed, no PR, no merge.
 Vault sync status: pending (delegated to @ai-database).
 Next gate and blockers: BULK-REVIEW-1 (explicit scoped bulk actions with an affected-block preview; per-block overrides; safe cancellation; no bulk-confirm of unknown durations, no silent collision resolution, no marking a nonempty day empty). Production submission remains blocked.
+```
+
+```text
+2026-10-12 / BULK-REVIEW-1 / authorized -> designing -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: submission-revalidation takeover grant (direct specialist dispatch, bounded implementation, independent review/fix/re-review, accepted-slice local commits, repo records, vault sync). Owner confirmed the bulk-action scope. Not authorized: production creates/edits/deletes, Keychain changes, push/publication/merge/force-push, silent product-scope changes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / cb813e7 (parent 0b24640) / 8 files, +1261/-47. Accepted hashes matched the fix2 manifest before staging.
+Worker/reviewer report references and verification level: design pass @oracle ses_ed1d2051bffevGfdON5DO3z6zI; implementer @fixer ses_ed1cb6a1bffeJu2mE9hOqxVB16 (implement + 2 fix rounds); independent review + focused re-reviews @oracle ses_ed1aee84fffewl4flYk3WJfBvf (changes required -> accepted). Parent log .../opencode/bulk-review-1-parent-checks.log: gofmt/build/vet/full uncached suite/-race cmd/timesheet,review,run/./tests/.../guided harness/diff-check all exit 0.
+Behavior: optional guided Bulk actions step (bulk-confirm, bulk-exclude, bulk-assign-project) over exactly one scope (all|by kind|by project|explicit id list); staged only, applied at the single atomic confirmation; exact affected-block preview + consent; empty scope stages nothing. Gates: unknown-duration/non-preselected/joint never bulk-confirmed; a meeting overlapping any block that is or will be confirmed (durable/per-block/bulk-applied/staged manual) is skipped as requiring an explicit collision decision; bulk-exclude stages every evidence id; per-block decisions win (bulk add-if-absent); MarkReviewedEmpty/applyDecisions now refuse to mark a nonempty day empty (closes carried F3). Fix rounds: F-A collision scope-relative, F-D first-evidence-only exclude, F-B label, F-F docs, and NF-1 staged-manual collision path. Machine-readable lines and TUI/plain parity unchanged.
+Open findings and disposition: all accepted findings closed. Carried documented boundaries: bulk-confirm/assign effectively accepted-meetings-only; a bare per-block "leave unconfirmed" is authoritative-over by a later bulk-confirm; degenerate zero-length interval over-blocks; same-day clock-minute collision comparison (post-midnight edge); bulk never sets MarkEmpty but the pre-existing "no staged work" rule can still mark a day empty when all in-scope blocks are skipped. Pre-existing internal/evidence/plugins time-window test unaddressed (not this slice).
+Commit and publication status: committed locally cb813e7; NOT pushed, no PR, no merge.
+Vault sync status: pending (delegated to @ai-database).
+Next gate and blockers: CLASSIFICATION-INTERACTION-1 (searchable authoritative choices plus recent and first-run suggestions that stay unapplied until explicitly targeted). Production submission remains blocked.
 ```
 
 ## Documentation review

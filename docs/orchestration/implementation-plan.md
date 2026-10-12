@@ -176,7 +176,7 @@ updated; unless a genuine full live complete catalog proves the choice, explicit
 authoritative reselection is required and invalidates the old approval. No automatic
 submit rerun.
 
-Next bounded slice: BULK-REVIEW-1. Remaining priorities and unchanged
+Next bounded slice: CLASSIFICATION-INTERACTION-1. Remaining priorities and unchanged
 production boundaries are recorded in the takeover work graph in [state](state.md).
 
 ### CONFIG-GUIDED-1, guided configuration
@@ -261,6 +261,29 @@ Carried documented nits: non-ASCII glyphs in human output; known durations rende
 `1h 0m` instead of `60m`; `excludedLabel` appends `stated=` untrimmed
 (regex-constrained, no leak). The pre-existing `internal/evidence/plugins`
 time-window test is unaddressed and is not this slice's regression.
+
+### BULK-REVIEW-1, scoped bulk review
+
+Source-accepted and committed locally at `cb813e7`, parent `0b24640`, after an
+independent review (changes required) and two focused re-reviews (accepted). No
+production writes, live access, publication, or private-record change.
+
+| Owner requirement | Evidence on the accepted snapshot |
+| --- | --- |
+| Explicit scoped bulk actions with a preview of affected blocks | staged Bulk actions step over exactly one scope; exact affected-block preview + counts + consent; `TestBulk_PreviewListsExactAffectedBlocks`, `TestBulk_EmptyScopeStagesNothing` |
+| Do not bulk-confirm unknown durations | unknown-duration/non-preselected/joint never bulk-confirmed; `TestBulk_UnknownDurationNeverConfirmed` |
+| Do not silently resolve collisions | a meeting overlapping any block that is or will be confirmed is skipped as requiring an explicit collision decision; `TestBulk_CollisionRequiresExplicitDecision`, `TestBulk_CollisionWithAlreadyConfirmedWorkIsSkipped`, `TestBulk_CollisionWithStagedManualIsSkipped` |
+| Do not mark a nonempty day empty | `MarkReviewedEmpty`/`applyDecisions` refuse; `TestMarkReviewedEmpty_RefusesNonEmpty`, `TestApplyReview_MarkEmptyRefusedWithStagedWork`, `TestApplyReview_MarkEmptyRefusedWithExistingConfirmed` |
+| Preserve per-block overrides and cancellation safety | bulk add-if-absent, per-block replace; abort applies nothing; `TestBulk_PerBlockOverrideWinsBothOrders`, `TestBulk_AbortAtBulkConsentAppliesNothing`, `TestBulk_DeclineFinalConsentAfterBulkAppliesNothing` |
+
+Carried documented boundaries: bulk-confirm/assign is effectively
+accepted-meetings-only; a bare per-block "leave unconfirmed" is authoritative-over
+by a later bulk-confirm; the collision gate treats a degenerate zero-length
+interval as a full-day span and compares same-day clock-minute spans; bulk never
+sets `MarkEmpty` but the pre-existing "no staged work" rule can still mark a day
+empty when every in-scope block is skipped. The pre-existing
+`internal/evidence/plugins` time-window test is unaddressed and is not this
+slice's regression.
 
 ### Shared-workflow coverage
 

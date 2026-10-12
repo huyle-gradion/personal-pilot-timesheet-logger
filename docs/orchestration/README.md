@@ -67,3 +67,5 @@ INTERACTIVE-PERFORMANCE-1 (interactive performance): `2d67de3`. Independently re
 MIDNIGHT-CARRY-1 (midnight linked intervals): `aee253c`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). Composed midnight+four-hour split with a durable next-day carry requiring explicit confirmation. See [state](state.md) and [the implementation plan](implementation-plan.md).
 
 TUI-USABILITY-1 (guided terminal usability): `ec6d47e`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). Presentation-only hierarchy, labels, provenance, unknown-duration indicators, keyboard help, and incomplete-source warnings. See [state](state.md) and [the implementation plan](implementation-plan.md).
+
+BULK-REVIEW-1 (scoped bulk review): `cb813e7`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). Staged bulk confirm/exclude/assign-project with a safety-gated preview; closes the carried nonempty-day mark-empty guard. See [state](state.md) and [the implementation plan](implementation-plan.md).
