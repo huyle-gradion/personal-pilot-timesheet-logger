@@ -27,7 +27,7 @@ type CollectResult struct {
 // under the store. Collection proceeds independently of review or submission.
 func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error) {
 	resolved := r.resolveCalendarSources(ctx, r.cfg.Evidence.Sources)
-	ev, summary, err := r.deps.Registry.CollectDay(ctx, resolved, evidence.CollectRequest{Date: date})
+	ev, summary, err := r.deps.Registry.CollectDay(ctx, resolved, evidence.CollectRequest{Date: date, Location: r.loc})
 	if err != nil {
 		return CollectResult{Date: date, Summary: summary}, err
 	}

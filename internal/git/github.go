@@ -565,6 +565,7 @@ func (c *GitHubClient) fetchCommits(
 	owner, repoName, repoOrig string,
 	author string,
 	sinceStr, untilStr string,
+	start, end time.Time,
 	loc *time.Location,
 ) ([]GitHubCommit, error) {
 	if author == "" {
@@ -610,12 +611,16 @@ func (c *GitHubClient) fetchCommits(
 		if loc != nil && !ts.IsZero() {
 			ts = ts.In(loc)
 		}
-		commits = append(commits, GitHubCommit{
-			SHA:       item.SHA,
-			Message:   item.Commit.Message,
-			Timestamp: ts,
-			Repo:      repoOrig,
-		})
+		// Client-side HALF-OPEN [start, end) filter: GitHub's since/until
+		// inclusivity is not contractual, so the boundary is decided here.
+		if !ts.Before(start) && ts.Before(end) {
+			commits = append(commits, GitHubCommit{
+				SHA:       item.SHA,
+				Message:   item.Commit.Message,
+				Timestamp: ts,
+				Repo:      repoOrig,
+			})
+		}
 	}
 	return commits, nil
 }
@@ -690,7 +695,7 @@ func (c *GitHubClient) fetchPRs(
 	ctx context.Context,
 	owner, repoName, repoOrig string,
 	author string,
-	startOfDay, endOfDay time.Time,
+	start, end time.Time,
 	commits []GitHubCommit,
 ) ([]GitHubPR, error) {
 	if author == "" {
@@ -753,10 +758,10 @@ func (c *GitHubClient) fetchPRs(
 			}
 		}
 
-		isActiveToday := isTimeWithin(item.CreatedAt, startOfDay, endOfDay) ||
-			isTimeWithin(item.UpdatedAt, startOfDay, endOfDay) ||
-			(item.MergedAt != nil && isTimeWithin(*item.MergedAt, startOfDay, endOfDay)) ||
-			(item.ClosedAt != nil && isTimeWithin(*item.ClosedAt, startOfDay, endOfDay))
+		isActiveToday := isTimeWithin(item.CreatedAt, start, end) ||
+			isTimeWithin(item.UpdatedAt, start, end) ||
+			(item.MergedAt != nil && isTimeWithin(*item.MergedAt, start, end)) ||
+			(item.ClosedAt != nil && isTimeWithin(*item.ClosedAt, start, end))
 
 		// Only consider PRs that either:
 		// 1) Match a day commit (head SHA or commit ref/branch), OR
@@ -793,11 +798,13 @@ func (c *GitHubClient) fetchPRs(
 	return prs, nil
 }
 
+// isTimeWithin reports whether t lies in the HALF-OPEN window [start, end):
+// start is INCLUSIVE, end is EXCLUSIVE. A zero t is never within.
 func isTimeWithin(t, start, end time.Time) bool {
 	if t.IsZero() {
 		return false
 	}
-	return (t.Equal(start) || t.After(start)) && (t.Equal(end) || t.Before(end))
+	return !t.Before(start) && t.Before(end)
 }
 
 // FetchDayActivity retrieves commits and pull requests authored or modified on target date for the specified repository.
@@ -840,18 +847,23 @@ func (c *GitHubClient) FetchDayActivity(ctx context.Context, repo string, date t
 	if loc == nil {
 		loc = time.UTC
 	}
-	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc)
-	endOfDay := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 999999999, loc)
+	start := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc)
+	// Half-open [start, end): end is the CALENDRICAL next midnight (NOT
+	// start+24h), so a DST day that lasts 23h or 25h is still one calendar day.
+	end := time.Date(date.Year(), date.Month(), date.Day()+1, 0, 0, 0, 0, loc)
 
-	sinceStr := startOfDay.UTC().Format(time.RFC3339)
-	untilStr := endOfDay.UTC().Format(time.RFC3339)
+	// GitHub's boundary inclusivity is not contractual, so over-fetch the low
+	// edge by 1s. The authoritative boundary is the client-side HALF-OPEN filter
+	// in fetchCommits / isTimeWithin.
+	sinceStr := start.Add(-time.Second).UTC().Format(time.RFC3339)
+	untilStr := end.UTC().Format(time.RFC3339)
 
-	commits, err := c.fetchCommits(ctx, owner, repoName, repo, author, sinceStr, untilStr, loc)
+	commits, err := c.fetchCommits(ctx, owner, repoName, repo, author, sinceStr, untilStr, start, end, loc)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	prs, err := c.fetchPRs(ctx, owner, repoName, repo, author, startOfDay, endOfDay, commits)
+	prs, err := c.fetchPRs(ctx, owner, repoName, repo, author, start, end, commits)
 	if err != nil {
 		return nil, nil, err
 	}

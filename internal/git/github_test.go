@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	_ "time/tzdata"
 )
 
 func TestNewGitHubClient(t *testing.T) {
@@ -1062,5 +1063,222 @@ func TestAssertion_Subprocess(t *testing.T) {
 				t.Errorf("expected output to contain invariant identifier %s, got: %s", tt.wantTag, string(out))
 			}
 		})
+	}
+}
+
+// GIT-DATE-WINDOW-1: the remote day window is anchored to date.Location(); the
+// `since`/`until` query strings are the pinned UTC instants (since over-fetches
+// 1s below the local midnight) and the client-side filter is half-open.
+
+// GIT-DATE-WINDOW-1: assert the exact since/until query strings for HCM (+07)
+// and New_York (-04) local days.
+func TestFetchDayActivity_WindowSinceUntilPinned(t *testing.T) {
+	hcm, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load Asia/Ho_Chi_Minh: %v", err)
+	}
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load America/New_York: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		day       time.Time
+		wantSince string
+		wantUntil string
+	}{
+		{
+			"Asia/Ho_Chi_Minh +07",
+			time.Date(2026, 10, 6, 0, 0, 0, 0, hcm),
+			"2026-10-05T16:59:59Z", // start 2026-10-05T17:00:00Z minus 1s
+			"2026-10-06T17:00:00Z", // next local midnight 2026-10-07T00:00+07
+		},
+		{
+			"America/New_York -04",
+			time.Date(2026, 10, 6, 0, 0, 0, 0, ny),
+			"2026-10-06T03:59:59Z", // start 2026-10-06T04:00:00Z minus 1s
+			"2026-10-07T04:00:00Z", // next local midnight 2026-10-07T00:00-04
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var since, until string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/commits"):
+					since = r.URL.Query().Get("since")
+					until = r.URL.Query().Get("until")
+					_, _ = w.Write([]byte(`[]`))
+				case r.URL.Path == "/repos/owner/repo/pulls":
+					_, _ = w.Write([]byte(`[]`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			client := NewGitHubClient("test-token", 5*time.Second)
+			client.SetBaseURL(srv.URL)
+			client.SetAuthor("test-author")
+
+			if _, _, err := client.FetchDayActivity(context.Background(), "owner/repo", tc.day); err != nil {
+				t.Fatalf("FetchDayActivity: %v", err)
+			}
+			if since != tc.wantSince {
+				t.Errorf("since = %q, want %q", since, tc.wantSince)
+			}
+			if until != tc.wantUntil {
+				t.Errorf("until = %q, want %q", until, tc.wantUntil)
+			}
+		})
+	}
+}
+
+// GIT-DATE-WINDOW-1: PR activity is filtered half-open [start, end): updated_at
+// exactly at start is INCLUDED, exactly at end is EXCLUDED, at end-1s INCLUDED.
+func TestFetchDayActivity_PRWindowHalfOpen(t *testing.T) {
+	hcm, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load Asia/Ho_Chi_Minh: %v", err)
+	}
+	day := time.Date(2026, 10, 6, 0, 0, 0, 0, hcm)
+	start := day
+	end := time.Date(2026, 10, 7, 0, 0, 0, 0, hcm)
+	far := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	pull := func(n int, updated time.Time) ghPRItem {
+		var p ghPRItem
+		p.Number = n
+		p.Title = fmt.Sprintf("PR %d", n)
+		p.State = "open"
+		p.CreatedAt = far // outside the window, so only UpdatedAt decides activity
+		p.UpdatedAt = updated
+		p.Head.Ref = fmt.Sprintf("branch-%d", n)
+		p.User.Login = "test-author"
+		return p
+	}
+	pulls := []ghPRItem{
+		pull(1, start),                 // exactly start -> included
+		pull(2, end),                   // exactly end   -> excluded
+		pull(3, end.Add(-time.Second)), // end-1s        -> included
+	}
+	pullsJSON, err := json.Marshal(pulls)
+	if err != nil {
+		t.Fatalf("marshal pulls: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/commits"):
+			_, _ = w.Write([]byte(`[]`))
+		case r.URL.Path == "/repos/owner/repo/pulls":
+			_, _ = w.Write(pullsJSON)
+		case strings.Contains(r.URL.Path, "/commits"):
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
+
+	_, prs, err := client.FetchDayActivity(context.Background(), "owner/repo", day)
+	if err != nil {
+		t.Fatalf("FetchDayActivity: %v", err)
+	}
+	got := map[int]bool{}
+	for _, p := range prs {
+		got[p.Number] = true
+	}
+	if !got[1] {
+		t.Errorf("PR updated exactly at start must be included")
+	}
+	if !got[3] {
+		t.Errorf("PR updated at end-1s must be included")
+	}
+	if got[2] {
+		t.Errorf("PR updated exactly at end must be excluded")
+	}
+	if len(prs) != 2 {
+		t.Errorf("expected exactly 2 PRs, got %d: %v", len(prs), got)
+	}
+}
+
+// GIT-DATE-WINDOW-1: the client-side commit filter in fetchCommits is HALF-OPEN
+// [start, end): a commit exactly at start is INCLUDED, exactly at end EXCLUDED,
+// and start-1s / end-1s land on the correct side. The mocked /commits response
+// returns all four regardless of the since/until query, so only the client-side
+// filter decides.
+func TestFetchDayActivity_CommitWindowHalfOpen(t *testing.T) {
+	hcm, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load Asia/Ho_Chi_Minh: %v", err)
+	}
+	day := time.Date(2026, 10, 6, 0, 0, 0, 0, hcm)
+	start := day
+	end := time.Date(2026, 10, 7, 0, 0, 0, 0, hcm)
+
+	mk := func(sha string, ts time.Time) ghCommitItem {
+		var c ghCommitItem
+		c.SHA = sha
+		c.Commit.Author = ghCommitUser{Name: "Test", Email: "test@example.com", Date: ts}
+		c.Commit.Message = "commit " + sha
+		return c
+	}
+	commitsJSON, err := json.Marshal([]ghCommitItem{
+		mk("before-start", start.Add(-time.Second)), // excluded (start-1s)
+		mk("at-start", start),                       // included (start inclusive)
+		mk("before-end", end.Add(-time.Second)),     // included (end-1s)
+		mk("at-end", end),                           // excluded (end exclusive)
+	})
+	if err != nil {
+		t.Fatalf("marshal commits: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/commits"):
+			_, _ = w.Write(commitsJSON)
+		case r.URL.Path == "/repos/owner/repo/pulls":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewGitHubClient("test-token", 5*time.Second)
+	client.SetBaseURL(srv.URL)
+	client.SetAuthor("test-author")
+
+	commits, _, err := client.FetchDayActivity(context.Background(), "owner/repo", day)
+	if err != nil {
+		t.Fatalf("FetchDayActivity: %v", err)
+	}
+	got := map[string]bool{}
+	for _, c := range commits {
+		got[c.SHA] = true
+	}
+	if !got["at-start"] {
+		t.Errorf("commit exactly at start must be INCLUDED")
+	}
+	if !got["before-end"] {
+		t.Errorf("commit at end-1s must be INCLUDED")
+	}
+	if got["before-start"] {
+		t.Errorf("commit at start-1s must be EXCLUDED")
+	}
+	if got["at-end"] {
+		t.Errorf("commit exactly at end must be EXCLUDED")
+	}
+	if len(commits) != 2 {
+		t.Errorf("expected exactly 2 commits, got %d: %v", len(commits), got)
 	}
 }

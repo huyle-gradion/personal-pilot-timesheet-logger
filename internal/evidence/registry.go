@@ -110,9 +110,17 @@ const (
 )
 
 // CollectRequest carries the date a collection targets and the collection mode.
+//
+// Location is the zone of the requested DAY (the runner's configured
+// timezone). It lets a plugin anchor date-based windows to the same zone the
+// target date was chosen in, instead of silently using UTC. A nil Location
+// means UTC, so every existing caller that sets only Date keeps the historical
+// UTC-anchored behavior. It is never persisted — only Date reaches
+// CollectionSummary.Date — and json:"-" keeps it out of any serialization.
 type CollectRequest struct {
-	Date string      `json:"date"`
-	Mode CollectMode `json:"mode,omitempty"`
+	Date     string         `json:"date"`
+	Mode     CollectMode    `json:"mode,omitempty"`
+	Location *time.Location `json:"-"`
 }
 
 // IsContract reports whether the request asks for fixed-input contract mode.

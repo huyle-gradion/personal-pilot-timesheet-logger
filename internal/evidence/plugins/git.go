@@ -312,7 +312,7 @@ func (p *GitPlugin) gather(ctx context.Context, cfg evidence.SourceConfig, req e
 	if !ok {
 		return nil, nil, false, errors.New("git: invalid mode")
 	}
-	date, err := parseDate(req.Date)
+	date, err := parseDate(req.Date, req.Location)
 	if err != nil {
 		return nil, nil, false, errors.New("git: invalid target date")
 	}
@@ -696,10 +696,16 @@ func firstLine(s string) string {
 	return s
 }
 
-func parseDate(date string) (time.Time, error) {
+// parseDate parses a YYYY-MM-DD target date in the request's zone. A nil loc
+// means UTC, preserving the historical UTC parse for callers that supply no
+// zone. It never uses the host's time.Local.
+func parseDate(date string, loc *time.Location) (time.Time, error) {
 	date = strings.TrimSpace(date)
 	if date == "" {
 		return time.Time{}, errors.New("empty date")
 	}
-	return time.Parse("2006-01-02", date)
+	if loc == nil {
+		loc = time.UTC
+	}
+	return time.ParseInLocation("2006-01-02", date, loc)
 }

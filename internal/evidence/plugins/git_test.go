@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/git"
@@ -414,13 +415,12 @@ func TestLocalGitCollectorAdapter_UsesMessageReferencesOnly(t *testing.T) {
 		t.Errorf("branch name 999 must not create a PR reference, got %v", refs)
 	}
 
-	// Deterministic fold. The git plugin CURRENTLY parses the request date as
-	// UTC (parseDate -> time.Parse with no location), so the assertion must use
-	// the commit's UTC day (2026-10-05) to stay independent of the host zone and
-	// wall clock. This is CURRENT behavior, NOT a contract to preserve: the
-	// collector's UTC day window vs the runner's configured-timezone date is a
-	// KNOWN, TRACKED production defect (LOCAL-GIT-TIMEZONE-TEST-1 follow-up) that
-	// a future fix will change; when it does, this request date must be revisited.
+	// Deterministic fold on the nil-Location back-compat path. This request
+	// deliberately omits Location, so parseDate applies its documented
+	// nil=>UTC default and the window is the commit's UTC day (2026-10-05). The
+	// runner now supplies the configured zone via CollectRequest.Location
+	// (GIT-DATE-WINDOW-1), so this is no longer a production defect: it exercises
+	// only the preserved nil=>UTC default, independent of the host zone and clock.
 	reg := evidence.NewRegistry()
 	reg.Register(NewGitPlugin(nil, adapter))
 	ev, _, err := reg.CollectDay(ctx, []evidence.SourceConfig{gitConfig("acme/app")}, evidence.CollectRequest{Date: "2026-10-05"})
@@ -439,8 +439,9 @@ func TestLocalGitCollectorAdapter_UsesMessageReferencesOnly(t *testing.T) {
 // +07 window where a commit's LOCAL (Asia/Ho_Chi_Minh) day differs from its UTC
 // day. Three commits are pinned to fixed instants; a single explicit
 // Asia/Ho_Chi_Minh FetchDayCommits window for local day 2026-10-06 must find all
-// three. This documents CURRENT behavior (the adapter windows by
-// date.Location()); it does NOT assert that CollectDay's UTC parsing is correct.
+// three. The adapter windows by date.Location() (here an explicit
+// Asia/Ho_Chi_Minh supplied by the caller), independent of the plugin's nil=>UTC
+// date parse.
 func TestLocalGitCollectorAdapter_LocalDayBoundaryWindow(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -748,5 +749,79 @@ func TestGitPlugin_VerifyContractsRequiresFixture(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Status != evidence.StatusIncomplete {
 		t.Fatalf("VerifyContracts must require a fixture, got %+v", results)
+	}
+}
+
+// GIT-DATE-WINDOW-1: CollectRequest.Location anchors the parsed target date (and
+// therefore both the local and remote day windows) to the configured zone; a nil
+// Location preserves the historical UTC parse.
+
+// recordingLocalSource records the day instant handed to the local sub-source.
+type recordingLocalSource struct {
+	date  time.Time
+	calls int
+}
+
+func (r *recordingLocalSource) CurrentBranch(context.Context) string { return "main" }
+func (r *recordingLocalSource) RepoName(context.Context) string      { return "acme/app" }
+func (r *recordingLocalSource) FetchDayCommits(_ context.Context, _ string, date time.Time) ([]git.GitHubCommit, error) {
+	r.date = date
+	r.calls++
+	return nil, nil
+}
+func (r *recordingLocalSource) DiscoverPRReferences([]git.GitHubCommit) map[int][]git.GitHubCommit {
+	return nil
+}
+
+// recordingRemoteSource records the day instant handed to the remote sub-source.
+type recordingRemoteSource struct {
+	date  time.Time
+	calls int
+}
+
+func (r *recordingRemoteSource) FetchRemoteDayActivity(_ context.Context, _ string, date time.Time) ([]git.GitHubCommit, []git.GitHubPR, error) {
+	r.date = date
+	r.calls++
+	return nil, nil, nil
+}
+
+func TestGitPlugin_CollectRequestLocationAnchorsDate(t *testing.T) {
+	hcm, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load Asia/Ho_Chi_Minh: %v", err)
+	}
+
+	// With Location: both sub-sources receive HCM midnight.
+	local := &recordingLocalSource{}
+	gh := &recordingRemoteSource{}
+	reg := evidence.NewRegistry()
+	reg.Register(NewGitPlugin(gh, local))
+	if _, _, err := reg.CollectDay(context.Background(), []evidence.SourceConfig{gitConfig("acme/app")},
+		evidence.CollectRequest{Date: "2026-10-06", Location: hcm}); err != nil {
+		t.Fatalf("CollectDay: %v", err)
+	}
+	want := time.Date(2026, 10, 6, 0, 0, 0, 0, hcm)
+	if !local.date.Equal(want) || local.date.Location() != hcm {
+		t.Errorf("local date = %v (loc %v), want %v (loc HCM)", local.date, local.date.Location(), want)
+	}
+	if !gh.date.Equal(want) || gh.date.Location() != hcm {
+		t.Errorf("remote date = %v (loc %v), want %v (loc HCM)", gh.date, gh.date.Location(), want)
+	}
+
+	// With nil Location: the date is still parsed as UTC.
+	local2 := &recordingLocalSource{}
+	gh2 := &recordingRemoteSource{}
+	reg2 := evidence.NewRegistry()
+	reg2.Register(NewGitPlugin(gh2, local2))
+	if _, _, err := reg2.CollectDay(context.Background(), []evidence.SourceConfig{gitConfig("acme/app")},
+		evidence.CollectRequest{Date: "2026-10-06"}); err != nil {
+		t.Fatalf("CollectDay (nil location): %v", err)
+	}
+	wantUTC := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+	if !local2.date.Equal(wantUTC) || local2.date.Location() != time.UTC {
+		t.Errorf("nil-location local date = %v (loc %v), want %v (loc UTC)", local2.date, local2.date.Location(), wantUTC)
+	}
+	if !gh2.date.Equal(wantUTC) || gh2.date.Location() != time.UTC {
+		t.Errorf("nil-location remote date = %v (loc %v), want %v (loc UTC)", gh2.date, gh2.date.Location(), wantUTC)
 	}
 }

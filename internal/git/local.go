@@ -205,14 +205,24 @@ func (l *LocalGitCollector) FetchDayCommits(ctx context.Context, author string, 
 
 	loc := date.Location()
 	if loc == nil {
-		loc = time.Local
+		loc = time.UTC
 	}
-	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc)
-	endOfDay := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 999999999, loc)
+	start := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc)
+	// The window is HALF-OPEN [start, end): end is the CALENDRICAL next
+	// midnight (NOT start+24h), so a DST day that lasts 23h or 25h is still one
+	// calendar day. git's --since/--until are INCLUSIVE, so --until is end minus
+	// 1ns: this yields START INCLUSIVE / END EXCLUSIVE.
+	end := time.Date(date.Year(), date.Month(), date.Day()+1, 0, 0, 0, 0, loc)
+	// LIMITATION (pre-existing, NOT reconciled here): git's --since/--until
+	// filter on the COMMITTER date, while the reported Timestamp below is the
+	// AUTHOR date (%aI). When author and committer dates differ, a commit can
+	// fall on opposite sides of this boundary for the two collectors; the remote
+	// (GitHub) path filters by author date (committer fallback). Changing this
+	// is out of scope.
 
 	// Since and until boundaries in ISO 8601 format.
-	sinceStr := startOfDay.Format(time.RFC3339)
-	untilStr := endOfDay.Format(time.RFC3339)
+	sinceStr := start.Format(time.RFC3339)
+	untilStr := end.Add(-time.Nanosecond).Format(time.RFC3339)
 
 	args := []string{
 		"log",
@@ -259,7 +269,7 @@ func (l *LocalGitCollector) FetchDayCommits(ctx context.Context, author string, 
 			// Fallback ISO format without timezone offset or with space
 			parsedTime, parseErr = time.Parse("2006-01-02T15:04:05", timestampStr)
 			if parseErr != nil {
-				parsedTime = startOfDay
+				parsedTime = start
 			}
 		}
 
