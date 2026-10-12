@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -244,6 +245,24 @@ func TestMarkReviewedEmpty_NoZeroBlock(t *testing.T) {
 	}
 	if rd := Readiness(r); rd.Blocked {
 		t.Errorf("reviewed empty day must not be blocked: %+v", rd)
+	}
+}
+
+// TestMarkReviewedEmpty_RefusesNonEmpty proves a nonempty day can never be marked
+// empty: MarkReviewedEmpty refuses (ErrNotEmpty) and leaves the confirmed work
+// untouched.
+func TestMarkReviewedEmpty_RefusesNonEmpty(t *testing.T) {
+	r := workflow.Record{Date: "2026-10-06", Confirmed: []workflow.ConfirmedInterval{{
+		ID: "c1", Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", Project: "P",
+	}}}
+	if err := MarkReviewedEmpty(&r); !errors.Is(err, ErrNotEmpty) {
+		t.Fatalf("want ErrNotEmpty, got %v", err)
+	}
+	if r.Review != nil && r.Review.Empty {
+		t.Fatalf("a nonempty day must not be marked empty: %+v", r.Review)
+	}
+	if len(r.Confirmed) != 1 {
+		t.Fatalf("confirmed work must be untouched, got %+v", r.Confirmed)
 	}
 }
 

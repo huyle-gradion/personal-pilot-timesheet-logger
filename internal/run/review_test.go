@@ -118,6 +118,60 @@ func TestApplyReview_AIDescriptionReachesConfirmedInterval(t *testing.T) {
 	}
 }
 
+// TestApplyReview_MarkEmptyRefusedWithStagedWork proves a confirm+mark_empty
+// decision set fails closed: the day stays non-empty and nothing is persisted.
+func TestApplyReview_MarkEmptyRefusedWithStagedWork(t *testing.T) {
+	date := "2026-10-06"
+	store := newStore(t)
+	seedEvidence(t, store, date, []evidence.Evidence{gitEvidence("e1", "acme/repo", "fix parser")})
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry()}, Config{})
+	prop, err := r.Propose(ctx, date)
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	if len(prop.Work) == 0 {
+		t.Fatalf("want a work block, got %+v", prop)
+	}
+	err = r.ApplyReview(ctx, date, ReviewDecisions{
+		Confirm:   []ConfirmDecision{{BlockID: prop.Work[0].ID}},
+		MarkEmpty: true,
+	})
+	if err == nil {
+		t.Fatalf("a confirm+mark_empty decision set must fail closed")
+	}
+	got, _ := store.GetDay(ctx, date)
+	if len(got.Confirmed) != 0 {
+		t.Fatalf("nothing may be persisted on the refused apply, got %+v", got.Confirmed)
+	}
+	if got.Review != nil && got.Review.Empty {
+		t.Fatalf("the day must not be marked empty")
+	}
+}
+
+// TestApplyReview_MarkEmptyRefusedWithExistingConfirmed proves a day that already
+// carries confirmed work can never be marked empty.
+func TestApplyReview_MarkEmptyRefusedWithExistingConfirmed(t *testing.T) {
+	date := "2026-10-06"
+	store := newStore(t)
+	seedEvidence(t, store, date, nil)
+	if _, err := store.UpdateDay(ctx, date, func(rec *workflow.Record) error {
+		rec.Confirmed = []workflow.ConfirmedInterval{{
+			ID: "c1", Date: date, StartTime: "09:00", EndTime: "10:00", Project: "P",
+		}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry()}, Config{})
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{MarkEmpty: true}); err == nil {
+		t.Fatalf("marking a nonempty day empty must fail closed")
+	}
+	got, _ := store.GetDay(ctx, date)
+	if len(got.Confirmed) != 1 {
+		t.Fatalf("confirmed work must be preserved, got %+v", got.Confirmed)
+	}
+}
+
 func TestApplyReview_MarkEmpty(t *testing.T) {
 	store := newStore(t)
 	date := "2026-10-06"

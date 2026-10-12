@@ -246,6 +246,70 @@ Notes (exact keys, from the current source):
 - **Description** and **Classification** reach every fragment of a split block.
 - **Classification** changes invalidate a prior approval for the date.
 
+### Bulk actions in the guided review
+
+The guided review (`run --interactive` / `run --plain`) offers an optional **Bulk
+actions** step, placed between the per-block review and the classification step.
+It offers exactly three owner-confirmed actions over exactly one
+mutually-exclusive scope:
+
+- **Bulk-confirm** eligible blocks.
+- **Bulk-exclude** blocks.
+- **Bulk-assign a project** (the label states `assign-project X (confirms the
+  block)`, because assigning a project stages the block's confirmation too).
+
+**Effective eligible set.** Bulk-confirm/assign eligibility is "a **known
+duration**, not a carryover, and **preselected**". In the current proposal only an
+**accepted meeting** satisfies all three: work blocks are `duration=unknown`,
+manual blocks and joint blocks are `Preselected=false`. So the effective
+bulk-confirm/assign set is **accepted meetings with a known duration**; a `work`,
+`manual`, or `joint` scope is **inert** for confirm/assign (its blocks land in the
+`skip` buckets, not the applied set). Bulk-exclude applies to any evidence-backed
+block.
+
+Scopes: `all`, `by kind` (`work`/`meeting`/`joint`/`manual`), `by project`, or an
+explicit block-id list. The step prints the **exact affected-block list** with each
+block's per-block action and the counts (`confirm N`, `skipped unknown-duration M`,
+`requires explicit collision K`) **before** requiring an explicit consent. Nothing
+is staged until that consent, and nothing is written until the single atomic review
+apply, so an abort applies nothing.
+
+Bulk never resolves a conflict silently:
+
+- an **unknown-duration** block (a git observation window) is never bulk-confirmed;
+- a **carryover**, a non-preselected meeting, or a joint block requires an explicit
+  per-block confirmation;
+- a **meeting that overlaps a work/manual interval that is already confirmed
+  (durably, or per-block in this session) or that this bulk action would confirm**
+  is excluded and surfaced as requiring an explicit collision decision (joining
+  stays per-block). An overlapping in-scope block that is merely **skipped** is not
+  a collision, because confirming the meeting alone creates no overlap;
+- a **bulk project assignment** never bypasses the normal project resolution;
+- a **nonempty day is never marked empty**.
+
+Per-block decisions always win: bulk staging is add-if-absent, so a per-block choice
+is never overwritten regardless of order. An empty scope prints
+`no blocks match this scope; nothing staged` and stages nothing.
+
+Known boundaries of the bulk step:
+
+- A bare per-block **"Leave unconfirmed"** stages nothing, so a later bulk-confirm
+  **is** authoritative over it (the preview shows the block in the applied set).
+- The exclude warning scans the **durable** confirmed intervals, not in-session
+  staged confirms; an in-session confirm that a later bulk-exclude would drop is
+  applied as consented, without a warning.
+- The pre-existing "no staged work ⇒ mark empty" rule still applies: if every
+  in-scope block is skipped and nothing else is confirmed, the day is marked
+  reviewed-empty (bulk never sets `MarkEmpty` itself).
+- A degenerate **zero-length** confirmed interval (already flagged
+  `unconfirmed_duration` by readiness) is treated by the collision gate as a
+  full-day span, so it can over-block a meeting; fix the interval rather than
+  relying on the bulk step to resolve it.
+- The collision gate compares **same-day clock-minute spans**: a genuinely
+  post-midnight confirmed interval is not numerically compared against a
+  same-clock-day meeting. This is largely precluded by the day-scoped record
+  model (a cross-midnight interval is split at local midnight).
+
 ### 3. Classification (explicit, authoritative)
 
 Classification is an explicit choice; config maps and recent selections are

@@ -317,6 +317,13 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 	}
 
 	if d.MarkEmpty {
+		// A nonempty day is NEVER marked empty: refuse when the record already
+		// carries confirmed work or the decision set stages any confirm/manual
+		// work. Returning here (before MarkReviewed) fails the whole apply closed,
+		// so no partial confirm is persisted.
+		if len(d.Confirm) > 0 || len(d.Manual) > 0 || len(rec.Confirmed) > 0 {
+			return fmt.Errorf("run: mark_empty: the day has confirmed or staged work and cannot be marked empty")
+		}
 		return review.MarkReviewedEmpty(rec)
 	}
 

@@ -64,6 +64,12 @@ validation only**: it is never a payload field, and the local record's
 day and requires the explicit `--all` flag. The exact change list is printed
 **before** applying. Without `--all`, only `--block-id <ID>` is honored.
 
+The guided review's **Bulk actions** step (see
+[product usage](product-usage.md)) deliberately **excludes** classification: it
+offers only confirm / exclude / assign-project. A **bulk classification
+assignment is deferred**, so a classification is always an explicit per-interval
+choice (or the explicit `classify select --all`).
+
 ### First-run and recent choices
 
 - First-run suggestion: activity type `internal project`, classification

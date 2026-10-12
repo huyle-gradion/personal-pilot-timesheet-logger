@@ -300,6 +300,13 @@ func (g *guided) gatherReview(ctx context.Context, prop proposal.Proposal, rec *
 		}
 	}
 
+	// Optional bulk actions over an exact, mutually-exclusive scope. Staged only,
+	// ADD-IF-ABSENT (a per-block decision always wins), with an exact affected-block
+	// preview and explicit consent. Nothing is written until the final atomic apply.
+	if err := g.bulkReview(ctx, prop, rec, &dec); err != nil {
+		return dec, err
+	}
+
 	// Authoritative classification/activity selection (gathered BEFORE the
 	// deliberate confirmation, so it is applied in the SAME atomic review).
 	if err := g.classificationStep(ctx, prop, rec, &dec); err != nil {
@@ -688,6 +695,586 @@ func (g *guided) chooseLinks(ctx context.Context, prop proposal.Proposal, evByID
 		}
 	}
 	return out, nil
+}
+
+// --- bulk actions -----------------------------------------------------------
+//
+// Bulk actions are an OPTIONAL step that stages a scoped decision onto the SAME
+// staged run.ReviewDecisions the per-block review builds, so nothing is written
+// until the single atomic ApplyReview and an abort applies nothing. Exactly one
+// mutually-exclusive scope applies (all | by kind | by project | explicit ids).
+// Bulk never silently resolves a collision, never bulk-confirms an unknown
+// duration, a carryover, or an unaccepted block, and never marks a day empty.
+// Staging is ADD-IF-ABSENT, so a per-block decision ALWAYS wins regardless of
+// order.
+
+// bulkScopeMode selects how a bulk action's affected block set is chosen. Exactly
+// one mode applies per action; the scopes are mutually exclusive.
+type bulkScopeMode int
+
+const (
+	bulkScopeAll bulkScopeMode = iota
+	bulkScopeByKind
+	bulkScopeByProject
+	bulkScopeByIDs
+)
+
+// bulkScope is one mutually-exclusive scope: every block, one block kind, one
+// project, or an explicit block-id list.
+type bulkScope struct {
+	mode    bulkScopeMode
+	kind    proposal.BlockKind
+	project string
+	ids     []string
+}
+
+// bulkActionKind is a staged bulk action. The set is limited to the owner-confirmed
+// actions; bulk classification is deliberately deferred.
+type bulkActionKind int
+
+const (
+	bulkActionConfirm bulkActionKind = iota
+	bulkActionExclude
+	bulkActionAssignProject
+)
+
+// bulkAction is one bulk action with its parameter (the project for an assign).
+type bulkAction struct {
+	kind    bulkActionKind
+	project string
+}
+
+// bulkDisposition is how one in-scope block is treated by a planned action.
+type bulkDisposition int
+
+const (
+	// bulkApply means the action stages a decision for this block.
+	bulkApply bulkDisposition = iota
+	// bulkSkipUnknown means the duration is not known: never bulk-confirmed.
+	bulkSkipUnknown
+	// bulkSkipCollision means the block overlaps an already-confirmed (or
+	// per-block-confirmed, or in-scope applied) work/manual interval: it requires
+	// an explicit per-block collision decision.
+	bulkSkipCollision
+	// bulkSkipExplicit means the block requires an explicit confirmation
+	// (carryover, or a block that is not preselected).
+	bulkSkipExplicit
+	// bulkSkipNoEvidence means there is no evidence id to exclude.
+	bulkSkipNoEvidence
+)
+
+// bulkPlan is the pure preview of one bulk action: the in-scope candidates, each
+// one's disposition, and the affected (applied) blocks.
+type bulkPlan struct {
+	candidates []proposal.ProposedTimeBlock
+	disp       map[string]bulkDisposition
+	applied    []proposal.ProposedTimeBlock
+}
+
+// bulkReview is the optional "Bulk actions" step. It offers the owner-confirmed
+// actions over an exact scope, prints the EXACT affected-block list with each
+// block's per-block action and counts, and requires an explicit consent before
+// staging anything. An empty scope stages nothing and never falls through to
+// mark-empty.
+func (g *guided) bulkReview(ctx context.Context, prop proposal.Proposal, rec *workflow.Record, dec *run.ReviewDecisions) error {
+	idx, err := g.p.Choose(ctx, "Bulk actions (optional)", []promptOption{
+		{Label: "No bulk actions"},
+		{Label: "Bulk-confirm eligible blocks"},
+		{Label: "Bulk-exclude blocks"},
+		{Label: "Bulk-assign a project"},
+	}, 0)
+	if err != nil {
+		return err
+	}
+	if idx == 0 {
+		return nil
+	}
+	var action bulkAction
+	switch idx {
+	case 1:
+		action = bulkAction{kind: bulkActionConfirm}
+	case 2:
+		action = bulkAction{kind: bulkActionExclude}
+	case 3:
+		project, err := g.p.Input(ctx, "Project to assign", "required", "")
+		if err != nil {
+			return err
+		}
+		action = bulkAction{kind: bulkActionAssignProject, project: strings.TrimSpace(project)}
+		if action.project == "" {
+			g.section("Bulk actions")
+			fmt.Fprintln(g.stdout, "  a bulk project assignment needs a project; nothing staged")
+			return nil
+		}
+	}
+
+	scope, err := g.chooseBulkScope(ctx, prop)
+	if err != nil {
+		return err
+	}
+
+	// An empty scope stages nothing and NEVER marks the day empty.
+	if len(g.bulkCandidates(prop, scope)) == 0 {
+		g.section("Bulk actions")
+		fmt.Fprintf(g.stdout, "  action: %s · scope: %s\n", bulkActionLabel(action), bulkScopeLabel(scope))
+		fmt.Fprintln(g.stdout, "  no blocks match this scope; nothing staged")
+		return nil
+	}
+
+	plan := g.planBulk(prop, scope, action, rec, *dec)
+	g.printBulkPreview(rec, scope, action, plan)
+	if len(plan.applied) == 0 {
+		fmt.Fprintln(g.stdout, "  nothing to stage for this action; nothing staged")
+		return nil
+	}
+	ok, err := g.p.Confirm(ctx, "Stage these bulk actions? (nothing is written until the final review confirmation)", false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Fprintln(g.stdout, "  bulk action declined; nothing staged")
+		return nil
+	}
+	stageBulk(dec, action, plan.applied)
+	return nil
+}
+
+// chooseBulkScope asks for the one mutually-exclusive scope of a bulk action.
+func (g *guided) chooseBulkScope(ctx context.Context, prop proposal.Proposal) (bulkScope, error) {
+	idx, err := g.p.Choose(ctx, "Bulk scope (exactly one)", []promptOption{
+		{Label: "All blocks"},
+		{Label: "By kind"},
+		{Label: "By project"},
+		{Label: "Explicit block ids"},
+	}, 0)
+	if err != nil {
+		return bulkScope{}, err
+	}
+	switch idx {
+	case 1:
+		kinds := []proposal.BlockKind{proposal.BlockWork, proposal.BlockMeeting, proposal.BlockJoint, proposal.BlockManual}
+		opts := make([]promptOption, 0, len(kinds))
+		for _, k := range kinds {
+			opts = append(opts, promptOption{Label: blockKindLabel(k)})
+		}
+		kidx, err := g.p.Choose(ctx, "Block kind", opts, 0)
+		if err != nil {
+			return bulkScope{}, err
+		}
+		return bulkScope{mode: bulkScopeByKind, kind: kinds[kidx]}, nil
+	case 2:
+		projects := g.bulkProjects(prop)
+		if len(projects) == 0 {
+			// No block carries a project: an empty scope.
+			return bulkScope{mode: bulkScopeByProject}, nil
+		}
+		opts := make([]promptOption, 0, len(projects))
+		for _, p := range projects {
+			opts = append(opts, promptOption{Label: p})
+		}
+		pidx, err := g.p.Choose(ctx, "Project", opts, 0)
+		if err != nil {
+			return bulkScope{}, err
+		}
+		return bulkScope{mode: bulkScopeByProject, project: projects[pidx]}, nil
+	case 3:
+		raw, err := g.p.Input(ctx, "Block ids (comma-separated)", "short or full id", "")
+		if err != nil {
+			return bulkScope{}, err
+		}
+		return bulkScope{mode: bulkScopeByIDs, ids: splitCSV(raw)}, nil
+	default:
+		return bulkScope{mode: bulkScopeAll}, nil
+	}
+}
+
+// bulkProjects returns the distinct, sorted non-empty projects among the proposed
+// blocks, for the "by project" scope.
+func (g *guided) bulkProjects(prop proposal.Proposal) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, b := range proposedBlocks(prop) {
+		p := strings.TrimSpace(b.Project.Project)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// bulkCandidates returns the proposed blocks in the given scope, in a stable
+// (start, id) order.
+func (g *guided) bulkCandidates(prop proposal.Proposal, scope bulkScope) []proposal.ProposedTimeBlock {
+	var out []proposal.ProposedTimeBlock
+	for _, b := range proposedBlocks(prop) {
+		if bulkScopeMatches(scope, b) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// bulkScopeMatches reports whether a block is in the scope. An explicit id list
+// matches a full block id or its short form.
+func bulkScopeMatches(scope bulkScope, b proposal.ProposedTimeBlock) bool {
+	switch scope.mode {
+	case bulkScopeAll:
+		return true
+	case bulkScopeByKind:
+		return b.Kind == scope.kind
+	case bulkScopeByProject:
+		p := strings.TrimSpace(scope.project)
+		if p == "" {
+			// No named project: the scope matches nothing (never "no project").
+			return false
+		}
+		return strings.TrimSpace(b.Project.Project) == p
+	case bulkScopeByIDs:
+		for _, id := range scope.ids {
+			id = strings.TrimSpace(id)
+			if id != "" && (id == b.ID || id == shortID(b.ID)) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// bulkMinutesPerDay is one day in minutes, for cross-midnight clock spans.
+const bulkMinutesPerDay = 24 * 60
+
+// planBulk computes (without mutating anything) the exact affected set and the
+// disposition of every in-scope block, so the preview matches what would be
+// staged. rec and dec supply the already-confirmed / per-block-confirmed work an
+// overlap must respect (see bulkMeetingCollision).
+func (g *guided) planBulk(prop proposal.Proposal, scope bulkScope, action bulkAction, rec *workflow.Record, dec run.ReviewDecisions) bulkPlan {
+	candidates := g.bulkCandidates(prop, scope)
+	// In-scope work/manual blocks this action would itself confirm. Empty today
+	// (only a preselected meeting is eligible), but kept so an overlap with a
+	// block this action confirms is never silently resolved.
+	appliedWork := map[string]bool{}
+	if action.kind != bulkActionExclude {
+		for _, b := range candidates {
+			if b.Kind != proposal.BlockMeeting && bulkConfirmEligible(b) {
+				appliedWork[b.ID] = true
+			}
+		}
+	}
+	plan := bulkPlan{candidates: candidates, disp: make(map[string]bulkDisposition, len(candidates))}
+	for _, b := range candidates {
+		d := bulkDispositionFor(prop, action, b, rec, dec, appliedWork)
+		plan.disp[b.ID] = d
+		if d == bulkApply {
+			plan.applied = append(plan.applied, b)
+		}
+	}
+	return plan
+}
+
+// bulkDispositionFor classifies one block for an action. A confirm/assign never
+// touches a colliding block, an unknown duration, or a block that needs an
+// explicit confirmation; an exclude needs at least one evidence id.
+func bulkDispositionFor(prop proposal.Proposal, action bulkAction, b proposal.ProposedTimeBlock, rec *workflow.Record, dec run.ReviewDecisions, appliedWork map[string]bool) bulkDisposition {
+	if action.kind == bulkActionExclude {
+		if len(blockEvidenceIDs(b)) == 0 {
+			return bulkSkipNoEvidence
+		}
+		return bulkApply
+	}
+	if bulkMeetingCollision(b, prop, rec, dec, appliedWork) {
+		return bulkSkipCollision
+	}
+	if !b.Duration.Known {
+		return bulkSkipUnknown
+	}
+	if !bulkConfirmEligible(b) {
+		return bulkSkipExplicit
+	}
+	return bulkApply
+}
+
+// bulkConfirmEligible reports whether a block may be BULK-confirmed: only a block
+// with a KNOWN duration that is preselected and is not a carryover qualifies.
+// Unknown-duration, carryover, and non-preselected blocks each require an explicit
+// per-block confirmation; a joint block (its overlap) is never bulk-confirmed.
+func bulkConfirmEligible(b proposal.ProposedTimeBlock) bool {
+	if b.Kind == proposal.BlockJoint {
+		return false
+	}
+	return b.Duration.Known && !b.Carryover && b.Preselected
+}
+
+// bulkMeetingCollision reports whether a proposed meeting (or joint block) would
+// overlap a work/manual interval that is, or will be, a confirmed interval:
+//   - a durable confirmed interval in rec (already confirmed), or
+//   - a proposal block staged as confirmed per-block (dec.Confirm), or
+//   - an in-scope work/manual block APPLIED by this bulk action, or
+//   - a manual interval staged as confirmed in this review (dec.Manual Confirm).
+//
+// Bulk never resolves such an overlap: the meeting is surfaced and requires an
+// explicit per-block collision decision. An in-scope work/manual block that is
+// skipped (not applied) is NOT a collision, because confirming the meeting alone
+// creates no overlap.
+func bulkMeetingCollision(b proposal.ProposedTimeBlock, prop proposal.Proposal, rec *workflow.Record, dec run.ReviewDecisions, appliedWork map[string]bool) bool {
+	if b.Kind == proposal.BlockJoint {
+		return true
+	}
+	if b.Kind != proposal.BlockMeeting {
+		return false
+	}
+	if bulkOverlapsConfirmed(b, rec) {
+		return true
+	}
+	var blocking []proposal.ProposedTimeBlock
+	blocks := proposalBlockIndex(prop)
+	for _, c := range dec.Confirm {
+		if w, ok := blocks[c.BlockID]; ok && w.Kind != proposal.BlockMeeting {
+			blocking = append(blocking, w)
+		}
+	}
+	for _, w := range collisionCandidates(prop) {
+		if appliedWork[w.ID] {
+			blocking = append(blocking, w)
+		}
+	}
+	// A manual interval staged as confirmed in THIS review (e.g. added via the
+	// missing-work question, which runs BEFORE the bulk step) is materialized with
+	// its absolute span, so a meeting overlapping it is never bulk-confirmed into a
+	// double-count.
+	for _, m := range dec.Manual {
+		if !m.Confirm || m.Start.IsZero() || m.End.IsZero() {
+			continue
+		}
+		blocking = append(blocking, proposal.ProposedTimeBlock{
+			Kind: proposal.BlockManual, StartAt: m.Start, EndAt: m.End,
+		})
+	}
+	return len(collidingWork(b, blocking)) > 0
+}
+
+// bulkOverlapsConfirmed reports whether a proposed block's clock span overlaps a
+// durable confirmed work/manual interval (a confirmed meeting is not a work
+// collision). A cross-midnight interval is treated as crossing midnight.
+func bulkOverlapsConfirmed(b proposal.ProposedTimeBlock, rec *workflow.Record) bool {
+	if rec == nil {
+		return false
+	}
+	bs, be, ok := blockMinuteRange(b)
+	if !ok {
+		return false
+	}
+	for _, ci := range rec.Confirmed {
+		if ci.Kind == string(proposal.BlockMeeting) {
+			continue
+		}
+		cs, ok1 := clockMinutes(ci.StartTime)
+		ce, ok2 := clockMinutes(ci.EndTime)
+		if !ok1 || !ok2 {
+			continue
+		}
+		if ce <= cs {
+			ce += bulkMinutesPerDay
+		}
+		if bs < ce && cs < be {
+			return true
+		}
+	}
+	return false
+}
+
+// blockMinuteRange returns a proposed block's [start,end) clock minutes, treating
+// an end at or before the start as crossing midnight.
+func blockMinuteRange(b proposal.ProposedTimeBlock) (int, int, bool) {
+	s, ok1 := clockMinutes(b.Start)
+	e, ok2 := clockMinutes(b.End)
+	if !ok1 || !ok2 {
+		return 0, 0, false
+	}
+	if e <= s {
+		e += bulkMinutesPerDay
+	}
+	return s, e, true
+}
+
+// blockEvidenceIDs returns a block's deduped, non-empty evidence ids.
+func blockEvidenceIDs(b proposal.ProposedTimeBlock) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, id := range b.EvidenceIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// stageBulk stages the affected blocks onto the decisions with ADD-IF-ABSENT
+// semantics, so a per-block decision always wins regardless of order.
+func stageBulk(dec *run.ReviewDecisions, action bulkAction, applied []proposal.ProposedTimeBlock) {
+	for _, b := range applied {
+		switch action.kind {
+		case bulkActionConfirm:
+			addConfirmAbsent(dec, run.ConfirmDecision{BlockID: b.ID})
+		case bulkActionExclude:
+			// Exclude EVERY evidence id of the block (deduped), so a
+			// multi-evidence block is fully removed.
+			for _, ev := range blockEvidenceIDs(b) {
+				addExcludeAbsent(dec, run.ExcludeDecision{EvidenceID: ev, Reason: "user_excluded"})
+			}
+		case bulkActionAssignProject:
+			addConfirmAbsent(dec, run.ConfirmDecision{BlockID: b.ID, Project: strings.TrimSpace(action.project)})
+		}
+	}
+}
+
+// proposedBlocks returns every proposed block (work, meeting, manual) in a stable
+// (start, id) order.
+func proposedBlocks(prop proposal.Proposal) []proposal.ProposedTimeBlock {
+	out := make([]proposal.ProposedTimeBlock, 0, len(prop.Work)+len(prop.Meetings)+len(prop.Manual))
+	out = append(out, prop.Work...)
+	out = append(out, prop.Meetings...)
+	out = append(out, prop.Manual...)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartAt.Equal(out[j].StartAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].StartAt.Before(out[j].StartAt)
+	})
+	return out
+}
+
+// printBulkPreview prints the EXACT affected-block list with each block's
+// per-block action, the counts, and any exclude warning, before consent.
+func (g *guided) printBulkPreview(rec *workflow.Record, scope bulkScope, action bulkAction, plan bulkPlan) {
+	g.section("Bulk actions")
+	fmt.Fprintf(g.stdout, "  action: %s\n", bulkActionLabel(action))
+	fmt.Fprintf(g.stdout, "  scope: %s (%d block(s))\n", bulkScopeLabel(scope), len(plan.candidates))
+	counts := map[bulkDisposition]int{}
+	for _, b := range plan.candidates {
+		d := plan.disp[b.ID]
+		counts[d]++
+		fmt.Fprintf(g.stdout, "  %-18s %s\n", bulkDispositionLabel(d), g.blockLabel(b))
+	}
+	fmt.Fprintf(g.stdout, "  %s %d · skipped unknown-duration %d · requires explicit collision %d\n",
+		bulkActionLabel(action), counts[bulkApply], counts[bulkSkipUnknown], counts[bulkSkipCollision])
+	if counts[bulkSkipExplicit] > 0 {
+		fmt.Fprintf(g.stdout, "  requires an explicit confirmation %d\n", counts[bulkSkipExplicit])
+	}
+	if counts[bulkSkipNoEvidence] > 0 {
+		fmt.Fprintf(g.stdout, "  skipped (no evidence to exclude) %d\n", counts[bulkSkipNoEvidence])
+	}
+	g.printBulkWarnings(rec, action, plan)
+}
+
+// printBulkWarnings surfaces, before consent, any confirmed interval that a bulk
+// exclude would drop because it would lose ALL of its evidence: every evidence id
+// of the interval is covered by the excluded set (and the interval is not manual).
+func (g *guided) printBulkWarnings(rec *workflow.Record, action bulkAction, plan bulkPlan) {
+	if action.kind != bulkActionExclude || rec == nil {
+		return
+	}
+	excludedEv := map[string]bool{}
+	for _, b := range plan.applied {
+		for _, ev := range blockEvidenceIDs(b) {
+			excludedEv[ev] = true
+		}
+	}
+	for _, ci := range rec.Confirmed {
+		if ci.Manual || len(ci.EvidenceIDs) == 0 {
+			continue
+		}
+		losesAll := true
+		for _, ev := range ci.EvidenceIDs {
+			if !excludedEv[ev] {
+				losesAll = false
+				break
+			}
+		}
+		if losesAll {
+			fmt.Fprintf(g.stdout, "  ! excluding would drop confirmed interval %s (loses all evidence)\n", shortID(ci.ID))
+		}
+	}
+}
+
+func bulkActionLabel(a bulkAction) string {
+	switch a.kind {
+	case bulkActionConfirm:
+		return "confirm"
+	case bulkActionExclude:
+		return "exclude"
+	case bulkActionAssignProject:
+		return "assign-project " + orDash(a.project) + " (confirms the block)"
+	default:
+		return "?"
+	}
+}
+
+func bulkScopeLabel(scope bulkScope) string {
+	switch scope.mode {
+	case bulkScopeAll:
+		return "all blocks"
+	case bulkScopeByKind:
+		return "kind " + blockKindLabel(scope.kind)
+	case bulkScopeByProject:
+		return "project " + orDash(scope.project)
+	case bulkScopeByIDs:
+		return "explicit ids"
+	default:
+		return "?"
+	}
+}
+
+func bulkDispositionLabel(d bulkDisposition) string {
+	switch d {
+	case bulkApply:
+		return "apply"
+	case bulkSkipUnknown:
+		return "skip (unknown)"
+	case bulkSkipCollision:
+		return "skip (collision)"
+	case bulkSkipExplicit:
+		return "skip (explicit)"
+	case bulkSkipNoEvidence:
+		return "skip (no evidence)"
+	default:
+		return "?"
+	}
+}
+
+// addConfirmAbsent stages a confirm decision ONLY when the block has no staged
+// confirm yet, so a per-block decision always wins regardless of order.
+func addConfirmAbsent(dec *run.ReviewDecisions, c run.ConfirmDecision) {
+	if hasConfirm(*dec, c.BlockID) {
+		return
+	}
+	dec.Confirm = append(dec.Confirm, c)
+}
+
+// hasExclude reports whether an evidence id is already staged for exclusion.
+func hasExclude(dec run.ReviewDecisions, evID string) bool {
+	for _, e := range dec.Exclude {
+		if e.EvidenceID == evID {
+			return true
+		}
+	}
+	return false
+}
+
+// addExcludeAbsent stages an exclude decision ONLY when that evidence id is not
+// already staged as excluded.
+func addExcludeAbsent(dec *run.ReviewDecisions, ex run.ExcludeDecision) {
+	if hasExclude(*dec, ex.EvidenceID) {
+		return
+	}
+	dec.Exclude = append(dec.Exclude, ex)
 }
 
 // --- classification ---------------------------------------------------------

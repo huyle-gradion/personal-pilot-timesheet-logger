@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/proposal"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/review"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/run"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/selection"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
@@ -208,9 +210,10 @@ func TestGuided_InteractiveUnderCIRefuses(t *testing.T) {
 // --- the real plain CLI path ------------------------------------------------
 
 // plainScenarioStdin scripts the review of ONE git work block: edit it (index 2),
-// set a real span and project, answer no to missing work, pick catalog option 1,
-// and confirm the review.
-const plainScenarioStdin = "3\n16:00\n17:00\nProj\ndid work\nn\n1\ny\n"
+// set a real span and project, answer no to missing work, decline bulk actions
+// (choice 1 = "No bulk actions"), pick catalog option 1, and confirm the review.
+// The plain prompter numbers choices from 1.
+const plainScenarioStdin = "3\n16:00\n17:00\nProj\ndid work\nn\n1\n1\ny\n"
 
 func TestGuided_PlainRealPath_AppliesReviewAndPreviews(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "test-token")
@@ -319,7 +322,7 @@ func TestGuided_ParityWithScriptedReview(t *testing.T) {
 	gr, gstore := newGuidedRunner(t, gStorage, nil, cfg)
 	var out, errb bytes.Buffer
 	p := &fakePrompter{
-		choose:   []int{2, 0},
+		choose:   []int{2, 0, 0},
 		inputs:   []string{"16:00", "17:00", "Proj", "did work"},
 		confirms: []bool{false, true},
 	}
@@ -416,7 +419,7 @@ func TestGuided_EmptyDayReviewedEmpty(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	p := &fakePrompter{confirms: []bool{false, true}} // no missing work, confirm review
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, true}} // no bulk, no missing work, confirm review
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("empty guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -441,8 +444,8 @@ func TestGuided_EmptyRefreshPreservesConfirmed(t *testing.T) {
 
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 	var out, errb bytes.Buffer
-	// Existing interval is "kept" (index 0); no missing work; confirm review.
-	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, true}}
+	// Existing interval is "kept" (index 0); no bulk actions; no missing work; confirm review.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -477,8 +480,8 @@ func TestGuided_IncompleteSourceAckUnblocks(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0), acknowledge incomplete (true), no missing work, confirm review.
-	p := &fakePrompter{choose: []int{0}, confirms: []bool{true, false, true}}
+	// keep existing (0), acknowledge incomplete (true), no missing work, no bulk, confirm review.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{true, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -503,8 +506,8 @@ func TestGuided_IncompleteSourceNotAckedBlocks(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0), do NOT acknowledge (false), no missing work, confirm review.
-	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, false, true}}
+	// keep existing (0), do NOT acknowledge (false), no missing work, no bulk, confirm review.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, true}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
 	if code != exitBlocked {
 		t.Fatalf("want a blocked preview, got %d\n%s", code, out.String())
@@ -528,9 +531,9 @@ func TestGuided_ClassificationSuggestionNeverApplied(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// confirm the block (0), no missing work, LEAVE classification unset (last option),
+	// confirm the block (0), no missing work, no bulk (0), LEAVE classification unset (last option),
 	// confirm the review.
-	p := &fakePrompter{choose: []int{2, 3}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{2, 0, 3}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
 	// The plan blocks on the unresolved classification, but the review IS applied.
 	if code != exitBlocked {
@@ -584,7 +587,7 @@ func TestGuided_JournalNarrativeLinkedToManualInterval(t *testing.T) {
 	// narrative: skip (0); missing work: yes; manual interval inputs; link the journal (multi [0]);
 	// add another? no; classification: option 1; confirm review.
 	p := &fakePrompter{
-		choose:   []int{0, 0}, // narrative skip, classification option 0
+		choose:   []int{0, 0, 0}, // narrative skip, no bulk, classification option 0
 		inputs:   []string{"09:00", "10:00", "Proj", "did journal work"},
 		multi:    [][]int{{0}},
 		confirms: []bool{true, false, true}, // missing=yes, add-another=no, final=yes
@@ -644,7 +647,7 @@ func TestGuided_MissingWorkQuestionAskedOnce(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	p := &fakePrompter{choose: []int{2, 0}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{2, 0, 0}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -674,7 +677,7 @@ func TestGuided_ZeroRemoteWrites(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, remote, cfg)
 
 	var out, errb bytes.Buffer
-	p := &fakePrompter{choose: []int{2, 0}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{2, 0, 0}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -706,7 +709,7 @@ func TestGuided_NoHiddenCredentialRetrieval(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	p := &fakePrompter{confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("a no-source guided run must not touch the Keychain: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -753,9 +756,9 @@ func TestGuided_CollisionJoinCountsOnce(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// manual block confirm (0), meeting join (4), classification (0);
+	// manual block confirm (0), meeting join (4), no bulk (0), classification (0);
 	// no missing work, confirm review.
-	p := &fakePrompter{choose: []int{0, 4, 0}, confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{0, 4, 0, 0}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -794,8 +797,8 @@ func TestGuided_CancelAfterChoicesPreservesPriorState(t *testing.T) {
 
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 	var out, errb bytes.Buffer
-	// keep existing (0); no missing work; then CANCEL at the final confirmation.
-	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, false}}
+	// keep existing (0); no bulk (0); no missing work; then CANCEL at the final confirmation.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
 	if code == exitOK {
 		t.Fatalf("a cancelled final confirmation must not succeed")
@@ -854,7 +857,7 @@ func TestGuided_RetainedClassificationFollowup(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -885,7 +888,7 @@ func TestGuidedOfflineHarness(t *testing.T) {
 	// journal: skip (0); missing work: yes; manual 09:00-10:00 linked to the note;
 	// add another: no; classification: option 0; confirm review.
 	p := &fakePrompter{
-		choose:   []int{0, 0},
+		choose:   []int{0, 0, 0},
 		inputs:   []string{"09:00", "10:00", "Proj", "reviewed the parser fix"},
 		multi:    [][]int{{0}},
 		confirms: []bool{true, false, true},
@@ -920,7 +923,7 @@ func TestGuided_ExistingConfirmedEditable(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	// edit the existing interval (1): keep times/project, set a new description.
-	p := &fakePrompter{choose: []int{1}, inputs: []string{"", "", "", "edited description"}, confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{1, 0}, inputs: []string{"", "", "", "edited description"}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -955,9 +958,9 @@ func TestGuided_CarrySurfacedAndExplicit(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// confirm the carry block (0); no missing work (false); classification option
-	// 0; apply the review (true).
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, true}}
+	// confirm the carry block (0); no missing work (false); no bulk (0);
+	// classification option 0; apply the review (true).
+	p := &fakePrompter{choose: []int{0, 0, 0}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -999,9 +1002,9 @@ func TestGuided_CarryNotConfirmedWritesNothing(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// confirm the carry block (0); no missing work (false); classification 0;
-	// DECLINE the final confirmation (false).
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false}}
+	// confirm the carry block (0); no missing work (false); no bulk (0);
+	// classification 0; DECLINE the final confirmation (false).
+	p := &fakePrompter{choose: []int{0, 0, 0}, confirms: []bool{false, false}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code == exitOK {
 		t.Fatalf("a declined confirmation must not exit ok:\n%s", out.String())
 	}
@@ -1028,8 +1031,8 @@ func TestGuided_ExplicitAckStagedNoPrompt(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0); NO ack prompt (already staged); no missing work; confirm.
-	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, true}}
+	// keep existing (0); NO ack prompt (already staged); no missing work; no bulk; confirm.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "cal-work", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1055,8 +1058,8 @@ func TestGuided_UnknownAckReportedAndSkipped(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	// keep existing (0); the unknown ack is skipped so the real prompt appears;
-	// acknowledge it (true); no missing work; confirm.
-	p := &fakePrompter{choose: []int{0}, confirms: []bool{true, false, true}}
+	// acknowledge it (true); no missing work; no bulk; confirm.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{true, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "bogus", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1081,8 +1084,8 @@ func TestGuided_ExplicitAckNotAppliedOnAbort(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0); no missing work; CANCEL at the final confirmation.
-	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, false}}
+	// keep existing (0); no bulk (0); no missing work; CANCEL at the final confirmation.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "cal-work", testDate, p, &out, &errb)
 	if code == exitOK {
 		t.Fatalf("a cancelled final confirmation must not succeed")
@@ -1145,7 +1148,7 @@ func TestGuided_ExistingEditInvalidTimeReprompts(t *testing.T) {
 	// edit existing (1); an invalid start, then a valid 09:30-10:30; keep project;
 	// new description; no missing work; confirm.
 	p := &fakePrompter{
-		choose:   []int{1},
+		choose:   []int{1, 0},
 		inputs:   []string{"9am", "09:30", "10:30", "", "edited"},
 		confirms: []bool{false, true},
 	}
@@ -1179,7 +1182,7 @@ func TestGuided_ProposedEditInvalidTimeReprompts(t *testing.T) {
 	// edit the proposed block (2); an invalid end, then a valid pair; project; desc;
 	// no missing work; classification; confirm.
 	p := &fakePrompter{
-		choose:   []int{2, 0},
+		choose:   []int{2, 0, 0},
 		inputs:   []string{"16:00", "25:00", "17:00", "Proj", "work"},
 		confirms: []bool{false, true},
 	}
@@ -1377,8 +1380,8 @@ func TestGuided_SectionHierarchyAndProvenance(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	// exclude the git work block (1), skip the narrative (0), no missing work,
-	// confirm the review.
-	p := &fakePrompter{choose: []int{1, 0}, confirms: []bool{false, true}}
+	// no bulk, confirm the review.
+	p := &fakePrompter{choose: []int{1, 0, 0}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1410,8 +1413,8 @@ func TestGuided_UnknownDurationMarkerIsExplicit(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	// leave the work block unconfirmed (3), skip the narrative (0), no missing
-	// work, confirm the review.
-	p := &fakePrompter{choose: []int{3, 0}, confirms: []bool{false, true}}
+	// work, no bulk, confirm the review.
+	p := &fakePrompter{choose: []int{3, 0, 0}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1451,8 +1454,8 @@ func TestGuided_IncompleteSourceWarningIsProminent(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0); do NOT acknowledge (false); no missing work; confirm.
-	p := &fakePrompter{choose: []int{0}, confirms: []bool{false, false, true}}
+	// keep existing (0); do NOT acknowledge (false); no missing work; no bulk; confirm.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, true}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
 	if code != exitBlocked {
 		t.Fatalf("want a blocked preview, got %d\n%s", code, out.String())
@@ -1493,8 +1496,8 @@ func TestGuided_MeetingAttendanceLabelAndCalendarProvenance(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// leave the meeting unconfirmed (3); no missing work; confirm.
-	p := &fakePrompter{choose: []int{3}, confirms: []bool{false, true}}
+	// leave the meeting unconfirmed (3); no missing work; no bulk; confirm.
+	p := &fakePrompter{choose: []int{3, 0}, confirms: []bool{false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1595,5 +1598,471 @@ func TestPlainPrompter_PrintsOneTimeHelp(t *testing.T) {
 	}
 	if n := strings.Count(out.String(), "EOF or Ctrl-C aborts"); n != 1 {
 		t.Fatalf("the help hint must print exactly once, got %d:\n%s", n, out.String())
+	}
+}
+
+// --- BULK-REVIEW-1: scoped bulk actions --------------------------------------
+
+// bulkTime is a fixed UTC clock for constructing proposed blocks in bulk tests.
+func bulkTime(h, m int) time.Time { return time.Date(2026, 10, 6, h, m, 0, 0, time.UTC) }
+
+func bulkClock(h, m int) string { return fmt.Sprintf("%02d:%02d", h, m) }
+
+func bulkMeeting(id, project string, sh, sm, eh, em int, accepted bool) proposal.ProposedTimeBlock {
+	return proposal.ProposedTimeBlock{
+		ID: id, Kind: proposal.BlockMeeting, Date: testDate,
+		Start: bulkClock(sh, sm), End: bulkClock(eh, em),
+		StartAt: bulkTime(sh, sm), EndAt: bulkTime(eh, em),
+		Duration:    evidence.KnownDuration((eh*60 + em) - (sh*60 + sm)),
+		Preselected: accepted,
+		Project:     proposal.ProjectResolution{Project: project},
+	}
+}
+
+func bulkManual(id, project string, sh, sm, eh, em int) proposal.ProposedTimeBlock {
+	return proposal.ProposedTimeBlock{
+		ID: id, Kind: proposal.BlockManual, Date: testDate,
+		Start: bulkClock(sh, sm), End: bulkClock(eh, em),
+		StartAt: bulkTime(sh, sm), EndAt: bulkTime(eh, em),
+		Duration: evidence.KnownDuration((eh*60 + em) - (sh*60 + sm)),
+		Project:  proposal.ProjectResolution{Project: project},
+	}
+}
+
+func bulkWork(id, project string, sh, sm, eh, em int) proposal.ProposedTimeBlock {
+	return proposal.ProposedTimeBlock{
+		ID: id, Kind: proposal.BlockWork, Date: testDate,
+		Start: bulkClock(sh, sm), End: bulkClock(eh, em),
+		StartAt: bulkTime(sh, sm), EndAt: bulkTime(eh, em),
+		Duration: evidence.UnknownDuration(),
+		Project:  proposal.ProjectResolution{Project: project},
+	}
+}
+
+// bulkPreviewSection extracts the deterministic "Bulk actions" preview block (from
+// its title through the counts line), so a parity check ignores prompt chrome.
+func bulkPreviewSection(out string) string {
+	var b strings.Builder
+	in := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "Bulk actions" {
+			in = true
+		}
+		if !in {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+		if strings.Contains(line, "requires explicit collision") {
+			break
+		}
+	}
+	return b.String()
+}
+
+// TestBulk_PreviewListsExactAffectedBlocks proves the preview lists EXACTLY the
+// in-scope blocks with their per-block action and the counts.
+func TestBulk_PreviewListsExactAffectedBlocks(t *testing.T) {
+	meeting := bulkMeeting("meeting_aaa111", "Proj", 9, 0, 10, 0, true)
+	work := bulkWork("work_bbb222", "", 11, 0, 11, 30)
+	prop := proposal.Proposal{Work: []proposal.ProposedTimeBlock{work}, Meetings: []proposal.ProposedTimeBlock{meeting}}
+
+	var out bytes.Buffer
+	g := &guided{stdout: &out, stderr: &bytes.Buffer{}}
+	scope := bulkScope{mode: bulkScopeAll}
+	action := bulkAction{kind: bulkActionConfirm}
+	plan := g.planBulk(prop, scope, action, nil, run.ReviewDecisions{})
+	g.printBulkPreview(nil, scope, action, plan)
+
+	if len(plan.candidates) != 2 {
+		t.Fatalf("want exactly 2 in-scope blocks, got %d", len(plan.candidates))
+	}
+	if len(plan.applied) != 1 || plan.applied[0].ID != meeting.ID {
+		t.Fatalf("want only the accepted meeting applied, got %+v", plan.applied)
+	}
+	if plan.disp[work.ID] != bulkSkipUnknown {
+		t.Fatalf("want the work block skipped as unknown-duration, got %v", plan.disp[work.ID])
+	}
+	got := out.String()
+	for _, want := range []string{
+		"confirm 1", "skipped unknown-duration 1", "requires explicit collision 0",
+		"apply", "skip (unknown)", shortID(meeting.ID), shortID(work.ID),
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preview missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestBulk_UnknownDurationNeverConfirmed proves an unknown-duration block is never
+// bulk-confirmed and never reaches dec.Confirm.
+func TestBulk_UnknownDurationNeverConfirmed(t *testing.T) {
+	work := bulkWork("work_bbb222", "", 11, 0, 11, 30)
+	prop := proposal.Proposal{Work: []proposal.ProposedTimeBlock{work}}
+	g := &guided{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	action := bulkAction{kind: bulkActionConfirm}
+	plan := g.planBulk(prop, bulkScope{mode: bulkScopeAll}, action, nil, run.ReviewDecisions{})
+	if plan.disp[work.ID] != bulkSkipUnknown {
+		t.Fatalf("want the work block skipped as unknown-duration, got %v", plan.disp[work.ID])
+	}
+	dec := run.ReviewDecisions{}
+	stageBulk(&dec, action, plan.applied)
+	if len(dec.Confirm) != 0 {
+		t.Fatalf("an unknown-duration block must never be bulk-confirmed, got %+v", dec.Confirm)
+	}
+}
+
+// TestBulk_ExcludeDropsEveryEvidenceAndWarns proves a multi-evidence block's
+// exclude stages EVERY evidence id (deduped), and the preview warns only for a
+// confirmed interval that loses ALL of its evidence.
+func TestBulk_ExcludeDropsEveryEvidenceAndWarns(t *testing.T) {
+	work := bulkWork("work_bbb222", "Proj", 11, 0, 11, 30)
+	work.EvidenceIDs = []string{"e1", "e2", "e1"} // deduped
+	prop := proposal.Proposal{Work: []proposal.ProposedTimeBlock{work}}
+	rec := &workflow.Record{Confirmed: []workflow.ConfirmedInterval{
+		{ID: "c1", EvidenceIDs: []string{"e1"}},               // loses all evidence -> warn
+		{ID: "c2", EvidenceIDs: []string{"e1", "e2"}},         // loses all evidence -> warn
+		{ID: "c3", EvidenceIDs: []string{"e1", "e9"}},         // keeps e9 -> no warn
+		{ID: "c4", Manual: true, EvidenceIDs: []string{"e1"}}, // manual -> no warn
+	}}
+	action := bulkAction{kind: bulkActionExclude}
+	scope := bulkScope{mode: bulkScopeAll}
+
+	var out bytes.Buffer
+	g := &guided{stdout: &out, stderr: &bytes.Buffer{}}
+	plan := g.planBulk(prop, scope, action, rec, run.ReviewDecisions{})
+	g.printBulkPreview(rec, scope, action, plan)
+	got := out.String()
+	for _, want := range []string{"would drop confirmed interval c1", "would drop confirmed interval c2"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the preview must warn %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"interval c3", "interval c4"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("the preview must NOT warn %q:\n%s", bad, got)
+		}
+	}
+
+	dec := run.ReviewDecisions{}
+	stageBulk(&dec, action, plan.applied)
+	if len(dec.Exclude) != 2 {
+		t.Fatalf("want every deduped evidence id staged for exclusion, got %+v", dec.Exclude)
+	}
+	for _, want := range []string{"e1", "e2"} {
+		if !hasExclude(dec, want) {
+			t.Fatalf("want %q staged for exclusion, got %+v", want, dec.Exclude)
+		}
+	}
+}
+
+// TestBulk_CollisionRequiresExplicitDecision proves a meeting overlapping a
+// per-block-confirmed work block is excluded from the bulk set, is surfaced as
+// requiring an explicit collision decision, and never reaches the record (so no
+// overlap reason appears in Readiness).
+func TestBulk_CollisionRequiresExplicitDecision(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		m1 := manualEvidenceAt("m1", "Proj", time.Date(2026, 10, 6, 9, 0, 0, 0, loc), time.Date(2026, 10, 6, 10, 0, 0, 0, loc))
+		cal1 := meetingEvidenceAt("cal1", time.Date(2026, 10, 6, 9, 30, 0, 0, loc), time.Date(2026, 10, 6, 10, 30, 0, 0, loc))
+		cal2 := meetingEvidenceAt("cal2", time.Date(2026, 10, 6, 13, 0, 0, 0, loc), time.Date(2026, 10, 6, 14, 0, 0, 0, loc))
+		cal2.ProjectHints = []string{"Proj"}
+		rec.CollectedEvidence = append(rec.CollectedEvidence, m1, cal1, cal2)
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// confirm M per-block (0); leave cal1, cal2 unconfirmed (3); bulk-confirm (1)
+	// scope by kind (1) meeting (1); classification for M and cal2 (0,0); no
+	// missing work; consent; apply.
+	p := &fakePrompter{choose: []int{0, 3, 3, 1, 1, 1, 0, 0}, confirms: []bool{false, true, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 2 {
+		t.Fatalf("want the per-block M + the non-colliding cal2, got %+v", rec.Confirmed)
+	}
+	for _, ci := range rec.Confirmed {
+		if containsString(ci.EvidenceIDs, "cal1") {
+			t.Fatalf("the colliding meeting must NOT be confirmed, got %+v", ci)
+		}
+	}
+	foundCal2 := false
+	for _, ci := range rec.Confirmed {
+		if containsString(ci.EvidenceIDs, "cal2") {
+			foundCal2 = true
+		}
+	}
+	if !foundCal2 {
+		t.Fatalf("want cal2 confirmed, got %+v", rec.Confirmed)
+	}
+	for _, reason := range review.Readiness(rec).Reasons {
+		if strings.HasPrefix(reason, "overlap:") {
+			t.Fatalf("no overlap may reach the record, got reason %q", reason)
+		}
+	}
+	if !strings.Contains(out.String(), "skip (collision)") || !strings.Contains(out.String(), "requires explicit collision 1") {
+		t.Fatalf("the collision must be surfaced as requiring an explicit decision:\n%s", out.String())
+	}
+}
+
+// TestBulk_CollisionWithAlreadyConfirmedWorkIsSkipped is the F-A regression: a
+// meeting overlapping an ALREADY-CONFIRMED work interval that is OUT of scope is
+// still skipped as a collision (never silently bulk-confirmed into an overlap).
+func TestBulk_CollisionWithAlreadyConfirmedWorkIsSkipped(t *testing.T) {
+	meeting := bulkMeeting("meeting_aaa111", "Proj", 9, 30, 10, 30, true)
+	prop := proposal.Proposal{Meetings: []proposal.ProposedTimeBlock{meeting}}
+	// An already-confirmed work interval overlaps the meeting and is OUT of scope
+	// (scope = by kind meeting).
+	rec := &workflow.Record{Confirmed: []workflow.ConfirmedInterval{{
+		ID: "c1", Kind: string(proposal.BlockWork), StartTime: "09:00", EndTime: "10:00", Project: "Proj",
+	}}}
+	scope := bulkScope{mode: bulkScopeByKind, kind: proposal.BlockMeeting}
+	action := bulkAction{kind: bulkActionConfirm}
+	g := &guided{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	plan := g.planBulk(prop, scope, action, rec, run.ReviewDecisions{})
+	if plan.disp[meeting.ID] != bulkSkipCollision {
+		t.Fatalf("a meeting overlapping already-confirmed work must be a collision, got %v", plan.disp[meeting.ID])
+	}
+	dec := run.ReviewDecisions{}
+	stageBulk(&dec, action, plan.applied)
+	if len(dec.Confirm) != 0 {
+		t.Fatalf("the colliding meeting must never be bulk-confirmed, got %+v", dec.Confirm)
+	}
+}
+
+// TestBulk_CollisionWithStagedManualIsSkipped is the NF-1 regression: a meeting
+// left unconfirmed per-block, then a manual interval overlapping it added via the
+// missing-work question (which runs BEFORE the bulk step and stages
+// ManualDecision{Confirm:true}), then bulk-confirm by kind meeting -> the meeting
+// is skipped as requiring an explicit collision decision, and the applied record
+// has no overlapping confirmed intervals.
+func TestBulk_CollisionWithStagedManualIsSkipped(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence,
+			meetingEvidenceAt("cal1", time.Date(2026, 10, 6, 9, 30, 0, 0, loc), time.Date(2026, 10, 6, 10, 30, 0, 0, loc)))
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// leave cal1 unconfirmed (3); missing work = YES; manual 09:00-10:00 (no links,
+	// no second interval); bulk-confirm (1) by kind (1) meeting (1); classification
+	// (0); apply.
+	p := &fakePrompter{
+		choose:   []int{3, 1, 1, 1, 0},
+		inputs:   []string{"09:00", "10:00", "Proj", "manual overlap"},
+		confirms: []bool{true, false, true},
+	}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 {
+		t.Fatalf("only the manual interval may be confirmed, got %+v", rec.Confirmed)
+	}
+	if containsString(rec.Confirmed[0].EvidenceIDs, "cal1") {
+		t.Fatalf("the colliding meeting must NOT be confirmed, got %+v", rec.Confirmed[0])
+	}
+	for _, reason := range review.Readiness(rec).Reasons {
+		if strings.HasPrefix(reason, "overlap:") {
+			t.Fatalf("no overlap may reach the record, got reason %q", reason)
+		}
+	}
+	if !strings.Contains(out.String(), "skip (collision)") || !strings.Contains(out.String(), "requires explicit collision 1") {
+		t.Fatalf("the collision must be surfaced as requiring an explicit decision:\n%s", out.String())
+	}
+}
+
+// TestBulk_PerBlockOverrideWinsBothOrders proves a per-block decision always wins,
+// regardless of order: bulk staging is ADD-IF-ABSENT, per-block staging replaces.
+func TestBulk_PerBlockOverrideWinsBothOrders(t *testing.T) {
+	block := bulkMeeting("meeting_aaa111", "Proj", 9, 0, 10, 0, true)
+
+	// Per-block first, then bulk: the per-block project must win.
+	dec := run.ReviewDecisions{}
+	addConfirm(&dec, run.ConfirmDecision{BlockID: block.ID, Project: "PerBlock"})
+	stageBulk(&dec, bulkAction{kind: bulkActionAssignProject, project: "Bulk"}, []proposal.ProposedTimeBlock{block})
+	if len(dec.Confirm) != 1 || dec.Confirm[0].Project != "PerBlock" {
+		t.Fatalf("a per-block decision must win over a later bulk add, got %+v", dec.Confirm)
+	}
+
+	// Bulk first, then per-block: the per-block replacement must win.
+	dec2 := run.ReviewDecisions{}
+	stageBulk(&dec2, bulkAction{kind: bulkActionAssignProject, project: "Bulk"}, []proposal.ProposedTimeBlock{block})
+	if len(dec2.Confirm) != 1 || dec2.Confirm[0].Project != "Bulk" {
+		t.Fatalf("bulk must stage the project add-if-absent, got %+v", dec2.Confirm)
+	}
+	addConfirm(&dec2, run.ConfirmDecision{BlockID: block.ID, Project: "PerBlock"})
+	if len(dec2.Confirm) != 1 || dec2.Confirm[0].Project != "PerBlock" {
+		t.Fatalf("a per-block decision must replace a prior bulk add, got %+v", dec2.Confirm)
+	}
+}
+
+// TestBulk_AbortAtBulkConsentAppliesNothing proves an abort at the bulk consent
+// applies nothing (the staged-only model never writes before the atomic apply).
+func TestBulk_AbortAtBulkConsentAppliesNothing(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence,
+			meetingEvidenceAt("cal2", time.Date(2026, 10, 6, 13, 0, 0, 0, loc), time.Date(2026, 10, 6, 14, 0, 0, 0, loc)))
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// leave the meeting unconfirmed (3); bulk-confirm (1) scope all (0); then ABORT
+	// at the bulk consent (the confirm queue runs out after the missing-work answer).
+	p := &fakePrompter{choose: []int{3, 1, 0}, confirms: []bool{false}}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
+	if code == exitOK {
+		t.Fatalf("an abort at the bulk consent must not succeed:\n%s", out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("an abort must apply nothing, got %+v", rec.Confirmed)
+	}
+	if rec.Review != nil && rec.Review.Reviewed {
+		t.Fatalf("an abort must not mark the day reviewed")
+	}
+}
+
+// TestBulk_DeclineFinalConsentAfterBulkAppliesNothing proves a declined final
+// confirmation after a staged bulk action applies nothing.
+func TestBulk_DeclineFinalConsentAfterBulkAppliesNothing(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence,
+			meetingEvidenceAt("cal2", time.Date(2026, 10, 6, 13, 0, 0, 0, loc), time.Date(2026, 10, 6, 14, 0, 0, 0, loc)))
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// leave (3); bulk-confirm (1) scope all (0); classification (0); DECLINE final.
+	p := &fakePrompter{choose: []int{3, 1, 0, 0}, confirms: []bool{false, true, false}}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
+	if code == exitOK {
+		t.Fatalf("a declined final confirmation must not succeed:\n%s", out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("a declined final confirmation must apply nothing, got %+v", rec.Confirmed)
+	}
+}
+
+// TestBulk_PlainAndTUIParity proves the TUI and plain paths share the staging code
+// through the prompter seam: the same scenario yields identical ReviewDecisions and
+// an identical preview.
+func TestBulk_PlainAndTUIParity(t *testing.T) {
+	meeting := bulkMeeting("meeting_aaa111", "Proj", 9, 0, 10, 0, true)
+	prop := proposal.Proposal{Meetings: []proposal.ProposedTimeBlock{meeting}}
+
+	// TUI-equivalent (the fake prompter is 0-based).
+	var tuiOut bytes.Buffer
+	tui := &guided{p: &fakePrompter{choose: []int{1, 0}, confirms: []bool{true}}, stdout: &tuiOut, stderr: &bytes.Buffer{}}
+	var tuiDec run.ReviewDecisions
+	if err := tui.bulkReview(context.Background(), prop, nil, &tuiDec); err != nil {
+		t.Fatalf("tui bulkReview: %v", err)
+	}
+
+	// Plain (1-based stdin: 2=Bulk-confirm, 1=All, y=consent).
+	var plainOut bytes.Buffer
+	plain := &guided{p: newPlainPrompter(strings.NewReader("2\n1\ny\n"), &plainOut), stdout: &plainOut, stderr: &bytes.Buffer{}}
+	var plainDec run.ReviewDecisions
+	if err := plain.bulkReview(context.Background(), prop, nil, &plainDec); err != nil {
+		t.Fatalf("plain bulkReview: %v", err)
+	}
+
+	if !reflect.DeepEqual(tuiDec.Confirm, plainDec.Confirm) {
+		t.Fatalf("staged decisions differ:\n tui=%+v\n plain=%+v", tuiDec.Confirm, plainDec.Confirm)
+	}
+	if len(tuiDec.Confirm) != 1 || tuiDec.Confirm[0].BlockID != meeting.ID {
+		t.Fatalf("want the meeting staged once, got %+v", tuiDec.Confirm)
+	}
+	got, want := bulkPreviewSection(plainOut.String()), bulkPreviewSection(tuiOut.String())
+	if got == "" || got != want {
+		t.Fatalf("the preview must be identical:\n plain=%q\n tui=%q", got, want)
+	}
+}
+
+// TestBulk_EmptyScopeStagesNothing proves an empty scope stages nothing and never
+// falls through to mark-empty.
+func TestBulk_EmptyScopeStagesNothing(t *testing.T) {
+	work := bulkWork("work_bbb222", "", 11, 0, 11, 30)
+	prop := proposal.Proposal{Work: []proposal.ProposedTimeBlock{work}}
+	var out bytes.Buffer
+	dec := run.ReviewDecisions{}
+	// action=confirm (index 1), scope=explicit ids (index 3), a bogus id.
+	g := &guided{p: &fakePrompter{choose: []int{1, 3}, inputs: []string{"bogus"}}, stdout: &out, stderr: &bytes.Buffer{}}
+	if err := g.bulkReview(context.Background(), prop, nil, &dec); err != nil {
+		t.Fatalf("bulkReview: %v", err)
+	}
+	if len(dec.Confirm) != 0 || len(dec.Exclude) != 0 || len(dec.Project) != 0 || dec.MarkEmpty {
+		t.Fatalf("an empty scope must stage nothing, got %+v", dec)
+	}
+	if !strings.Contains(out.String(), "no blocks match this scope; nothing staged") {
+		t.Fatalf("want the empty-scope message:\n%s", out.String())
+	}
+}
+
+// TestBulk_EmptyScopeDoesNotMarkEmpty proves an empty-scope bulk step leaves an
+// existing nonempty day non-empty (the empty-scope path never marks a day empty).
+func TestBulk_EmptyScopeDoesNotMarkEmpty(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) { *rec = readyRecord(testDate) })
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// keep existing (0); bulk-confirm (1) with an explicit bogus id (3) -> empty
+	// scope; no missing work; confirm review.
+	p := &fakePrompter{choose: []int{0, 1, 3}, inputs: []string{"bogus"}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "no blocks match this scope; nothing staged") {
+		t.Fatalf("want the empty-scope message:\n%s", out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Review != nil && rec.Review.Empty {
+		t.Fatalf("an empty bulk scope must not mark the day empty")
+	}
+	if len(rec.Confirmed) != 1 {
+		t.Fatalf("the existing confirmed work must be preserved, got %+v", rec.Confirmed)
 	}
 }

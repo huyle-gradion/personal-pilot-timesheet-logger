@@ -35,6 +35,9 @@ var (
 	ErrLinkedEvidenceNotFound = errors.New("review: linked evidence not found")
 	ErrLinkedEvidenceCycle    = errors.New("review: linked evidence cycle")
 	ErrInvalidClassification  = errors.New("review: classification id is required")
+	// ErrNotEmpty refuses to mark a day reviewed-empty when it already carries
+	// confirmed work: an empty review must never drop confirmed intervals.
+	ErrNotEmpty = errors.New("review: day has confirmed work and cannot be marked empty")
 )
 
 // Stable exclusion reasons.
@@ -641,10 +644,15 @@ func linkedEvidenceHasCycle(graph map[string][]string, start string) bool {
 
 // MarkReviewedEmpty records a reviewed day with no work, preserving any prior
 // exclusions, attendance decisions, and acknowledgments. Confirmed stays
-// untouched/empty: no zero-hour block is invented.
+// untouched/empty: no zero-hour block is invented. It REFUSES (ErrNotEmpty) when
+// the record already carries confirmed work, so a nonempty day can never be
+// marked empty and its confirmed intervals can never be dropped.
 func MarkReviewedEmpty(r *workflow.Record) error {
 	if r == nil {
 		return ErrNilRecord
+	}
+	if len(r.Confirmed) > 0 {
+		return fmt.Errorf("%w: %d confirmed interval(s)", ErrNotEmpty, len(r.Confirmed))
 	}
 	if r.Review == nil {
 		r.Review = &workflow.ReviewState{}
