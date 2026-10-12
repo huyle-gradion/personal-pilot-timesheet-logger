@@ -176,7 +176,7 @@ updated; unless a genuine full live complete catalog proves the choice, explicit
 authoritative reselection is required and invalidates the old approval. No automatic
 submit rerun.
 
-Next bounded slice: INTERACTIVE-PERFORMANCE-1. Remaining priorities and unchanged
+Next bounded slice: MIDNIGHT-CARRY-1. Remaining priorities and unchanged
 production boundaries are recorded in the takeover work graph in [state](state.md).
 
 ### CONFIG-GUIDED-1, guided configuration
@@ -202,6 +202,25 @@ only). The full uncached suite is FAILED solely on the pre-existing,
 time-of-day-dependent `internal/evidence/plugins`
 `TestLocalGitCollectorAdapter_UsesMessageReferencesOnly` (untouched package),
 which is not a CONFIG-GUIDED-1 regression and needs a separate disposition.
+
+### INTERACTIVE-PERFORMANCE-1, interactive performance
+
+Source-accepted and committed locally at `2d67de3`, parent `05fd2f5`, after an
+independent review (accepted; informational observations only). Measurement was
+local and read-only; no production writes, live access beyond a single read-only
+catalog timing probe, publication, or private-record change.
+
+| Owner requirement | Evidence on the accepted snapshot |
+| --- | --- |
+| Measure binary provenance, startup, collection, catalog, rendering, user wait separately | compiled startup ~20 ms warm vs `go run` ~0.4-2.7 s; live catalog fetch ~0.4-0.9 s; rendering/user-wait NOT measured (no pty) and recorded as unmeasured |
+| Fix the measured bottleneck; do not guess | compiled-binary provenance guidance (docs + skill) plus in-run catalog fetch memoization; no optimization was chosen without a measurement |
+| Avoid repeated identical fetches while preserving freshness and approval safety | per-run, query-keyed memoization; live-first preserved; cache fallback not memoized; per-run only; submit-time live re-proof unchanged |
+
+Carried informational: memo key normalization matches the persistent cache;
+memoized provenance is frozen at fetch time (intended); the doc phrasing about
+`go run` is slightly absolute but acceptable. The pre-existing
+`internal/evidence/plugins` time-window test remains unaddressed and is not this
+slice's regression. Source acceptance does not establish production readiness.
 
 ### Shared-workflow coverage
 

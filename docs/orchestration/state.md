@@ -33,8 +33,10 @@ Current work graph, in priority order, with no invented deadlines:
 2. CONFIG-GUIDED-1: closed, source-accepted and committed locally (`59991a8`);
    supported `timesheet config init|edit` flow plus equivalent skill questions
    with offline validation, exact preview and explicit overwrite consent.
-3. INTERACTIVE-PERFORMANCE-1: planned, measure binary provenance, startup,
-   collection, catalog, rendering and user wait before choosing an optimization.
+3. INTERACTIVE-PERFORMANCE-1: closed, source-accepted and committed locally
+   (`2d67de3`); measured provenance/startup/catalog latency, then fixed
+   compiled-binary guidance and in-run catalog fetch reuse. Rendering/user-wait
+   unmeasured (no pty).
 4. MIDNIGHT-CARRY-1: planned, exact linked local-date fragments and visible carry;
    confirm guided second-day handling without automatic approval.
 5. TUI-USABILITY-1: planned, designer-owned hierarchy, labels, provenance,
@@ -161,8 +163,32 @@ accepts it; no shipped example, test, or existing config uses `"."`). Source
 acceptance does not establish live-read compatibility or production readiness;
 production submission remains blocked. Next dependency-ready bounded task is
 INTERACTIVE-PERFORMANCE-1 (measure binary provenance, startup, collection,
-catalog, rendering and user wait before choosing any optimization). No
-implementation of that next slice has been dispatched yet.
+catalog, rendering and user wait before choosing an optimization).
+
+### INTERACTIVE-PERFORMANCE-1 closure, 2026-10-12
+
+INTERACTIVE-PERFORMANCE-1 is source-accepted and committed locally at `2d67de3`
+(parent `05fd2f5`), on `feat/s9-integrated-acceptance`. Measurement (local,
+read-only) found compiled-binary startup about 20 ms warm versus `go run` about
+0.4-2.7 s per invocation, and a live catalog fetch about 0.4-0.9 s. The owner
+selected both measured fixes. The slice makes compiled-binary provenance explicit
+for interactive sessions (docs and skill) and memoizes the guided run's catalog
+fetches per run, keyed by the normalized query (live-first preserved; the
+fresh-cache fallback on a live error is not memoized; per-run only; no effect on
+submit/approval or the submit-time live re-proof). TUI render and user-wait were
+NOT measured (no pty) and are recorded as unmeasured, not assumed. Implementer
+@fixer `ses_ed292ed90ffe5YFjo9H4Hl5XZg`; independent review @oracle
+`ses_ed28bc5d3ffe7zi5bE2titcgM7` (accepted; informational observations only).
+Parent final checks exited 0 for gofmt (slice files), build, vet, the full
+uncached suite, `-race ./cmd/timesheet`, `./tests/...`, the guided offline
+harness, and `git diff --check`. The full suite is green at this time; the
+pre-existing `internal/evidence/plugins`
+`TestLocalGitCollectorAdapter_UsesMessageReferencesOnly` remains a latent
+time-window failure (00:00-06:59 local `+07`) and is unaddressed here. Source
+acceptance does not establish live-read compatibility or production readiness;
+production submission remains blocked. Next dependency-ready bounded task is
+MIDNIGHT-CARRY-1 (exact linked local-date fragments with a visible carry, and a
+confirmed guided second-day review that never auto-approves).
 
 Local record reconciliation, read-only, 2026-10-11:
 - October 8 current workflow schema 1, revision 8: 14 confirmed intervals,
@@ -1092,6 +1118,19 @@ Open findings and disposition: F1-F4/F6 closed. Carried non-blocking: F5 (declar
 Commit and publication status: committed locally 59991a8; NOT pushed, no PR, no merge.
 Vault sync status: pending (delegated to @ai-database).
 Next gate and blockers: INTERACTIVE-PERFORMANCE-1 (measure before optimizing). Production submission remains blocked; live-read compatibility and production readiness not established.
+```
+
+```text
+2026-10-12 / INTERACTIVE-PERFORMANCE-1 / authorized -> measuring -> implementing -> reviewing -> accepted -> committed
+Owner authority reference: submission-revalidation takeover grant (direct specialist dispatch, bounded implementation, independent review/fix/re-review, accepted-slice local commits, repo records, vault sync). Owner selected both measured fixes. Not authorized: production creates/edits/deletes, Keychain changes, push/publication/merge/force-push, silent product-scope changes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 2d67de3 (parent 05fd2f5) / 6 files, +192/-6: cmd/timesheet/{interactive,interactive_test}.go; docs/agents/{product-usage,guided-workflow}.md; .claude/skills/timesheet/{SKILL,workflow}.md. Accepted hashes matched the review manifest before staging.
+Measurement (local, read-only): compiled-binary startup ~20 ms warm; go run ~0.4-2.7 s per invocation; live catalog fetch ~0.4-0.9 s (MCP initialize included); bin/ stale (gitignored). TUI render/user-wait NOT measured (no pty).
+Worker/reviewer report references and verification level: implementer @fixer ses_ed292ed90ffe5YFjo9H4Hl5XZg; independent review @oracle ses_ed28bc5d3ffe7zi5bE2titcgM7 (accepted; IN-1..IN-4 informational). Parent log .../opencode/interactive-performance-1-parent-checks.log: gofmt/build/vet/full uncached suite/-race cmd/timesheet/./tests/.../guided harness/diff-check all exit 0.
+Behavior: the guided run memoizes catalog fetches per run by normalized query (live-first preserved; cache fallback on live error not memoized; per-run only; no submit/approval effect). Docs and skill steer interactive sessions to a compiled ./bin/timesheet instead of go run. No command semantics change.
+Open findings and disposition: none blocking. Informational: memo key normalization matches the persistent cache; memoized provenance frozen at fetch time (intended); doc phrasing slightly absolute re go run build cache (acceptable). Pre-existing internal/evidence/plugins time-window test remains unaddressed (not this slice).
+Commit and publication status: committed locally 2d67de3; NOT pushed, no PR, no merge. Local bin/timesheet rebuilt (gitignored).
+Vault sync status: pending (delegated to @ai-database).
+Next gate and blockers: MIDNIGHT-CARRY-1 (exact linked local-date fragments with a visible carry; guided second-day review without auto-approval). Production submission remains blocked.
 ```
 
 ## Documentation review

@@ -61,3 +61,5 @@ S1 (durable workflow store) `d471b46`. S2 (crash-safe submission) `d4d6c00`. S3 
 PERSONAL-WORKFLOW-1 (personal daily workflow): A (optional read-only journal evidence source) `195fb4e`; B (guided daily review through explicit local gates) `543966d`. Both independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). See [state](state.md) and [the personal workflow handoff](personal-workflow-handoff.md).
 
 CONFIG-GUIDED-1 (guided configuration): `59991a8`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). Adds a supported `timesheet config init|edit` flow plus equivalent skill questions. See [state](state.md) and [the implementation plan](implementation-plan.md).
+
+INTERACTIVE-PERFORMANCE-1 (interactive performance): `2d67de3`. Independently reviewed, closed source-accepted, local only (not pushed). Measured provenance/startup/catalog latency, then added compiled-binary guidance and in-run catalog fetch reuse. See [state](state.md) and [the implementation plan](implementation-plan.md).
