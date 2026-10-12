@@ -24,6 +24,16 @@ journal evidence. Preserve the unrelated untracked `.github/`, `.tickets/`,
 ownership is not reassigned and they must not be staged. Historical records
 release the overlapping worker scopes; they do not prove host task liveness.
 
+### Tracker and integration publication grant, 2026-10-12
+
+The owner authorized closing the missing tracker workflow on the accepted
+development branch: create the outstanding items as GitHub issues, open one
+integration pull request from `feat/s9-integrated-acceptance` into `main`, and
+commit the independently reviewed documentation change to
+`docs/orchestration/commit-and-vault.md`. Merge, force-push, history rewrite,
+`main` pushes, Gradion access, production writes, and Keychain modification
+remain unauthorized. The pull request is a review surface only.
+
 Current work graph, in priority order, with no invented deadlines:
 1. SUBMISSION-REVALIDATION-1: closed, source-accepted and committed locally;
    vault synchronization complete.
@@ -1479,6 +1489,22 @@ CI: no GitHub Actions workflows are configured for this repository (no tracked .
 Commit and publication status: branch feat/s9-integrated-acceptance created on origin; remote tip verified equal to local HEAD 6c3da32 via `git ls-remote` and a post-push `git fetch`. Branch URL https://github.com/huyle-gradion/personal-pilot-timesheet-logger/tree/feat/s9-integrated-acceptance; compare URL https://github.com/huyle-gradion/personal-pilot-timesheet-logger/compare/main...feat/s9-integrated-acceptance . No merge, no PR, no main push, no force-push. The records commit that carries this entry is the subsequent remote tip on the same branch. No PR was created or merged.
 Vault sync status: pending (delegated to @ai-database).
 Next gate and blockers: publication does not resolve the outstanding product decisions. Owner decisions still owed and NOT resolved by publishing: accept or correct the six unauthorized incident entries; authorize local invalidation of the two self-approved plans (02f64e8d/41a775ab); disposition cmd/list-entries. Production submission remains blocked (live MCP/agent/Keychain write verification outstanding; no live-write authority). Live reconciliation, approval invalidation, Keychain modification, and production timesheet writes remain separately gated.
+```
+
+```text
+2026-10-12 / TRACKER-1 / authorized -> filed -> published
+Owner authority reference: tracker and integration publication grant (create the outstanding items as GitHub issues, open one integration pull request for the accepted development branch, and commit the independently reviewed documentation change). Not authorized: merge, force-push, history rewrite, push to main, Gradion access, production writes, Keychain modification.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / 523e8d9 (parent 197b48e) / 1 file, +1/-1: docs/orchestration/commit-and-vault.md. That commit is the only change in the pull request that had not been pushed before.
+Reason: the accepted series was committed locally across many slices and published as a branch with no issue and no pull request, so it had no review surface and no linked issue. The repository's documented loop (docs/agents/issue-tracker.md, commit-and-vault.md step 5, and PRs #12 to #20, each naming its issue) had not been used since 2026-10-08.
+Issues filed: #26 accept or correct the six unauthorized incident entries; #27 authorize local invalidation of the two self-approved plans (02f64e8d/41a775ab); #28 disposition cmd/list-entries; #29 evidence-window correction procedure EVIDENCE-WINDOW-CORRECTION-1; #30 adjacent collector timezone items; #31 resolveEditFromObservation post-edit projection omits ClassificationID (F6); #32 pre-existing gofmt deviations in three legacy files; #33 journal collector emits every item untimed (JOURNAL-INTERVAL-SUGGESTION-1); #34 authorize a read-only metrics import. Each carries the ledger reference it came from and states its own authority limits.
+Integration issue and pull request: #35 is the integration tracking issue; PR #36 (feat/s9-integrated-acceptance into main) is open, MERGEABLE, not a draft, base bc6023f, head 523e8d9, 220 files, +59167/-2715, zero checks because no GitHub Actions workflow exists. Merge remains unauthorized.
+Documentation change review: independent review @oracle ses_ecf25eae9ffe1zJYhvFct4FWQ1 returned changes required. D1 (blocking): the clause "Omitting a real boundary is as wrong as inventing one" contradicted the vault standard "Timesheet time recording standard", which treats a partial record as useful and expected and a fabricated boundary as worse than an unknown one. D2: the clause implied the collector honours a recorded range, when the journal plugin keeps only the first clock as provenance and always leaves duration unknown. D3: "first"/"Then" read as section order rather than bullet ordering. The reworded text closed D1 to D3; focused re-review accepted with no new blocking issue and confirmed the removed phrases are absent.
+Verification level: documentation-only commit; git diff --check clean and the diff is docs-only, so no Go code changed. The range-wide verification recorded under PUBLICATION-1 (build, vet, full uncached suite, e2e, targeted race, guided harness) still applies to the code in the range and was not re-run for this docs commit.
+Open findings and disposition: D1 to D3 closed. New observation, not a blocker: the documented triage vocabulary in docs/agents/triage-labels.md (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix) does not exist as labels in the repository, so the nine new issues use the existing bug/enhancement/question labels instead. Label administration was not authorized and was not performed.
+Discrepancy for the owner: the INCIDENT-REPAIR-1 record cites the untracked cmd/list-entries file as blob ae6f7b94..., but the file now hashes to b780b5097ee123997e17d510e61497a20be52b49. The file is untracked, unstaged, and outside the published range, so this is not a publication stop condition; it is recorded in #28 for confirmation before that disposition is decided.
+Commit and publication status: committed locally 523e8d9; pushed to origin/feat/s9-integrated-acceptance as a normal fast-forward (197b48e..523e8d9, no force, no rewrite); the remote tip was re-read with git ls-remote and equals local HEAD. PR #36 created against main. No merge, no main push, no history rewrite.
+Vault sync status: pending (delegated to @ai-database).
+Next gate and blockers: the owner decides whether to merge PR #36; merge is not authorized by this slice. The three owed incident decisions (#26/#27/#28) and the other filed items (#29 to #34) remain open, as do the original milestone rows #11/#21/#22/#23/#24 and the stale PR #25. Production submission remains blocked: live MCP, agent, and Keychain write verification is outstanding and no live-write authority exists.
 ```
 
 ## Documentation review
