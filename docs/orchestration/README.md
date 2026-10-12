@@ -63,3 +63,5 @@ PERSONAL-WORKFLOW-1 (personal daily workflow): A (optional read-only journal evi
 CONFIG-GUIDED-1 (guided configuration): `59991a8`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). Adds a supported `timesheet config init|edit` flow plus equivalent skill questions. See [state](state.md) and [the implementation plan](implementation-plan.md).
 
 INTERACTIVE-PERFORMANCE-1 (interactive performance): `2d67de3`. Independently reviewed, closed source-accepted, local only (not pushed). Measured provenance/startup/catalog latency, then added compiled-binary guidance and in-run catalog fetch reuse. See [state](state.md) and [the implementation plan](implementation-plan.md).
+
+MIDNIGHT-CARRY-1 (midnight linked intervals): `aee253c`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). Composed midnight+four-hour split with a durable next-day carry requiring explicit confirmation. See [state](state.md) and [the implementation plan](implementation-plan.md).

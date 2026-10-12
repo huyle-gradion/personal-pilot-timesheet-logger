@@ -37,8 +37,10 @@ Current work graph, in priority order, with no invented deadlines:
    (`2d67de3`); measured provenance/startup/catalog latency, then fixed
    compiled-binary guidance and in-run catalog fetch reuse. Rendering/user-wait
    unmeasured (no pty).
-4. MIDNIGHT-CARRY-1: planned, exact linked local-date fragments and visible carry;
-   confirm guided second-day handling without automatic approval.
+4. MIDNIGHT-CARRY-1: closed, source-accepted and committed locally (`aee253c`);
+   composed midnight+four-hour split, a durable carry on D surfaced as an
+   unconfirmed linked block on D+1, carry visible in review/export. Owner
+   resolved the second-day rule (explicit confirmation; no auto-write/approval).
 5. TUI-USABILITY-1: planned, designer-owned hierarchy, labels, provenance,
    unknown-duration indicators, keyboard help and source warnings.
 6. BULK-REVIEW-1: planned, explicit scoped preview, per-block overrides and safe
@@ -189,6 +191,35 @@ acceptance does not establish live-read compatibility or production readiness;
 production submission remains blocked. Next dependency-ready bounded task is
 MIDNIGHT-CARRY-1 (exact linked local-date fragments with a visible carry, and a
 confirmed guided second-day review that never auto-approves).
+
+### MIDNIGHT-CARRY-1 closure, 2026-10-12
+
+MIDNIGHT-CARRY-1 is source-accepted and committed locally at `aee253c` (parent
+`cff29f2`), on `feat/s9-integrated-acceptance` (20 files, +1453/-111). The owner
+resolved the second-day rule as carry-plus-explicit-confirmation, preserving the
+recorded S4 decision: a confirmed interval crossing local midnight splits at each
+local midnight (composed with the four-hour bound within each day, exact totals);
+day D persists only its same-day fragment; the post-midnight fragment is a durable
+carry on D surfaced on D+1 as a LINKED, UNCONFIRMED block requiring explicit
+confirmation (same split group/part across records); the carry is visible in
+review and in the written export; nothing is auto-written into another day and
+nothing is auto-approved. Implementer @fixer `ses_ed27d454dffefso6JS372W6GbM`;
+independent review @oracle `ses_ed224fa88ffeClZQ26Ggcy8bn4` returned changes
+required (F1 multi-midnight carry orphaned, F2 stale carry never pruned, F3
+persisted-identity double-hash; F4/F5/F6 low) and the focused re-review accepted
+the fix round (F1-F6 and test gaps G1-G4 closed; no new blocking defect). Parent
+final checks exited 0 for gofmt (changed files), build, vet, the full uncached
+suite, `-race` on proposal/review/run, `./tests/...`, the guided offline harness,
+and `git diff --check`. The full suite is green at this time; the pre-existing
+`internal/evidence/plugins` time-window failure remains latent and unaddressed.
+Carried documented limits: the carry lookback is bounded at 7 midnights;
+midnight-crossing Work blocks are now split (identity change limited to that
+case); retracting a source day does not cascade to an already-confirmed carry on
+the next day; the `EndTime=="00:00"` reconciliation heuristic is conservative.
+Source acceptance does not establish live-read compatibility or production
+readiness; production submission remains blocked. Next dependency-ready bounded
+task is TUI-USABILITY-1 (designer-owned hierarchy, labels, provenance,
+unknown-duration indicators, keyboard help, and source warnings).
 
 Local record reconciliation, read-only, 2026-10-11:
 - October 8 current workflow schema 1, revision 8: 14 confirmed intervals,
@@ -1131,6 +1162,18 @@ Open findings and disposition: none blocking. Informational: memo key normalizat
 Commit and publication status: committed locally 2d67de3; NOT pushed, no PR, no merge. Local bin/timesheet rebuilt (gitignored).
 Vault sync status: pending (delegated to @ai-database).
 Next gate and blockers: MIDNIGHT-CARRY-1 (exact linked local-date fragments with a visible carry; guided second-day review without auto-approval). Production submission remains blocked.
+```
+
+```text
+2026-10-12 / MIDNIGHT-CARRY-1 / authorized -> designing -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: submission-revalidation takeover grant (direct specialist dispatch, bounded implementation, independent review/fix/re-review, accepted-slice local commits, repo records, vault sync). Owner resolved the second-day rule (carry + explicit confirmation; no auto-write/auto-approval). Not authorized: production creates/edits/deletes, Keychain changes, push/publication/merge/force-push, silent product-scope changes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / aee253c (parent cff29f2) / 20 files, +1453/-111. Accepted hashes matched the fix1 manifest before staging.
+Worker/reviewer report references and verification level: design pass @oracle ses_ed283c028ffenfDoHZAPwVicjG; implementer @fixer ses_ed27d454dffefso6JS372W6GbM (implement + fix); independent review + focused re-review @oracle ses_ed224fa88ffeClZQ26Ggcy8bn4 (changes required -> accepted). Parent log .../opencode/midnight-carry-1-parent-checks.log: gofmt/build/vet/full uncached suite/-race proposal,review,run/./tests/.../guided harness/diff-check all exit 0.
+Behavior: a confirmed interval crossing local midnight splits at each local midnight, composed with the four-hour bound within each day, exact totals; day D persists only its same-day fragment; the post-midnight fragment is a durable carry on D surfaced on D+1 as a linked, unconfirmed block requiring explicit confirmation (same split group/part across records); visible in review and the written export; no auto-write/auto-approval. Fix round closed F1 (multi-midnight orphan -> bounded 7-day lookback), F2 (stale carry -> reconcile against live confirmed groups), F3 (persisted-identity double-hash -> restored pre-slice scheme), F4 (bound Record.Carries), F5 (D+1 written carryover marker), F6 (midnight-split work blocks in the proposal).
+Open findings and disposition: F1-F6 and G1-G4 closed. Carried documented limits: 7-midnight carry lookback bound; midnight-crossing Work blocks now split (identity change limited to that case); no cross-day cascade when a source day is retracted; conservative EndTime=="00:00" reconciliation heuristic. Pre-existing internal/evidence/plugins time-window test unaddressed (not this slice).
+Commit and publication status: committed locally aee253c; NOT pushed, no PR, no merge.
+Vault sync status: pending (delegated to @ai-database).
+Next gate and blockers: TUI-USABILITY-1 (designer-owned hierarchy, labels, provenance, unknown-duration indicators, keyboard help, source warnings). Production submission remains blocked.
 ```
 
 ## Documentation review

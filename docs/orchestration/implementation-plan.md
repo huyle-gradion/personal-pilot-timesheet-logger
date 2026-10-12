@@ -176,7 +176,7 @@ updated; unless a genuine full live complete catalog proves the choice, explicit
 authoritative reselection is required and invalidates the old approval. No automatic
 submit rerun.
 
-Next bounded slice: MIDNIGHT-CARRY-1. Remaining priorities and unchanged
+Next bounded slice: TUI-USABILITY-1. Remaining priorities and unchanged
 production boundaries are recorded in the takeover work graph in [state](state.md).
 
 ### CONFIG-GUIDED-1, guided configuration
@@ -221,6 +221,25 @@ memoized provenance is frozen at fetch time (intended); the doc phrasing about
 `go run` is slightly absolute but acceptable. The pre-existing
 `internal/evidence/plugins` time-window test remains unaddressed and is not this
 slice's regression. Source acceptance does not establish production readiness.
+
+### MIDNIGHT-CARRY-1, midnight linked intervals
+
+Source-accepted and committed locally at `aee253c`, parent `cff29f2`, after an
+independent review (changes required) and a focused re-review (accepted). No
+production writes, live access, publication, or private-record change.
+
+| Owner requirement | Evidence on the accepted snapshot |
+| --- | --- |
+| 23:30 plus one hour splits into two linked 30-minute intervals on consecutive local dates, exact minutes | composed `SplitInterval` (midnight, then four-hour within each day); `TestSplitInterval_MidnightThenFourHour`, `TestBuild_MidnightSplitCarryover`, acceptance scenario 5 |
+| Review/export make the carry visible | review carry lines/labels; written export carryover marker + warning bullet; `TestBuildNote_CarryVisible`, `TestRender_CarryoverMarkerOnConfirmedRow` |
+| Confirm how the guided workflow handles the second day; no automatic approval | D+1 surfaces the carry as a linked, unconfirmed block via the normal confirm path; `TestGuided_CarrySurfacedAndExplicit`, `TestGuided_CarryNotConfirmedWritesNothing`, `TestProposeAndConfirm_CarrySurfacesUnconfirmed` |
+| No auto-write into another day | day D persists only its same-day fragment; the carry is a durable record item, surfaced on D+1 only |
+
+Carried documented limits: 7-midnight carry lookback bound; midnight-crossing
+Work blocks are now split (identity change limited to that case); no cross-day
+cascade when a source day is retracted; the `EndTime=="00:00"` reconciliation
+heuristic is conservative. The pre-existing `internal/evidence/plugins`
+time-window test is unaddressed and is not this slice's regression.
 
 ### Shared-workflow coverage
 
