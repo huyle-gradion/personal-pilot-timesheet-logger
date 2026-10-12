@@ -342,14 +342,41 @@ func runGitCmd(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// runGitCmdEnv runs a git command with extra environment variables appended to
+// the current process environment. It is used to pin a commit's author and
+// committer dates so a test never depends on the host clock or zone.
+func runGitCmdEnv(t *testing.T, dir string, env []string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
 // TestLocalGitCollectorAdapter_UsesMessageReferencesOnly drives the real adapter
 // over a temp git repo whose branch name carries a number (feature/999) while the
 // commit message references #42, proving PR discovery uses commit-message
 // references only, never the branch name.
+//
+// The commit's author and committer dates are pinned to a fixed instant inside
+// the 00:00-06:59 +07 window (2026-10-06T05:00:00+07:00 == 2026-10-05T22:00:00Z),
+// whose LOCAL (Asia/Ho_Chi_Minh) day differs from its UTC day. This makes the
+// test deterministic at every wall-clock time and host timezone: no time.Now and
+// no TZ mutation, only explicit *time.Location values.
 func TestLocalGitCollectorAdapter_UsesMessageReferencesOnly(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	hcm, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load Asia/Ho_Chi_Minh: %v", err)
+	}
+
+	// Fixed commit instant: local day 2026-10-06 (+07), UTC day 2026-10-05.
+	const commitISO = "2026-10-06T05:00:00+07:00"
+
 	dir := t.TempDir()
 	runGitCmd(t, dir, "init", "-q")
 	runGitCmd(t, dir, "config", "user.email", "test@example.com")
@@ -359,21 +386,25 @@ func TestLocalGitCollectorAdapter_UsesMessageReferencesOnly(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 	runGitCmd(t, dir, "add", ".")
-	runGitCmd(t, dir, "commit", "-q", "-m", "fixes #42")
+	runGitCmdEnv(t, dir,
+		[]string{"GIT_AUTHOR_DATE=" + commitISO, "GIT_COMMITTER_DATE=" + commitISO},
+		"commit", "-q", "-m", "fixes #42")
 
 	adapter := LocalGitCollectorAdapter{Collector: git.NewLocalGitCollector(dir)}
 	ctx := context.Background()
-	now := time.Now()
 
 	if branch := adapter.CurrentBranch(ctx); branch != "feature/999" {
 		t.Fatalf("expected branch feature/999, got %q", branch)
 	}
-	commits, err := adapter.FetchDayCommits(ctx, "", now)
+
+	// The commit is found for its LOCAL (Asia/Ho_Chi_Minh) day even though that
+	// day differs from its UTC day.
+	commits, err := adapter.FetchDayCommits(ctx, "", time.Date(2026, 10, 6, 12, 0, 0, 0, hcm))
 	if err != nil {
-		t.Fatalf("FetchDayCommits: %v", err)
+		t.Fatalf("FetchDayCommits (local day): %v", err)
 	}
 	if len(commits) != 1 {
-		t.Fatalf("expected 1 commit, got %d", len(commits))
+		t.Fatalf("expected 1 commit in the local-day window, got %d", len(commits))
 	}
 	refs := adapter.DiscoverPRReferences(commits)
 	if _, ok := refs[42]; !ok {
@@ -383,9 +414,16 @@ func TestLocalGitCollectorAdapter_UsesMessageReferencesOnly(t *testing.T) {
 		t.Errorf("branch name 999 must not create a PR reference, got %v", refs)
 	}
 
+	// Deterministic fold. The git plugin CURRENTLY parses the request date as
+	// UTC (parseDate -> time.Parse with no location), so the assertion must use
+	// the commit's UTC day (2026-10-05) to stay independent of the host zone and
+	// wall clock. This is CURRENT behavior, NOT a contract to preserve: the
+	// collector's UTC day window vs the runner's configured-timezone date is a
+	// KNOWN, TRACKED production defect (LOCAL-GIT-TIMEZONE-TEST-1 follow-up) that
+	// a future fix will change; when it does, this request date must be revisited.
 	reg := evidence.NewRegistry()
 	reg.Register(NewGitPlugin(nil, adapter))
-	ev, _, err := reg.CollectDay(ctx, []evidence.SourceConfig{gitConfig("acme/app")}, evidence.CollectRequest{Date: now.Format("2006-01-02")})
+	ev, _, err := reg.CollectDay(ctx, []evidence.SourceConfig{gitConfig("acme/app")}, evidence.CollectRequest{Date: "2026-10-05"})
 	if err != nil {
 		t.Fatalf("CollectDay: %v", err)
 	}
@@ -394,6 +432,70 @@ func TestLocalGitCollectorAdapter_UsesMessageReferencesOnly(t *testing.T) {
 	}
 	if ev[0].TopicHint == nil || ev[0].TopicHint.PRNumber != 42 {
 		t.Errorf("expected PR 42 evidence, got %+v", ev[0].TopicHint)
+	}
+}
+
+// TestLocalGitCollectorAdapter_LocalDayBoundaryWindow covers the 00:00-06:59
+// +07 window where a commit's LOCAL (Asia/Ho_Chi_Minh) day differs from its UTC
+// day. Three commits are pinned to fixed instants; a single explicit
+// Asia/Ho_Chi_Minh FetchDayCommits window for local day 2026-10-06 must find all
+// three. This documents CURRENT behavior (the adapter windows by
+// date.Location()); it does NOT assert that CollectDay's UTC parsing is correct.
+func TestLocalGitCollectorAdapter_LocalDayBoundaryWindow(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	hcm, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load Asia/Ho_Chi_Minh: %v", err)
+	}
+
+	// Each fixed instant has LOCAL day 2026-10-06 (+07); the UTC day is noted per
+	// commit. The 07:00 case is the first instant whose UTC day also matches.
+	cases := []struct {
+		name string
+		iso  string // local day 2026-10-06 (+07)
+		utc  string // resulting UTC day
+	}{
+		{"lower-bound 00:00 +07", "2026-10-06T00:00:00+07:00", "2026-10-05"},    // == 2026-10-05T17:00:00Z
+		{"upper-bound 06:59 +07", "2026-10-06T06:59:00+07:00", "2026-10-05"},    // == 2026-10-05T23:59:00Z
+		{"first matching 07:00 +07", "2026-10-06T07:00:00+07:00", "2026-10-06"}, // == 2026-10-06T00:00:00Z
+	}
+
+	dir := t.TempDir()
+	runGitCmd(t, dir, "init", "-q")
+	runGitCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitCmd(t, dir, "config", "user.name", "Test User")
+	for _, c := range cases {
+		runGitCmdEnv(t, dir,
+			[]string{"GIT_AUTHOR_DATE=" + c.iso, "GIT_COMMITTER_DATE=" + c.iso},
+			"commit", "-q", "--allow-empty", "-m", "boundary: "+c.name+" (UTC day "+c.utc+")")
+	}
+
+	adapter := LocalGitCollectorAdapter{Collector: git.NewLocalGitCollector(dir)}
+	commits, err := adapter.FetchDayCommits(context.Background(), "", time.Date(2026, 10, 6, 12, 0, 0, 0, hcm))
+	if err != nil {
+		t.Fatalf("FetchDayCommits (local day 2026-10-06 +07): %v", err)
+	}
+	if len(commits) != len(cases) {
+		t.Fatalf("expected %d commits in the local-day window, got %d: %+v", len(cases), len(commits), commits)
+	}
+	// Every commit's own instant still reports its fixed offset instant.
+	for _, c := range cases {
+		want, perr := time.Parse(time.RFC3339, c.iso)
+		if perr != nil {
+			t.Fatalf("parse %q: %v", c.iso, perr)
+		}
+		found := false
+		for _, got := range commits {
+			if got.Timestamp.Equal(want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("commit at %s (UTC day %s) not found in the local-day window", c.iso, c.utc)
+		}
 	}
 }
 
