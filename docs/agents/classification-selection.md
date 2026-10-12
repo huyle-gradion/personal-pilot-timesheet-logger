@@ -65,10 +65,21 @@ day and requires the explicit `--all` flag. The exact change list is printed
 **before** applying. Without `--all`, only `--block-id <ID>` is honored.
 
 The guided review's **Bulk actions** step (see
-[product usage](product-usage.md)) deliberately **excludes** classification: it
-offers only confirm / exclude / assign-project. A **bulk classification
-assignment is deferred**, so a classification is always an explicit per-interval
-choice (or the explicit `classify select --all`).
+[product usage](product-usage.md)) also offers a **Bulk-assign a classification**
+action: the user picks one classification through the same searchable catalog UI,
+the step prints the **exact affected intervals and counts** (and any already-
+classified intervals it skips), and an explicit consent is required. It only
+**stages** decisions on the same atomic review — an abort applies nothing. A bulk
+classification never overwrites an interval that already carries a classification.
+
+Within a single guided run the per-block classification step **does not re-prompt**
+an interval the bulk action already staged: those intervals are disclosed as
+bulk-classified and skipped. Per-block override is therefore guaranteed at the
+**data level** (bulk staging is add-if-absent, and a per-block classification
+decision staged for the same interval replaces it), and the documented way to
+change a bulk-assigned interval in the UI is the printed
+`timesheet classify select --date D --block-id <ID> --classification <CODE|ID>`
+follow-up.
 
 ### First-run and recent choices
 
@@ -76,8 +87,12 @@ choice (or the explicit `classify select --all`).
   `INTGRADI2610 – Gradion Intern Academy 2026`. It is resolved against the
   **actual** fetched catalog; if it is absent, ambiguous, or incompatible it is
   explained and the user is asked for another selection. Nothing is auto-selected.
-- The most recent choice (`~/.timesheet/preferences.json`, non-secret, capped at
-  20) is surfaced as a **confirmation hint**; it is **never** auto-applied.
+  It is surfaced (labelled UNAPPLIED) by both `classify list` and the guided
+  classification step **only when there is no recent selection**.
+- The most recent choices (`~/.timesheet/preferences.json`, non-secret, capped at
+  20) are surfaced as **confirmation hints** (up to the 3 most recent); they are
+  **never** auto-applied. A recent selection takes precedence over the first-run
+  suggestion. The surfacing cap is display-only: it never changes the stored list.
 
 ## 3. Cache and offline behavior
 

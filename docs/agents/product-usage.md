@@ -250,13 +250,23 @@ Notes (exact keys, from the current source):
 
 The guided review (`run --interactive` / `run --plain`) offers an optional **Bulk
 actions** step, placed between the per-block review and the classification step.
-It offers exactly three owner-confirmed actions over exactly one
-mutually-exclusive scope:
+It offers exactly four owner-confirmed actions over exactly one mutually-exclusive
+scope:
 
 - **Bulk-confirm** eligible blocks.
 - **Bulk-exclude** blocks.
 - **Bulk-assign a project** (the label states `assign-project X (confirms the
   block)`, because assigning a project stages the block's confirmation too).
+- **Bulk-assign a classification** (one action per run): the user picks a single
+  classification through the same searchable catalog UI, and the step previews the
+  **exact classifiable intervals and counts** before consent. It stages the
+  classification on the same atomic review only; an already-classified interval is
+  retained (skipped), and an abort stages nothing. The per-block classification step
+  does **not** re-prompt an interval the bulk action staged (it is disclosed as
+  bulk-classified and skipped): per-block override holds at the **data level**
+  (add-if-absent staging; a per-block decision for the same interval replaces the
+  bulk choice), and the UI override path is the printed
+  `timesheet classify select --block-id <ID>` follow-up.
 
 **Effective eligible set.** Bulk-confirm/assign eligibility is "a **known
 duration**, not a carryover, and **preselected**". In the current proposal only an
@@ -326,7 +336,14 @@ $TS classify select --config CFG --date D --classification "<CODE|ID>" --all   #
 `complete|partial` marker and provenance/freshness. The Activity Type is **derived
 by the server** from the classification and is never sent. `classify select`
 requires an **exact unique** match (id, code, or unambiguous id-prefix); a
-**stale** `--cache` catalog is refused unless `--force`. The guided run prints a
+**stale** `--cache` catalog is refused unless `--force`. Both `classify list` and
+the guided classification step surface, labelled `unapplied`, up to the **3 most
+recent** selections, or — when there is none — the owner's **first-run** suggestion
+`INTGRADI2610 (Gradion Intern Academy 2026)` with its derived `internal project`
+type (resolved against the fetched catalog; never fabricated). A recent selection
+takes precedence over the first-run suggestion. In the guided step a catalog search
+with no match says the catalog is **partial** and offers search again — it never
+asserts absence. The guided run prints a
 `timesheet classify select --date D --block-id <ID> --classification <CODE|ID>`
 follow-up to change an interval that already carries a classification. See
 [classification selection](classification-selection.md).

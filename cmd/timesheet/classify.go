@@ -424,19 +424,25 @@ func printCatalog(w io.Writer, cat gradion.Catalog, now time.Time) {
 	}
 }
 
-// printSelectionHint surfaces either the most-recent selection or the owner's
-// first-time suggestion. It NEVER applies a selection: both require an explicit
-// `timesheet classify select`.
+// maxRecentHints bounds how many recent selections a hint surfaces. It is a
+// DISPLAY cap only: it never changes MaxRecent or the persisted list, and every
+// surfaced entry stays an UNAPPLIED suggestion.
+const maxRecentHints = 3
+
+// printSelectionHint surfaces up to maxRecentHints recent selections, or the
+// owner's first-time suggestion when there is none. It NEVER applies a selection:
+// every hint requires an explicit `timesheet classify select`.
 func printSelectionHint(w io.Writer, cat gradion.Catalog) {
 	prefsPath, err := selection.DefaultPath()
 	if err != nil {
 		return
 	}
-	prefs, err := selection.Load(prefsPath)
-	if err == nil {
-		if m, ok := prefs.MostRecent(); ok {
-			fmt.Fprintf(w, "recent selection (requires explicit confirmation): %s (%s) [%s] · %s\n",
-				m.Name, m.Code, m.ActivityType, idPrefix(m.ClassificationID))
+	if prefs, err := selection.Load(prefsPath); err == nil {
+		if recents := prefs.RecentN(maxRecentHints); len(recents) > 0 {
+			for _, m := range recents {
+				fmt.Fprintf(w, "recent selection (requires explicit confirmation): %s (%s) [%s] · %s\n",
+					m.Name, m.Code, m.ActivityType, idPrefix(m.ClassificationID))
+			}
 			return
 		}
 	}

@@ -97,10 +97,15 @@ work, approvals, and selections are preserved.
   minutes, and the interval's own span is authoritative.
 - **Classification**: an explicit, authoritative choice resolved from the catalog
   via the shared selection contract. The activity type is the catalog's DERIVED
-  value, never free-form. Config-map and recent-selection hints are shown as
-  `suggestion (unapplied)` and are never auto-applied. An interval that already
-  carries a classification is kept, and the run prints an actionable
-  `timesheet classify select ...` follow-up to change it. If no catalog is
+  value, never free-form. Config-map hints, up to the 3 most recent selections, and
+  the first-run suggestion are shown as `suggestion (unapplied)` and are never
+  auto-applied (a recent selection takes precedence over the first-run suggestion).
+  A catalog search that returns no match says the catalog is **partial** and offers
+  search again, never asserting absence. An interval that already carries a
+  classification is kept, and the run prints an actionable
+  `timesheet classify select ...` follow-up to change it. The **Bulk actions** step
+  may also **bulk-assign a classification** to the classifiable intervals (exact
+  preview + explicit consent, staged only). If no catalog is
   available, choices stay unset and the preview blocks honestly. A scripted
   `--decisions` file bypasses this review-time resolution; its classification id
   (and activity type) is validated against a FRESH catalog at submission, which

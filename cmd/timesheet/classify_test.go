@@ -195,6 +195,72 @@ func TestClassifyList_FirstRunSuggestionWhenNoRecent(t *testing.T) {
 	}
 }
 
+// The first-run hint is SUPPRESSED whenever a recent selection exists.
+func TestClassifyList_SuppressesFirstRunHintWhenRecentExists(t *testing.T) {
+	withHome(t)
+	seedCache(t, sampleCat())
+	p, _ := selection.DefaultPath()
+	prefs := selection.Prefs{}
+	prefs.Record(selection.RecentSelection{ClassificationID: "uuid-2", Code: "ALPHA-1", Name: "Client Alpha", ActivityType: "client project"})
+	if err := selection.Save(p, prefs); err != nil {
+		t.Fatalf("save prefs: %v", err)
+	}
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	_, stdout, _ := runArgs(t, "classify", "list", "--config", cfgPath, "--cache")
+	if !strings.Contains(stdout, "recent selection (requires explicit confirmation)") {
+		t.Fatalf("a recent selection must be surfaced:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "suggested first selection") {
+		t.Fatalf("the first-run hint must be suppressed when a recent exists:\n%s", stdout)
+	}
+}
+
+// The recent list is widened to the maxRecentHints most recent choices, each still
+// an UNAPPLIED suggestion; older entries are not surfaced and the persisted list is
+// untouched.
+func TestClassifyList_SurfacesUpToThreeRecentUnapplied(t *testing.T) {
+	withHome(t)
+	seedCache(t, sampleCat())
+	p, _ := selection.DefaultPath()
+	prefs := selection.Prefs{}
+	// Record four; only the three most recent may be surfaced.
+	for i := 0; i < 4; i++ {
+		prefs.Record(selection.RecentSelection{
+			ClassificationID: fmt.Sprintf("uuid-%d", i),
+			Code:             fmt.Sprintf("CODE-%d", i),
+			Name:             fmt.Sprintf("Recent %d", i),
+			ActivityType:     "internal project",
+		})
+	}
+	if err := selection.Save(p, prefs); err != nil {
+		t.Fatalf("save prefs: %v", err)
+	}
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, cliConfig{})
+	_, stdout, _ := runArgs(t, "classify", "list", "--config", cfgPath, "--cache")
+	// The three MOST recent (3, 2, 1) are surfaced, each a confirmation hint.
+	for _, want := range []string{"Recent 3", "Recent 2", "Recent 1"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("want recent %q surfaced:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "Recent 0") {
+		t.Errorf("only %d recent selections may be surfaced:\n%s", maxRecentHints, stdout)
+	}
+	if !strings.Contains(stdout, "recent selection (requires explicit confirmation)") {
+		t.Errorf("each recent must be labelled a confirmation hint:\n%s", stdout)
+	}
+	// Surfacing hints must never change the persisted list.
+	after, err := selection.Load(p)
+	if err != nil {
+		t.Fatalf("load prefs: %v", err)
+	}
+	if len(after.Recent) != 4 {
+		t.Fatalf("listing must not change the persisted recents: %+v", after.Recent)
+	}
+}
+
 func seedSelectableDay(t *testing.T, storage string, approval bool) {
 	t.Helper()
 	seedRecord(t, storage, testDate, func(rec *workflow.Record) {

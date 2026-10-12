@@ -121,6 +121,22 @@ func (p Prefs) MostRecent() (RecentSelection, bool) {
 	return p.Recent[0], true
 }
 
+// RecentN returns up to n of the most recently recorded selections, most recent
+// first. It is a pure read: it never mutates the stored list, and n is clamped to
+// the stored length. It is the ONE widening helper for surfacing several recent
+// choices (each still an UNAPPLIED suggestion).
+func (p Prefs) RecentN(n int) []RecentSelection {
+	if n <= 0 || len(p.Recent) == 0 {
+		return nil
+	}
+	if n > len(p.Recent) {
+		n = len(p.Recent)
+	}
+	out := make([]RecentSelection, n)
+	copy(out, p.Recent[:n])
+	return out
+}
+
 // --- first-run suggestion (NEVER auto-applied) -------------------------------
 
 const (

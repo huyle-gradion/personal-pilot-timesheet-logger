@@ -729,19 +729,22 @@ type bulkScope struct {
 }
 
 // bulkActionKind is a staged bulk action. The set is limited to the owner-confirmed
-// actions; bulk classification is deliberately deferred.
+// actions.
 type bulkActionKind int
 
 const (
 	bulkActionConfirm bulkActionKind = iota
 	bulkActionExclude
 	bulkActionAssignProject
+	bulkActionAssignClassification
 )
 
-// bulkAction is one bulk action with its parameter (the project for an assign).
+// bulkAction is one bulk action with its parameter (the project for an assign, the
+// chosen catalog option for a classification).
 type bulkAction struct {
-	kind    bulkActionKind
-	project string
+	kind     bulkActionKind
+	project  string
+	classOpt gradion.ClassificationOption
 }
 
 // bulkDisposition is how one in-scope block is treated by a planned action.
@@ -782,12 +785,16 @@ func (g *guided) bulkReview(ctx context.Context, prop proposal.Proposal, rec *wo
 		{Label: "Bulk-confirm eligible blocks"},
 		{Label: "Bulk-exclude blocks"},
 		{Label: "Bulk-assign a project"},
+		{Label: "Bulk-assign a classification"},
 	}, 0)
 	if err != nil {
 		return err
 	}
 	if idx == 0 {
 		return nil
+	}
+	if idx == 4 {
+		return g.bulkClassification(ctx, prop, rec, dec)
 	}
 	var action bulkAction
 	switch idx {
@@ -1135,6 +1142,146 @@ func stageBulk(dec *run.ReviewDecisions, action bulkAction, applied []proposal.P
 	}
 }
 
+// --- bulk classification ----------------------------------------------------
+
+// bulkClassificationPlan is the preview of a bulk classification action: the
+// classifiable intervals it would set, and the ones it skips because they already
+// carry a classification (or a staged choice).
+type bulkClassificationPlan struct {
+	applied []classTarget
+	skipped []classTarget
+}
+
+// bulkClassification is the optional "Bulk-assign a classification" action. The
+// user picks ONE classification through the shared catalog UI (searchable), the
+// step prints the EXACT affected intervals and counts, and requires an explicit
+// consent before staging. It only stages decisions on the SAME atomic review; an
+// abort stages nothing, and a per-block decision always wins.
+func (g *guided) bulkClassification(ctx context.Context, prop proposal.Proposal, rec *workflow.Record, dec *run.ReviewDecisions) error {
+	cat, prov, err := g.loadCatalog(ctx, "")
+	if err != nil {
+		g.section("Bulk actions")
+		fmt.Fprintf(g.stdout, "  catalog unavailable (%v); a bulk classification cannot proceed\n", err)
+		return nil
+	}
+	g.cat = &cat
+	opt, ok, err := g.chooseClassification(ctx, classTarget{label: "bulk classification"}, cat)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		g.section("Bulk actions")
+		fmt.Fprintln(g.stdout, "  no classification chosen; nothing staged")
+		return nil
+	}
+	plan := g.planBulkClassification(prop, rec, dec)
+	g.printBulkClassificationPreview(opt, prov, plan)
+	if len(plan.applied) == 0 {
+		fmt.Fprintln(g.stdout, "  nothing to stage for this action; nothing staged")
+		return nil
+	}
+	ok, err = g.p.Confirm(ctx, "Stage this bulk classification? (nothing is written until the final review confirmation)", false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Fprintln(g.stdout, "  bulk classification declined; nothing staged")
+		return nil
+	}
+	stageBulkClassification(dec, opt, plan.applied)
+	return nil
+}
+
+// planBulkClassification computes the classifiable intervals a bulk classification
+// would set: every target that does not already carry a classification and has no
+// staged choice. An already-classified interval is retained (skipped), never
+// overwritten.
+func (g *guided) planBulkClassification(prop proposal.Proposal, rec *workflow.Record, dec *run.ReviewDecisions) bulkClassificationPlan {
+	var plan bulkClassificationPlan
+	for _, t := range g.classTargets(prop, rec, dec) {
+		if strings.TrimSpace(t.current) != "" || (t.manual == nil && stagedClassification(*dec, t.key)) {
+			plan.skipped = append(plan.skipped, t)
+			continue
+		}
+		plan.applied = append(plan.applied, t)
+	}
+	return plan
+}
+
+// printBulkClassificationPreview prints the EXACT affected-interval list, the
+// counts, and the catalog provenance before consent.
+func (g *guided) printBulkClassificationPreview(opt gradion.ClassificationOption, prov string, plan bulkClassificationPlan) {
+	g.section("Bulk actions")
+	fmt.Fprintf(g.stdout, "  action: %s\n", bulkClassificationLabel(opt))
+	fmt.Fprintf(g.stdout, "  catalog: %s\n", prov)
+	fmt.Fprintf(g.stdout, "  scope: all classifiable intervals (%d block(s))\n", len(plan.applied)+len(plan.skipped))
+	for _, t := range plan.applied {
+		fmt.Fprintf(g.stdout, "  %-18s %s\n", "apply", t.label)
+	}
+	for _, t := range plan.skipped {
+		fmt.Fprintf(g.stdout, "  %-18s %s\n", "skip (classified)", t.label)
+	}
+	fmt.Fprintf(g.stdout, "  %s · applied %d · skipped already-classified %d\n",
+		bulkClassificationLabel(opt), len(plan.applied), len(plan.skipped))
+}
+
+// stageBulkClassification stages the chosen classification onto every applied
+// target, ADD-IF-ABSENT, so a per-block classification decision always wins. The
+// stored activity type is the catalog's DERIVED value (re-validated after staging).
+func stageBulkClassification(dec *run.ReviewDecisions, opt gradion.ClassificationOption, applied []classTarget) {
+	for _, t := range applied {
+		if t.manual != nil {
+			t.manual.ClassificationID = opt.ID
+			t.manual.ActivityType = opt.ActivityType
+			t.manual.ClassificationCode = opt.Code
+			t.manual.ClassificationName = opt.Name
+			continue
+		}
+		addClassificationAbsent(dec, run.ClassificationDecision{
+			BlockID: t.key, ClassificationID: opt.ID, ActivityType: opt.ActivityType,
+			ClassificationCode: opt.Code, ClassificationName: opt.Name,
+		})
+	}
+}
+
+// stagedClassification reports whether a block already has a staged classification
+// decision (e.g. from the bulk classification action).
+func stagedClassification(dec run.ReviewDecisions, blockID string) bool {
+	for _, c := range dec.Classification {
+		if c.BlockID == blockID {
+			return true
+		}
+	}
+	return false
+}
+
+// addClassificationAbsent stages a classification ONLY when the block has no staged
+// one, so a per-block decision always wins regardless of order.
+func addClassificationAbsent(dec *run.ReviewDecisions, c run.ClassificationDecision) {
+	if stagedClassification(*dec, c.BlockID) {
+		return
+	}
+	dec.Classification = append(dec.Classification, c)
+}
+
+// addClassification stages a classification, REPLACING any staged choice for the
+// same block, so an explicit per-block classification always wins.
+func addClassification(dec *run.ReviewDecisions, c run.ClassificationDecision) {
+	for i := range dec.Classification {
+		if dec.Classification[i].BlockID == c.BlockID {
+			dec.Classification[i] = c
+			return
+		}
+	}
+	dec.Classification = append(dec.Classification, c)
+}
+
+// bulkClassificationLabel renders the chosen classification option as a human
+// label for the bulk preview.
+func bulkClassificationLabel(opt gradion.ClassificationOption) string {
+	return fmt.Sprintf("assign-classification %s (%s) [%s]", opt.Name, opt.Code, opt.ActivityType)
+}
+
 // proposedBlocks returns every proposed block (work, meeting, manual) in a stable
 // (start, id) order.
 func proposedBlocks(prop proposal.Proposal) []proposal.ProposedTimeBlock {
@@ -1212,6 +1359,8 @@ func bulkActionLabel(a bulkAction) string {
 		return "exclude"
 	case bulkActionAssignProject:
 		return "assign-project " + orDash(a.project) + " (confirms the block)"
+	case bulkActionAssignClassification:
+		return bulkClassificationLabel(a.classOpt)
 	default:
 		return "?"
 	}
@@ -1330,15 +1479,33 @@ func (g *guided) classificationStep(ctx context.Context, prop proposal.Proposal,
 		fmt.Fprintf(g.stdout, "  catalog unavailable (%v); classification stays unset and the preview will block honestly\n", err)
 		return nil
 	}
-	g.cat = &cat
+	// A bulk-classification search may have WIDENED g.cat beyond the unfiltered
+	// first page. UNION the freshly loaded catalog with the already-set g.cat
+	// rather than replacing it, so a beyond-page option staged by the bulk action
+	// still re-resolves in validateClassifications (C6). When g.cat is unset
+	// (no bulk action ran), it is simply the freshly loaded catalog.
+	if g.cat != nil {
+		*g.cat = selection.UnionCatalogs(cat, *g.cat)
+		cat = *g.cat
+	} else {
+		g.cat = &cat
+	}
 	fmt.Fprintf(g.stdout, "  catalog: %s\n", prov)
 	g.printUnappliedSuggestions(targets)
 	retained := 0
+	bulkSet := 0
 	for i := range targets {
 		// An interval that already carries an explicit classification is KEPT as
 		// is; the guided run only gathers the choices that are still unset.
 		if strings.TrimSpace(targets[i].current) != "" {
 			retained++
+			continue
+		}
+		// A block the bulk-classification action already staged is left as chosen
+		// (bulk add-if-absent): it is not prompted again. A per-block decision
+		// still wins — addClassification replaces a staged choice.
+		if targets[i].manual == nil && stagedClassification(*dec, targets[i].key) {
+			bulkSet++
 			continue
 		}
 		opt, ok, err := g.chooseClassification(ctx, targets[i], cat)
@@ -1355,10 +1522,13 @@ func (g *guided) classificationStep(ctx context.Context, prop proposal.Proposal,
 			targets[i].manual.ClassificationName = opt.Name
 			continue
 		}
-		dec.Classification = append(dec.Classification, run.ClassificationDecision{
+		addClassification(dec, run.ClassificationDecision{
 			BlockID: targets[i].key, ClassificationID: opt.ID, ActivityType: opt.ActivityType,
 			ClassificationCode: opt.Code, ClassificationName: opt.Name,
 		})
+	}
+	if bulkSet > 0 {
+		fmt.Fprintf(g.stdout, "%d interval(s) were classified by the bulk action\n", bulkSet)
 	}
 	if retained > 0 {
 		fmt.Fprintf(g.stdout, "%d interval(s) keep their existing classification; change one with `timesheet classify select --date %s --block-id <ID> --classification <CODE|ID>`\n", retained, g.date)
@@ -1441,7 +1611,22 @@ func (g *guided) chooseClassification(ctx context.Context, t classTarget, cat gr
 				fmt.Fprintf(g.stdout, "search failed: %v\n", err)
 				continue
 			}
+			if len(nc.Options) == 0 {
+				// A filtered/partial catalog NEVER proves absence: say the choice
+				// may lie beyond the first 20 rows and offer search again, exactly
+				// as the classify path does. Never assert the choice does not exist.
+				fmt.Fprintln(g.stdout, selectionNotFoundMessage(q, false, false, nc))
+				continue
+			}
 			cur = nc
+			// Widen the VALIDATION catalog with the search results, so a choice
+			// found beyond the unfiltered first page still re-resolves through
+			// AuthoritativeClassificationOption at the end of the step — exactly
+			// as `classify select` unions a targeted catalog. This never assigns
+			// anything; it only keeps a legitimately retrieved option resolvable.
+			if g.cat != nil {
+				*g.cat = selection.UnionCatalogs(*g.cat, nc)
+			}
 		case idx == typeIdx:
 			tok, err := g.p.Input(ctx, "Classification code or id", "", "")
 			if err != nil {
@@ -1495,8 +1680,11 @@ func (g *guided) loadCatalog(ctx context.Context, query string) (gradion.Catalog
 	return gradion.Catalog{}, "", err
 }
 
-// printUnappliedSuggestions shows the config-map and recent-selection hints,
-// clearly labeled as NOT applied. No default classification is ever assigned.
+// printUnappliedSuggestions shows the config-map, recent-selection, and first-run
+// hints, clearly labeled as NOT applied. It mirrors printSelectionHint's
+// precedence: recent selections (up to maxRecentHints) take precedence over the
+// first-run suggestion, which is resolved against the FETCHED catalog (never
+// fabricated). No default classification is ever assigned.
 func (g *guided) printUnappliedSuggestions(targets []classTarget) {
 	for _, t := range targets {
 		p := strings.TrimSpace(t.project)
@@ -1509,11 +1697,25 @@ func (g *guided) printUnappliedSuggestions(targets []classTarget) {
 	}
 	if prefsPath, err := selection.DefaultPath(); err == nil {
 		if prefs, err := selection.Load(prefsPath); err == nil {
-			if m, ok := prefs.MostRecent(); ok {
-				fmt.Fprintf(g.stdout, "suggestion (unapplied): recent selection %s (%s)\n", m.Name, m.Code)
+			if recents := prefs.RecentN(maxRecentHints); len(recents) > 0 {
+				for _, m := range recents {
+					fmt.Fprintf(g.stdout, "suggestion (unapplied): recent selection %s (%s) [%s] · %s\n",
+						m.Name, m.Code, m.ActivityType, idPrefix(m.ClassificationID))
+				}
+				return
 			}
 		}
 	}
+	if g.cat == nil {
+		return
+	}
+	opt, why, ok := selection.FirstRunSuggestion(*g.cat)
+	if !ok {
+		fmt.Fprintf(g.stdout, "suggestion (unapplied): first-run suggestion unavailable: %s\n", why)
+		return
+	}
+	fmt.Fprintf(g.stdout, "suggestion (unapplied): first-run %s (%s) [%s] · %s\n",
+		opt.Name, opt.Code, opt.ActivityType, idPrefix(opt.ID))
 }
 
 // --- confirmation + rendering ----------------------------------------------

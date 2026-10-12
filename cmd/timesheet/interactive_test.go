@@ -554,6 +554,197 @@ func TestGuided_ClassificationSuggestionNeverApplied(t *testing.T) {
 	}
 }
 
+// P1: with NO recent selection, the guided step surfaces the owner's first-run
+// suggestion (resolved against the fetched catalog) with its DERIVED activity
+// type, clearly UNAPPLIED.
+func TestGuided_FirstRunSuggestionUnappliedWhenNoRecent(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	cat := gradion.Catalog{
+		Complete: true, Source: "live", ObservedAt: time.Now().UTC(),
+		Options: []gradion.ClassificationOption{{
+			ID: "cls-1", Code: "INTGRADI2610", Name: "Gradion Intern Academy 2026", ActivityType: "internal project",
+		}},
+	}
+	var out bytes.Buffer
+	g := &guided{cfg: cliConfig{}, stdout: &out, stderr: &bytes.Buffer{}, cat: &cat}
+	g.printUnappliedSuggestions(nil)
+	s := out.String()
+	for _, want := range []string{"suggestion (unapplied)", "INTGRADI2610", "internal project"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("the first-run suggestion must be surfaced unapplied (%q missing):\n%s", want, s)
+		}
+	}
+	// Never applied or persisted.
+	p, _ := selection.DefaultPath()
+	prefs, err := selection.Load(p)
+	if err != nil {
+		t.Fatalf("load prefs: %v", err)
+	}
+	if _, ok := prefs.MostRecent(); ok {
+		t.Fatalf("a suggestion must never be persisted: %+v", prefs)
+	}
+}
+
+// P1: a guided run with no recent selection SHOWS the first-run suggestion but
+// writes no ClassificationID without an explicit pick.
+func TestGuided_FirstRunSuggestionShownButNotApplied(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{
+		ID: "cls-1", Code: "INTGRADI2610", Name: "Gradion Intern Academy 2026", ActivityType: "internal project",
+	})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	cfg.Classifications = nil // isolate the FIRST-RUN suggestion from the config map
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence())
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// edit+confirm the block (2), no missing work, no bulk (0), LEAVE classification
+	// unset (3), confirm the review (true).
+	p := &fakePrompter{choose: []int{2, 0, 3}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
+	if code != exitBlocked {
+		t.Fatalf("want a blocked preview for an unset classification, got %d\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "suggestion (unapplied): first-run") ||
+		!strings.Contains(out.String(), "INTGRADI2610") ||
+		!strings.Contains(out.String(), "internal project") {
+		t.Fatalf("the first-run suggestion must be shown as unapplied with its derived type:\n%s", out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || rec.Confirmed[0].ClassificationID != "" {
+		t.Fatalf("a suggestion must NEVER be auto-applied, got %+v", rec.Confirmed)
+	}
+	// A printed suggestion must never create a decision or persist a recent.
+	prefsPath, _ := selection.DefaultPath()
+	prefs, err := selection.Load(prefsPath)
+	if err != nil {
+		t.Fatalf("load prefs: %v", err)
+	}
+	if _, ok := prefs.MostRecent(); ok {
+		t.Fatalf("a printed suggestion must not persist a recent: %+v", prefs)
+	}
+}
+
+// P2: the guided step surfaces up to maxRecentHints recent selections, each
+// UNAPPLIED, when recents exist (precedence over the first-run suggestion).
+func TestGuided_SurfacesUpToThreeRecentUnapplied(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	cat := gradion.Catalog{
+		Complete: true, Source: "live", ObservedAt: time.Now().UTC(),
+		Options: []gradion.ClassificationOption{{
+			ID: "cls-1", Code: "INTGRADI2610", Name: "Gradion Intern Academy 2026", ActivityType: "internal project",
+		}},
+	}
+	p, _ := selection.DefaultPath()
+	prefs := selection.Prefs{}
+	for i := 0; i < 4; i++ {
+		prefs.Record(selection.RecentSelection{
+			ClassificationID: fmt.Sprintf("uuid-%d", i),
+			Code:             fmt.Sprintf("CODE-%d", i),
+			Name:             fmt.Sprintf("Recent %d", i),
+			ActivityType:     "internal project",
+		})
+	}
+	if err := selection.Save(p, prefs); err != nil {
+		t.Fatalf("save prefs: %v", err)
+	}
+	var out bytes.Buffer
+	g := &guided{cfg: cliConfig{}, stdout: &out, stderr: &bytes.Buffer{}, cat: &cat}
+	g.printUnappliedSuggestions(nil)
+	s := out.String()
+	for _, want := range []string{"Recent 3", "Recent 2", "Recent 1"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("want recent %q surfaced unapplied:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "Recent 0") {
+		t.Fatalf("only %d recents may be surfaced:\n%s", maxRecentHints, s)
+	}
+	// A recent exists, so the first-run suggestion must NOT also be shown.
+	if strings.Contains(s, "first-run") {
+		t.Fatalf("a recent selection takes precedence over the first-run suggestion:\n%s", s)
+	}
+}
+
+// P3: a search that returns an option BEYOND the unfiltered first page makes it
+// selectable, and the choice still re-resolves through AuthoritativeClassificationOption
+// (the guided search unions the retrieved option into the validation catalog). No
+// absence is asserted.
+func TestGuided_ClassificationSearchBeyondPageSelectable(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	fetch := &fakeCatalogFetcher{
+		catalog: partialPage(),
+		byQuery: map[string]gradion.Catalog{"intern": targetedIntern()},
+	}
+	withCatalogFetcher(t, fetch)
+
+	var out bytes.Buffer
+	// base page (12 shown) -> "Search the catalog" (12), search "intern", then the
+	// single searched option (0).
+	g := &guided{
+		cfg: cliConfig{}, stdout: &out, stderr: &bytes.Buffer{},
+		p: &fakePrompter{choose: []int{12, 0}, inputs: []string{"intern"}},
+	}
+	base := partialPage()
+	g.cat = &base
+	opt, ok, err := g.chooseClassification(context.Background(), classTarget{label: "x"}, base)
+	if err != nil {
+		t.Fatalf("chooseClassification: %v", err)
+	}
+	if !ok || opt.ID != "uuid-int" {
+		t.Fatalf("the searched out-of-page option must be selectable, got ok=%v opt=%+v", ok, opt)
+	}
+	if strings.Contains(out.String(), "was not found") {
+		t.Fatalf("a successful search must not assert absence:\n%s", out.String())
+	}
+	// The retrieved choice must re-resolve and capture the DERIVED activity type.
+	dec := run.ReviewDecisions{Classification: []run.ClassificationDecision{{BlockID: "c1", ClassificationID: opt.ID}}}
+	if err := g.validateClassifications(&dec); err != nil {
+		t.Fatalf("the searched choice must re-resolve via AuthoritativeClassificationOption: %v", err)
+	}
+	if dec.Classification[0].ActivityType != "internal project" {
+		t.Fatalf("the derived activity type must be captured, got %q", dec.Classification[0].ActivityType)
+	}
+}
+
+// P3: a search with NO match prints a partial/no-match caveat that offers search and
+// never asserts absence.
+func TestGuided_ClassificationSearchNoMatchCaveat(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	fetch := &fakeCatalogFetcher{
+		catalog: partialPage(),
+		byQuery: map[string]gradion.Catalog{"zzz": {Complete: true, Source: "live", ObservedAt: time.Now().UTC()}},
+	}
+	withCatalogFetcher(t, fetch)
+
+	var out bytes.Buffer
+	// base page (12 shown) -> "Search the catalog" (12), search "zzz" (no match),
+	// then "Leave unset" (14) on the re-prompt.
+	g := &guided{
+		cfg: cliConfig{}, stdout: &out, stderr: &bytes.Buffer{},
+		p: &fakePrompter{choose: []int{12, 14}, inputs: []string{"zzz"}},
+	}
+	base := partialPage()
+	g.cat = &base
+	_, ok, err := g.chooseClassification(context.Background(), classTarget{label: "x"}, base)
+	if err != nil {
+		t.Fatalf("chooseClassification: %v", err)
+	}
+	if ok {
+		t.Fatalf("a no-match search must not silently select anything")
+	}
+	s := out.String()
+	for _, want := range []string{"PARTIAL", "20", "--search", "may lie beyond"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("the no-match caveat must be partial-aware and offer search (%q missing):\n%s", want, s)
+		}
+	}
+}
+
 // --- journal narratives + manual linkage ------------------------------------
 
 func journalEvidence() evidence.Evidence {
@@ -2064,5 +2255,220 @@ func TestBulk_EmptyScopeDoesNotMarkEmpty(t *testing.T) {
 	}
 	if len(rec.Confirmed) != 1 {
 		t.Fatalf("the existing confirmed work must be preserved, got %+v", rec.Confirmed)
+	}
+}
+
+// --- bulk classification -----------------------------------------------------
+
+// bulkClassificationRec is a day with one confirmed interval that carries no
+// classification, so it is a classifiable target for the bulk action.
+func bulkClassificationRec(t *testing.T) *workflow.Record {
+	t.Helper()
+	rec := readyRecord(testDate)
+	rec.Confirmed[0].ClassificationID = ""
+	rec.Confirmed[0].ActivityType = ""
+	return &rec
+}
+
+// P4/C4: the bulk-classification action previews the EXACT affected interval and
+// counts, and a consented pick stages ONE resolved ClassificationDecision.
+func TestBulk_ClassificationPreviewAndStaging(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "Intern", Code: "INTGRADI2610", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	rec := bulkClassificationRec(t)
+
+	var out bytes.Buffer
+	// bulk-assign a classification (4); pick option 0; consent (true).
+	g := &guided{cfg: cfg, stdout: &out, stderr: &bytes.Buffer{}, p: &fakePrompter{choose: []int{4, 0}, confirms: []bool{true}}}
+	dec := run.ReviewDecisions{}
+	if err := g.bulkReview(context.Background(), proposal.Proposal{}, rec, &dec); err != nil {
+		t.Fatalf("bulkReview: %v", err)
+	}
+	if len(dec.Classification) != 1 {
+		t.Fatalf("want exactly one staged classification, got %+v", dec.Classification)
+	}
+	got := dec.Classification[0]
+	if got.BlockID != "c1" || got.ClassificationID != "cls-1" || got.ActivityType != "internal project" ||
+		got.ClassificationCode != "INTGRADI2610" || got.ClassificationName != "Intern" {
+		t.Fatalf("the staged decision must carry the resolved option: %+v", got)
+	}
+	s := out.String()
+	if !strings.Contains(s, "assign-classification Intern (INTGRADI2610) [internal project]") {
+		t.Fatalf("the preview must name the chosen classification:\n%s", s)
+	}
+	if !strings.Contains(s, "scope: all classifiable intervals (1 block(s))") || !strings.Contains(s, "applied 1") {
+		t.Fatalf("the preview must show the exact affected count:\n%s", s)
+	}
+}
+
+// P4: a declined consent stages nothing (staged-only model).
+func TestBulk_ClassificationAbortStagesNothing(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "Intern", Code: "INTGRADI2610", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	rec := bulkClassificationRec(t)
+
+	var out bytes.Buffer
+	g := &guided{cfg: cfg, stdout: &out, stderr: &bytes.Buffer{}, p: &fakePrompter{choose: []int{4, 0}, confirms: []bool{false}}}
+	dec := run.ReviewDecisions{}
+	if err := g.bulkReview(context.Background(), proposal.Proposal{}, rec, &dec); err != nil {
+		t.Fatalf("bulkReview: %v", err)
+	}
+	if len(dec.Classification) != 0 {
+		t.Fatalf("a declined bulk classification must stage nothing, got %+v", dec.Classification)
+	}
+	if !strings.Contains(out.String(), "declined; nothing staged") {
+		t.Fatalf("the decline must be disclosed:\n%s", out.String())
+	}
+}
+
+// P4: an interval that already carries a classification is retained (skipped),
+// never overwritten by the bulk action.
+func TestBulk_ClassificationSkipsAlreadyClassified(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "Intern", Code: "INTGRADI2610", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	rec := readyRecord(testDate) // c1 already carries cls-1
+	rec.Confirmed[0].ClassificationID = "cls-existing"
+	rec.Confirmed[0].ActivityType = "internal project"
+
+	var out bytes.Buffer
+	g := &guided{cfg: cfg, stdout: &out, stderr: &bytes.Buffer{}, p: &fakePrompter{choose: []int{4, 0}}}
+	dec := run.ReviewDecisions{}
+	if err := g.bulkReview(context.Background(), proposal.Proposal{}, &rec, &dec); err != nil {
+		t.Fatalf("bulkReview: %v", err)
+	}
+	if len(dec.Classification) != 0 {
+		t.Fatalf("an already-classified interval must be retained, got %+v", dec.Classification)
+	}
+	s := out.String()
+	if !strings.Contains(s, "skipped already-classified 1") || !strings.Contains(s, "nothing to stage") {
+		t.Fatalf("the retained interval must be surfaced and nothing staged:\n%s", s)
+	}
+}
+
+// P4: a per-block classification decision always wins over the bulk add, in both
+// orders (bulk staging is add-if-absent; per-block staging replaces).
+func TestBulk_ClassificationPerBlockOverrideWinsBothOrders(t *testing.T) {
+	opt := gradion.ClassificationOption{ID: "cls-bulk", Name: "Bulk", Code: "BULK-1", ActivityType: "internal project"}
+	per := gradion.ClassificationOption{ID: "cls-per", Name: "Per", Code: "PER-1", ActivityType: "internal project"}
+	target := classTarget{key: "c1", label: "existing interval c1"}
+
+	// Per-block first, then bulk: the per-block choice must win.
+	dec := run.ReviewDecisions{}
+	addClassification(&dec, run.ClassificationDecision{BlockID: "c1", ClassificationID: per.ID})
+	stageBulkClassification(&dec, opt, []classTarget{target})
+	if len(dec.Classification) != 1 || dec.Classification[0].ClassificationID != per.ID {
+		t.Fatalf("a per-block classification must win over a later bulk add, got %+v", dec.Classification)
+	}
+
+	// Bulk first, then per-block: the per-block replacement must win.
+	dec2 := run.ReviewDecisions{}
+	stageBulkClassification(&dec2, opt, []classTarget{target})
+	addClassification(&dec2, run.ClassificationDecision{BlockID: "c1", ClassificationID: per.ID})
+	if len(dec2.Classification) != 1 || dec2.Classification[0].ClassificationID != per.ID {
+		t.Fatalf("a per-block classification must replace a prior bulk add, got %+v", dec2.Classification)
+	}
+}
+
+// P4: the TUI and plain paths share the classification bulk staging through the
+// prompter seam.
+func TestBulk_ClassificationPlainAndTUIParity(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "Intern", Code: "INTGRADI2610", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+
+	tuiRec := bulkClassificationRec(t)
+	var tuiOut bytes.Buffer
+	tui := &guided{cfg: cfg, p: &fakePrompter{choose: []int{4, 0}, confirms: []bool{true}}, stdout: &tuiOut, stderr: &bytes.Buffer{}}
+	var tuiDec run.ReviewDecisions
+	if err := tui.bulkReview(context.Background(), proposal.Proposal{}, tuiRec, &tuiDec); err != nil {
+		t.Fatalf("tui bulkReview: %v", err)
+	}
+
+	plainRec := bulkClassificationRec(t)
+	var plainOut bytes.Buffer
+	// 5 = bulk-assign a classification; 1 = the first catalog option; y = consent.
+	plain := &guided{cfg: cfg, p: newPlainPrompter(strings.NewReader("5\n1\ny\n"), &plainOut), stdout: &plainOut, stderr: &bytes.Buffer{}}
+	var plainDec run.ReviewDecisions
+	if err := plain.bulkReview(context.Background(), proposal.Proposal{}, plainRec, &plainDec); err != nil {
+		t.Fatalf("plain bulkReview: %v", err)
+	}
+	if !reflect.DeepEqual(tuiDec.Classification, plainDec.Classification) {
+		t.Fatalf("staged classifications differ:\n tui=%+v\n plain=%+v", tuiDec.Classification, plainDec.Classification)
+	}
+	if len(tuiDec.Classification) != 1 {
+		t.Fatalf("want one staged classification, got %+v", tuiDec.Classification)
+	}
+}
+
+// P4/C6: a guided run that bulk-classifies an interval applies it end-to-end
+// (re-resolved via AuthoritativeClassificationOption) and does not re-prompt for it.
+func TestBulk_ClassificationGuidedIntegration(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "Intern", Code: "INTGRADI2610", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Confirmed[0].ClassificationID = ""
+		rec.Confirmed[0].ActivityType = ""
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// keep existing (0); no missing work (false); bulk classification (4) pick 0,
+	// consent true; final confirm true.
+	p := &fakePrompter{choose: []int{0, 4, 0}, confirms: []bool{false, true, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].ClassificationID != "cls-1" || rec.Confirmed[0].ActivityType != "internal project" {
+		t.Fatalf("the bulk classification must be applied end-to-end: %+v", rec.Confirmed[0])
+	}
+	if !strings.Contains(out.String(), "classified by the bulk action") {
+		t.Fatalf("the guided run must disclose the bulk-classified count:\n%s", out.String())
+	}
+}
+
+// F1 regression: a guided Bulk-assign-classification whose pick is retrieved by a
+// SEARCH beyond the unfiltered first page must COMPLETE — the widened validation
+// catalog must survive classificationStep, so validateClassifications re-resolves
+// the beyond-page id instead of aborting with ErrUnknownToken.
+func TestBulk_ClassificationSearchBeyondPageValidates(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	fetch := &fakeCatalogFetcher{
+		catalog: partialPage(),
+		byQuery: map[string]gradion.Catalog{"intern": targetedIntern()},
+	}
+	withCatalogFetcher(t, fetch)
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.Confirmed[0].ClassificationID = ""
+		rec.Confirmed[0].ActivityType = ""
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// keep existing (0); no missing work (false); bulk classification (4) -> search
+	// (12) -> query "intern" -> pick the beyond-page option (0), consent true;
+	// final confirm true.
+	p := &fakePrompter{
+		choose:   []int{0, 4, 12, 0},
+		inputs:   []string{"intern"},
+		confirms: []bool{false, true, true},
+	}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if rec.Confirmed[0].ClassificationID != "uuid-int" || rec.Confirmed[0].ActivityType != "internal project" {
+		t.Fatalf("the beyond-page bulk choice must validate and apply: %+v", rec.Confirmed[0])
 	}
 }
