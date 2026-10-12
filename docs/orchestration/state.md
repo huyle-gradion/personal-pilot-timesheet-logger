@@ -41,8 +41,9 @@ Current work graph, in priority order, with no invented deadlines:
    composed midnight+four-hour split, a durable carry on D surfaced as an
    unconfirmed linked block on D+1, carry visible in review/export. Owner
    resolved the second-day rule (explicit confirmation; no auto-write/approval).
-5. TUI-USABILITY-1: planned, designer-owned hierarchy, labels, provenance,
-   unknown-duration indicators, keyboard help and source warnings.
+5. TUI-USABILITY-1: closed, source-accepted and committed locally (`ec6d47e`);
+   designer-owned hierarchy, labels, provenance, unknown-duration indicators,
+   keyboard help and incomplete-source warnings. Presentation only.
 6. BULK-REVIEW-1: planned, explicit scoped preview, per-block overrides and safe
    cancellation; no unknown-duration confirmation or silent collision resolution.
 7. CLASSIFICATION-INTERACTION-1: planned, searchable authoritative choices and
@@ -220,6 +221,37 @@ Source acceptance does not establish live-read compatibility or production
 readiness; production submission remains blocked. Next dependency-ready bounded
 task is TUI-USABILITY-1 (designer-owned hierarchy, labels, provenance,
 unknown-duration indicators, keyboard help, and source warnings).
+
+### TUI-USABILITY-1 closure, 2026-10-12
+
+TUI-USABILITY-1 is source-accepted and committed locally at `ec6d47e` (parent
+`c42e610`), on `feat/s9-integrated-acceptance` (4 files, +633/-75). The guided
+run now reads as a titled, top-down document (header -> sources -> proposal ->
+review -> classification -> summary -> plan); one shared `duration=unknown`
+marker covers untimed narratives and observation-window work blocks; block lines
+use consistent labels; attendance and exclusion reasons are human labels; and
+evidence provenance (git repo/branch, calendar, journal) is shown. Incomplete
+sources get a prominent section plus a forward pointer from the sources list. The
+TUI adds a per-field keyboard-help line naming the abort key, and the plain path
+prints a one-time answer/abort hint. Implementer @designer
+`ses_ed1faa7faffePaVp325X4XtCkQ` (implement + fix); independent review and focused
+re-review @oracle `ses_ed1eb67acffezlRI4XqFDcT5CU` (accepted; F1/F2/F3/F5 closed,
+F4/F6 informational carried, N1 raw `stated=` nit carried). Presentation only:
+prompt counts/order, decisions, exit codes, and the machine-readable lines
+(`plan_id:`, `operations:`, `preview blocked:`, `total:`, per-operation lines,
+`next step:`) are unchanged; the scripted/default path is untouched; the core
+stays headless. Parent final checks exited 0 for gofmt (4 files), build, vet, the
+full uncached suite, `-race ./cmd/timesheet`, `./tests/...`, `-tags e2e
+./tests/...`, the guided offline harness, and `git diff --check`. The full suite
+is green at this time; the pre-existing `internal/evidence/plugins` time-window
+failure remains latent and unaddressed. Carried documented nits: non-ASCII glyphs
+in human output; known durations render `1h 0m` instead of `60m`; `excludedLabel`
+appends `stated=` without trimming (regex-constrained, no leak). Source acceptance
+does not establish live-read compatibility or production readiness; production
+submission remains blocked. Next dependency-ready bounded task is BULK-REVIEW-1
+(explicit scoped bulk actions with an affected-block preview, per-block overrides
+and safe cancellation; no bulk-confirm of unknown durations, no silent collision
+resolution, no marking a nonempty day empty).
 
 Local record reconciliation, read-only, 2026-10-11:
 - October 8 current workflow schema 1, revision 8: 14 confirmed intervals,
@@ -1174,6 +1206,18 @@ Open findings and disposition: F1-F6 and G1-G4 closed. Carried documented limits
 Commit and publication status: committed locally aee253c; NOT pushed, no PR, no merge.
 Vault sync status: pending (delegated to @ai-database).
 Next gate and blockers: TUI-USABILITY-1 (designer-owned hierarchy, labels, provenance, unknown-duration indicators, keyboard help, source warnings). Production submission remains blocked.
+```
+
+```text
+2026-10-12 / TUI-USABILITY-1 / authorized -> designing -> implementing -> reviewing -> fixing -> re-reviewing -> accepted -> committed
+Owner authority reference: submission-revalidation takeover grant (direct specialist dispatch, bounded implementation, independent review/fix/re-review, accepted-slice local commits, repo records, vault sync). Owner directed designer use. Not authorized: production creates/edits/deletes, Keychain changes, push/publication/merge/force-push, silent product-scope changes.
+Branch / HEAD / exact snapshot: feat/s9-integrated-acceptance / ec6d47e (parent c42e610) / 4 files, +633/-75: cmd/timesheet/{interactive,interactive_test,prompt_plain,prompt_tui}.go. Accepted hashes matched the fix1 manifest before staging.
+Worker/reviewer report references and verification level: implementer @designer ses_ed1faa7faffePaVp325X4XtCkQ (implement + fix); independent review + focused re-review @oracle ses_ed1eb67acffezlRI4XqFDcT5CU (accepted; F1/F2/F3/F5 closed; F4/F6 informational; N1 nit carried). Parent log .../opencode/tui-usability-1-parent-checks.log: gofmt/build/vet/full uncached suite/-race cmd/timesheet/./tests/.../e2e tag/guided harness/diff-check all exit 0.
+Behavior: presentation-only guided-run redesign (titled sections; one shared duration=unknown marker; consistent block labels; human attendance/exclusion labels; evidence provenance; prominent incomplete-source section plus a sources-section forward pointer; per-field TUI keyboard help naming the abort key; one-time plain-path hint). Prompt counts/order, decisions, exit codes, and the machine-readable lines (plan_id:/operations:/preview blocked:/total:/per-op/next step:) are unchanged; the scripted/default path is untouched; the core stays headless.
+Open findings and disposition: F1/F2/F3/F5 closed. Carried documented nits: non-ASCII glyphs in human output; known durations render "1h 0m" not "60m"; excludedLabel appends stated= untrimmed (regex-constrained, no leak). Pre-existing internal/evidence/plugins time-window test unaddressed (not this slice).
+Commit and publication status: committed locally ec6d47e; NOT pushed, no PR, no merge.
+Vault sync status: pending (delegated to @ai-database).
+Next gate and blockers: BULK-REVIEW-1 (explicit scoped bulk actions with an affected-block preview; per-block overrides; safe cancellation; no bulk-confirm of unknown durations, no silent collision resolution, no marking a nonempty day empty). Production submission remains blocked.
 ```
 
 ## Documentation review

@@ -176,7 +176,7 @@ updated; unless a genuine full live complete catalog proves the choice, explicit
 authoritative reselection is required and invalidates the old approval. No automatic
 submit rerun.
 
-Next bounded slice: TUI-USABILITY-1. Remaining priorities and unchanged
+Next bounded slice: BULK-REVIEW-1. Remaining priorities and unchanged
 production boundaries are recorded in the takeover work graph in [state](state.md).
 
 ### CONFIG-GUIDED-1, guided configuration
@@ -239,6 +239,27 @@ Carried documented limits: 7-midnight carry lookback bound; midnight-crossing
 Work blocks are now split (identity change limited to that case); no cross-day
 cascade when a source day is retracted; the `EndTime=="00:00"` reconciliation
 heuristic is conservative. The pre-existing `internal/evidence/plugins`
+time-window test is unaddressed and is not this slice's regression.
+
+### TUI-USABILITY-1, guided terminal usability
+
+Source-accepted and committed locally at `ec6d47e`, parent `c42e610`, after an
+independent review and a focused re-review (accepted). Presentation only; no
+production writes, live access, publication, or private-record change.
+
+| Owner requirement | Evidence on the accepted snapshot |
+| --- | --- |
+| Improve hierarchy | titled top-down sections (header, sources, proposal, review, classification, summary, plan); `TestGuided_SectionHierarchyAndProvenance` |
+| Readable labels | consistent block line (kind, span, duration, project, markers, provenance, description); human attendance/exclusion labels; `TestGuided_MeetingAttendanceLabelAndCalendarProvenance` |
+| Provenance | git repo/branch, calendar, journal note rendered from non-secret evidence; no secret/private-path leak (reviewer-verified) |
+| Unknown-duration indicators | one shared `duration=unknown` marker for untimed narratives and observation-window blocks; `TestGuided_UnknownDurationMarkerIsExplicit` |
+| Keyboard help | per-field TUI help naming the abort key; `TestTUIHelpReachesGroupHeader`, `TestTUIHelpNamesAbortPath` |
+| Incomplete-source warnings | prominent section plus a sources-section forward pointer; `TestGuided_IncompleteSourceWarningIsProminent` |
+| Keep the core headless; preserve accessible/non-interactive behavior | presentation only; scripted/default path untouched; machine-readable lines byte-identical; plain path still EOF-aborts |
+
+Carried documented nits: non-ASCII glyphs in human output; known durations render
+`1h 0m` instead of `60m`; `excludedLabel` appends `stated=` untrimmed
+(regex-constrained, no leak). The pre-existing `internal/evidence/plugins`
 time-window test is unaddressed and is not this slice's regression.
 
 ### Shared-workflow coverage
