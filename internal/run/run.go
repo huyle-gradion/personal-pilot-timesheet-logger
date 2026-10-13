@@ -45,6 +45,20 @@ const (
 	// BlockStaleCatalog is returned when the supplied catalog is older than the
 	// shared gradion.CatalogMaxAge policy: submission fails closed BEFORE any write.
 	BlockStaleCatalog = "stale_catalog"
+
+	// BlockUnconfirmMappedRemote is the stable reason for an unconfirm of an
+	// interval that is already submitted: the operator must edit the remote entry
+	// instead of removing it.
+	BlockUnconfirmMappedRemote = "unconfirm_mapped_remote"
+	// BlockUnconfirmUnknownInterval is the stable reason for an unconfirm that
+	// names no confirmed interval on the day (a typo is never silent).
+	BlockUnconfirmUnknownInterval = "unconfirm_unknown_interval"
+	// BlockResetSubmittedInterval is the stable reason for a reset refused because
+	// a confirmed interval has a remote mapping.
+	BlockResetSubmittedInterval = "reset_submitted_interval"
+	// BlockResetUnresolved is the stable reason for a reset refused because an
+	// unresolved (in_flight) remote operation remains.
+	BlockResetUnresolved = "reset_unresolved_submission"
 )
 
 // keychainRefPrefix marks a config value that references a Keychain secret rather

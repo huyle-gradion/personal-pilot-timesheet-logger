@@ -2,6 +2,7 @@ package run
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -527,5 +528,258 @@ func TestMergeCarryBlocks_Dedup(t *testing.T) {
 	got := mergeCarryBlocks(prop, []workflow.CarryItem{item})
 	if len(got.Manual) != 1 {
 		t.Fatalf("a pre-existing block with the same id must not be duplicated: %+v", got.Manual)
+	}
+}
+
+// --- REVIEW-UNDO-1: unconfirm + reset ---------------------------------------
+
+// TestApplyReview_UnconfirmUnsubmittedReturnsToProposal proves an unconfirm of an
+// unsubmitted interval removes it, keeps every collected evidence item, and lets
+// the block re-surface as a fresh proposal.
+func TestApplyReview_UnconfirmUnsubmittedReturnsToProposal(t *testing.T) {
+	store := newStore(t)
+	r := testRunner(t, store)
+	date := "2026-10-06"
+	blockID := seedGitDay(t, store, r, date)
+
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{Confirm: []ConfirmDecision{{BlockID: blockID}}}); err != nil {
+		t.Fatalf("ApplyReview(confirm): %v", err)
+	}
+	confirmed, _ := store.GetDay(ctx, date)
+	if len(confirmed.Confirmed) != 1 {
+		t.Fatalf("want 1 confirmed interval, got %+v", confirmed.Confirmed)
+	}
+	ci := confirmed.Confirmed[0]
+	collectedBefore := len(confirmed.CollectedEvidence)
+
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{
+		Unconfirm: []UnconfirmDecision{{BlockID: ci.ID, Reason: "user_retracted"}},
+	}); err != nil {
+		t.Fatalf("ApplyReview(unconfirm): %v", err)
+	}
+	after, _ := store.GetDay(ctx, date)
+	if len(after.Confirmed) != 0 {
+		t.Fatalf("unconfirm must remove the interval, got %+v", after.Confirmed)
+	}
+	if len(after.CollectedEvidence) != collectedBefore {
+		t.Fatalf("unconfirm must not drop collected evidence: before=%d after=%d", collectedBefore, len(after.CollectedEvidence))
+	}
+	prop, err := r.CurrentProposal(ctx, date)
+	if err != nil {
+		t.Fatalf("CurrentProposal: %v", err)
+	}
+	found := false
+	for _, b := range prop.Work {
+		if b.ID == blockID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the unconfirmed block must re-surface as a proposal, got %+v", prop.Work)
+	}
+}
+
+// TestApplyReview_UnconfirmSubmittedBlocksWithSpecificReason proves a submitted
+// interval cannot be unconfirmed, and the refusal names the reason, the id, and
+// the correct action (edit the remote entry).
+func TestApplyReview_UnconfirmSubmittedBlocksWithSpecificReason(t *testing.T) {
+	store := newStore(t)
+	r := testRunner(t, store)
+	date := "2026-10-06"
+	blockID := seedGitDay(t, store, r, date)
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{Confirm: []ConfirmDecision{{BlockID: blockID}}}); err != nil {
+		t.Fatalf("ApplyReview(confirm): %v", err)
+	}
+	rec, _ := store.GetDay(ctx, date)
+	ci := rec.Confirmed[0]
+	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error {
+		x.RemoteMappings = append(x.RemoteMappings, workflow.RemoteMapping{LocalID: ci.ID, RemoteID: "remote-1", Date: date})
+		return nil
+	}); err != nil {
+		t.Fatalf("seed mapping: %v", err)
+	}
+
+	err := r.ApplyReview(ctx, date, ReviewDecisions{Unconfirm: []UnconfirmDecision{{BlockID: ci.ID}}})
+	if err == nil {
+		t.Fatalf("unconfirming a submitted interval must fail")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "unconfirm_mapped_remote") || !strings.Contains(msg, ci.ID) {
+		t.Fatalf("the error must name the reason and the offending id: %v", err)
+	}
+	if !strings.Contains(msg, "edit") {
+		t.Fatalf("the error must point the operator at the edit path: %v", err)
+	}
+	after, _ := store.GetDay(ctx, date)
+	if len(after.Confirmed) != 1 || after.Confirmed[0].ID != ci.ID {
+		t.Fatalf("nothing may be written on the refused unconfirm, got %+v", after.Confirmed)
+	}
+	if len(after.RemoteMappings) != 1 || after.RemoteMappings[0].LocalID != ci.ID {
+		t.Fatalf("the mapping must be intact, got %+v", after.RemoteMappings)
+	}
+}
+
+// TestApplyReview_ResetClearsReviewKeepsHistory proves a reset clears the whole
+// local review decision set while retaining collected evidence, mappings,
+// outcomes, and plans, and invalidating (never deleting) an approval. A reset
+// that stages no replacement work leaves the day UNREVIEWED.
+func TestApplyReview_ResetClearsReviewKeepsHistory(t *testing.T) {
+	store := newStore(t)
+	r := testRunner(t, store)
+	date := "2026-10-06"
+	seedEvidence(t, store, date, []evidence.Evidence{
+		gitEvidence("e1", "acme/repo", "fix parser"),
+		gitEvidence("e2", "acme/other", "tidy up"),
+	})
+	prop, err := r.Propose(ctx, date)
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	var blockID string
+	for _, b := range prop.Work {
+		for _, id := range b.EvidenceIDs {
+			if id == "e1" {
+				blockID = b.ID
+			}
+		}
+	}
+	if blockID == "" {
+		t.Fatalf("want a work block with e1, got %+v", prop.Work)
+	}
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{
+		Confirm:     []ConfirmDecision{{BlockID: blockID}},
+		Exclude:     []ExcludeDecision{{EvidenceID: "e2", Reason: "user_excluded"}},
+		Acknowledge: []string{"src-a"},
+	}); err != nil {
+		t.Fatalf("ApplyReview(seed decisions): %v", err)
+	}
+	// Seed history that must SURVIVE the reset: a plan, a terminal outcome, an
+	// approval, an attendance decision, and a stale (unmatched) remote mapping.
+	if _, err := store.UpdateDay(ctx, date, func(rec *workflow.Record) error {
+		if rec.Review == nil {
+			rec.Review = &workflow.ReviewState{}
+		}
+		rec.Review.Attendance = []workflow.AttendanceDecision{{EvidenceID: "m1", Attended: true}}
+		rec.Plans = []workflow.SubmissionPlan{{PlanID: "p1", Date: date}}
+		rec.Outcomes = []workflow.OperationOutcome{{OperationKey: "k1", Status: workflow.OutcomeConfirmed, Date: date}}
+		rec.Approvals = []workflow.Approval{{ApprovalID: "a1", PlanID: "p1", Date: date}}
+		rec.RemoteMappings = append(rec.RemoteMappings, workflow.RemoteMapping{LocalID: "stale-x", RemoteID: "r1", Date: date})
+		return nil
+	}); err != nil {
+		t.Fatalf("seed history: %v", err)
+	}
+	before, _ := store.GetDay(ctx, date)
+	if before.Review == nil || len(before.Review.ExcludedEvidence) == 0 {
+		t.Fatalf("want exclusions seeded, got %+v", before.Review)
+	}
+
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{Reset: true}); err != nil {
+		t.Fatalf("ApplyReview(reset): %v", err)
+	}
+	after, _ := store.GetDay(ctx, date)
+	if len(after.Confirmed) != 0 {
+		t.Fatalf("reset must clear confirmed work, got %+v", after.Confirmed)
+	}
+	if after.Review == nil {
+		t.Fatalf("reset must leave a (cleared) review state, got nil")
+	}
+	if after.Review.Reviewed {
+		t.Fatalf("reset must clear Reviewed")
+	}
+	if after.Review.Empty {
+		t.Fatalf("reset must clear Empty")
+	}
+	if !after.Review.ReviewedAt.IsZero() {
+		t.Fatalf("reset must zero ReviewedAt, got %v", after.Review.ReviewedAt)
+	}
+	if after.Review.LastProposalHash != "" {
+		t.Fatalf("reset must clear LastProposalHash, got %q", after.Review.LastProposalHash)
+	}
+	if len(after.Review.ExcludedEvidence) != 0 {
+		t.Fatalf("reset must clear exclusions, got %+v", after.Review.ExcludedEvidence)
+	}
+	if len(after.Review.Attendance) != 0 {
+		t.Fatalf("reset must clear attendance, got %+v", after.Review.Attendance)
+	}
+	if len(after.Review.AcknowledgedSources) != 0 {
+		t.Fatalf("reset must clear acknowledgments, got %+v", after.Review.AcknowledgedSources)
+	}
+	if len(after.CollectedEvidence) != len(before.CollectedEvidence) {
+		t.Fatalf("reset must retain collected evidence: before=%d after=%d", len(before.CollectedEvidence), len(after.CollectedEvidence))
+	}
+	if len(after.RemoteMappings) != 1 {
+		t.Fatalf("reset must retain remote mappings, got %+v", after.RemoteMappings)
+	}
+	if len(after.Outcomes) != 1 {
+		t.Fatalf("reset must retain outcomes, got %+v", after.Outcomes)
+	}
+	if len(after.Plans) != 1 {
+		t.Fatalf("reset must retain plans, got %+v", after.Plans)
+	}
+	if len(after.Approvals) != 1 || after.Approvals[0].InvalidatedAt == nil {
+		t.Fatalf("reset must retain but INVALIDATE the approval, got %+v", after.Approvals)
+	}
+}
+
+// TestApplyReview_ResetBlocksOnSubmittedInterval proves a reset is refused when a
+// confirmed interval has a remote mapping, naming the reason and the id, with
+// nothing written.
+func TestApplyReview_ResetBlocksOnSubmittedInterval(t *testing.T) {
+	store := newStore(t)
+	r := testRunner(t, store)
+	date := "2026-10-06"
+	blockID := seedGitDay(t, store, r, date)
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{Confirm: []ConfirmDecision{{BlockID: blockID}}}); err != nil {
+		t.Fatalf("ApplyReview(confirm): %v", err)
+	}
+	rec, _ := store.GetDay(ctx, date)
+	ci := rec.Confirmed[0]
+	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error {
+		x.RemoteMappings = append(x.RemoteMappings, workflow.RemoteMapping{LocalID: ci.ID, RemoteID: "remote-1", Date: date})
+		return nil
+	}); err != nil {
+		t.Fatalf("seed mapping: %v", err)
+	}
+	err := r.ApplyReview(ctx, date, ReviewDecisions{Reset: true})
+	if err == nil {
+		t.Fatalf("resetting a day with a submitted interval must fail")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "reset_submitted_interval") || !strings.Contains(msg, ci.ID) {
+		t.Fatalf("the error must name the reason and the offending id: %v", err)
+	}
+	after, _ := store.GetDay(ctx, date)
+	if len(after.Confirmed) != 1 || len(after.RemoteMappings) != 1 {
+		t.Fatalf("nothing may be written on the refused reset, got confirmed=%+v mappings=%+v", after.Confirmed, after.RemoteMappings)
+	}
+}
+
+// TestApplyReview_ResetBlocksOnUnresolvedOutcome proves a reset is refused when an
+// unresolved (in_flight) remote operation remains, naming the reason, with nothing
+// written.
+func TestApplyReview_ResetBlocksOnUnresolvedOutcome(t *testing.T) {
+	store := newStore(t)
+	r := testRunner(t, store)
+	date := "2026-10-06"
+	blockID := seedGitDay(t, store, r, date)
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{Confirm: []ConfirmDecision{{BlockID: blockID}}}); err != nil {
+		t.Fatalf("ApplyReview(confirm): %v", err)
+	}
+	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error {
+		x.Outcomes = append(x.Outcomes, workflow.OperationOutcome{OperationKey: "op-1", Status: workflow.OutcomeInFlight, Date: date})
+		return nil
+	}); err != nil {
+		t.Fatalf("seed outcome: %v", err)
+	}
+	err := r.ApplyReview(ctx, date, ReviewDecisions{Reset: true})
+	if err == nil {
+		t.Fatalf("resetting a day with an unresolved operation must fail")
+	}
+	if !strings.Contains(err.Error(), "reset_unresolved_submission") {
+		t.Fatalf("the error must name the unresolved-submission reason: %v", err)
+	}
+	after, _ := store.GetDay(ctx, date)
+	if len(after.Confirmed) != 1 {
+		t.Fatalf("nothing may be written on the refused reset, got %+v", after.Confirmed)
 	}
 }

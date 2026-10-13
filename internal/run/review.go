@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -31,8 +32,16 @@ type ReviewDecisions struct {
 	Description    []DescriptionDecision    `json:"description,omitempty"`
 	Classification []ClassificationDecision `json:"classification,omitempty"`
 	Manual         []ManualDecision         `json:"manual,omitempty"`
-	MarkEmpty      bool                     `json:"mark_empty,omitempty"`
-	Acknowledge    []string                 `json:"acknowledge,omitempty"`
+	// Unconfirm removes already-confirmed intervals (see UnconfirmDecision). It is
+	// ADDITIVE (omitempty), so a decision set that omits it behaves as before.
+	Unconfirm []UnconfirmDecision `json:"unconfirm,omitempty"`
+	// Reset clears the WHOLE local review decision set for the day (every confirmed
+	// interval plus the reviewed/empty flags, exclusions, attendance decisions, and
+	// acknowledgments). It is ADDITIVE (omitempty) and is refused when the day has a
+	// submitted interval or an unresolved remote operation.
+	Reset       bool     `json:"reset,omitempty"`
+	MarkEmpty   bool     `json:"mark_empty,omitempty"`
+	Acknowledge []string `json:"acknowledge,omitempty"`
 }
 
 // AuthoritativeClassification resolves a classification id against a catalog
@@ -77,6 +86,14 @@ type ConfirmDecision struct {
 	BlockID    string `json:"block_id"`
 	Project    string `json:"project,omitempty"`
 	Attendance *bool  `json:"attendance,omitempty"`
+}
+
+// UnconfirmDecision removes one already-confirmed interval (identified by its
+// FULL confirmed-interval id). Reason is accepted for audit symmetry but is not
+// persisted (the review decision set is left untouched by the removal).
+type UnconfirmDecision struct {
+	BlockID string `json:"block_id"` // a CONFIRMED interval id
+	Reason  string `json:"reason,omitempty"`
 }
 
 // ExcludeDecision excludes one evidence item from confirmed work.
@@ -176,6 +193,17 @@ func (r *Runner) CurrentProposal(ctx context.Context, date string) (proposal.Pro
 	return r.withCarries(ctx, date, prop)
 }
 
+// Confirmed returns the day's confirmed intervals, READ-ONLY. It computes no
+// proposal, so a scripted operator can list the exact full ids an Unconfirm
+// decision must name. The intervals are returned in the record's stored order.
+func (r *Runner) Confirmed(ctx context.Context, date string) ([]workflow.ConfirmedInterval, error) {
+	rec, err := r.deps.Store.GetDay(ctx, date)
+	if err != nil {
+		return nil, err
+	}
+	return append([]workflow.ConfirmedInterval(nil), rec.Confirmed...), nil
+}
+
 // appliedProposal re-derives the current proposal and folds in the persisted
 // editorial suggestions (TEXT ONLY: only ProposedTimeBlock.Description changes), so
 // an AI description reaches ConfirmedInterval.Description through the review path.
@@ -218,6 +246,31 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 	// like any other proposed block. There is no special auto path.
 	prop = mergeCarryBlocks(prop, carries)
 	blocks := proposalBlocksByID(prop)
+
+	// Reset and Unconfirm are applied BEFORE Confirm, so one decision set can
+	// remove a wrong interval and re-confirm its proposal block in a single pass.
+	// A Reset clears the day's exclusions, so the proposal is re-derived
+	// afterwards: a subsequent Confirm then references a block from the CURRENT
+	// (post-reset) proposal, and trim/project/description resolve against the
+	// re-created interval through the existing resolver below.
+	if d.Reset {
+		if err := review.ResetReview(rec); err != nil {
+			return wrapResetErr(err)
+		}
+	}
+	for _, u := range d.Unconfirm {
+		if err := review.Unconfirm(rec, u.BlockID, u.Reason); err != nil {
+			return wrapUnconfirmErr(err, u.BlockID)
+		}
+	}
+	if d.Reset || len(d.Unconfirm) > 0 {
+		prop, err = r.appliedProposal(rec, date)
+		if err != nil {
+			return err
+		}
+		prop = mergeCarryBlocks(prop, carries)
+		blocks = proposalBlocksByID(prop)
+	}
 
 	// Confirm first, recording EVERY confirmed interval each proposal block
 	// produced (in creation order). Trim/Project/Join then reference EITHER a
@@ -337,6 +390,13 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 		invalidateApprovalsForDate(rec, date, r.now())
 	}
 
+	// A reset that stages NO replacement work leaves the day UNREVIEWED: the
+	// operator is clearing the local review to redo it, not marking it reviewed.
+	// A reset WITH new confirmation work still marks the day reviewed below.
+	if d.Reset && len(d.Confirm) == 0 && !stagedManualConfirm(d.Manual) {
+		return nil
+	}
+
 	final, err := r.appliedProposal(rec, date)
 	if err != nil {
 		return err
@@ -377,7 +437,51 @@ func proposalCarryItems(prop proposal.Proposal) []workflow.CarryItem {
 func scheduleAffecting(d ReviewDecisions) bool {
 	return len(d.Confirm) > 0 || len(d.Exclude) > 0 || len(d.Join) > 0 ||
 		len(d.Trim) > 0 || len(d.Project) > 0 || len(d.Description) > 0 ||
-		len(d.Classification) > 0 || len(d.Manual) > 0
+		len(d.Classification) > 0 || len(d.Manual) > 0 ||
+		len(d.Unconfirm) > 0 || d.Reset
+}
+
+// wrapUnconfirmErr turns a review-layer removal error into a stable, specific
+// operator diagnostic. A submitted interval points the operator at the CORRECT
+// action (edit the remote entry) rather than a dead end; an unknown id names the
+// offending id so a typo is never silent.
+func wrapUnconfirmErr(err error, id string) error {
+	switch {
+	case errors.Is(err, review.ErrIntervalSubmitted):
+		return fmt.Errorf("%s:%s: interval %s has already been submitted to the remote; edit the existing entry with trim, project, description, or classification instead of removing it",
+			BlockUnconfirmMappedRemote, id, id)
+	case errors.Is(err, review.ErrUnknownInterval):
+		return fmt.Errorf("%s:%s: no confirmed interval with that id on this day", BlockUnconfirmUnknownInterval, id)
+	default:
+		return err
+	}
+}
+
+// wrapResetErr turns a review-layer reset error into a stable, specific operator
+// diagnostic. Both cases name the offending id where one exists.
+func wrapResetErr(err error) error {
+	switch {
+	case errors.Is(err, review.ErrResetSubmitted):
+		return fmt.Errorf("%s:%s: the day has a submitted interval and cannot be reset; edit the existing remote entry with trim, project, description, or classification instead",
+			BlockResetSubmittedInterval, trailingErrorID(err))
+	case errors.Is(err, review.ErrResetUnresolved):
+		return fmt.Errorf("%s: the day has an unresolved remote operation; reconcile it before resetting", BlockResetUnresolved)
+	default:
+		return err
+	}
+}
+
+// trailingErrorID recovers the id a wrapped typed error carries as its trailing
+// ": <id>" suffix. It returns "" when there is no suffix.
+func trailingErrorID(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if i := strings.LastIndex(msg, ": "); i >= 0 {
+		return strings.TrimSpace(msg[i+2:])
+	}
+	return ""
 }
 
 // confirmProposedBlock confirms one proposed block and returns the confirmed
@@ -464,6 +568,17 @@ func proposalBlocksOf(prop proposal.Proposal) []proposal.ProposedTimeBlock {
 	out = append(out, prop.Meetings...)
 	out = append(out, prop.Manual...)
 	return out
+}
+
+// stagedManualConfirm reports whether a decision set stages at least one manual
+// interval to confirm.
+func stagedManualConfirm(manuals []ManualDecision) bool {
+	for _, m := range manuals {
+		if m.Confirm {
+			return true
+		}
+	}
+	return false
 }
 
 func containsString(values []string, want string) bool {

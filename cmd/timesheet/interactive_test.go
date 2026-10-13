@@ -38,6 +38,10 @@ type fakePrompter struct {
 	ci, ii, mi, co int
 	chooseTitles   []string
 	confirmTitles  []string
+	// chooseOptions records the option list offered at each Choose prompt, so a
+	// test can assert WHICH options were presented (e.g. a mapped interval offers
+	// the edit-instead-of-remove rule and no removal).
+	chooseOptions [][]promptOption
 	// confirmDefaults records the default offered at each Confirm prompt, so a
 	// test can assert the guided final confirmation defaults to "no".
 	confirmDefaults []bool
@@ -45,6 +49,7 @@ type fakePrompter struct {
 
 func (f *fakePrompter) Choose(_ context.Context, title string, options []promptOption, def int) (int, error) {
 	f.chooseTitles = append(f.chooseTitles, title)
+	f.chooseOptions = append(f.chooseOptions, options)
 	if f.ci >= len(f.choose) {
 		return 0, errAborted
 	}
@@ -368,6 +373,95 @@ func TestGuided_ParityWithScriptedReview(t *testing.T) {
 	}
 }
 
+// REVIEW-UNDO-1: an interactive "Remove from this day" choice produces the SAME
+// record as a scripted unconfirm.
+func TestGuided_UnconfirmParityWithScripted(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+
+	// Guided: existing work c1 -> "Remove from this day" (index 2).
+	gd := t.TempDir()
+	gStorage := filepath.Join(gd, "records")
+	seedRecord(t, gStorage, testDate, func(rec *workflow.Record) { *rec = readyRecord(testDate) })
+	gr, gstore := newGuidedRunner(t, gStorage, nil, cfg)
+	var out, errb bytes.Buffer
+	// no reset (false); remove c1 (2); no bulk (0); no missing work (false); confirm (true).
+	p := &fakePrompter{choose: []int{2, 0}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), gr, cfg, gstore, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	guidedRec := loadRecord(t, gStorage, testDate)
+	if len(guidedRec.Confirmed) != 0 {
+		t.Fatalf("the interactive remove must remove the interval, got %+v", guidedRec.Confirmed)
+	}
+
+	// Scripted equivalent: the same removal applied through the core.
+	sd := t.TempDir()
+	sStorage := filepath.Join(sd, "records")
+	seedRecord(t, sStorage, testDate, func(rec *workflow.Record) { *rec = readyRecord(testDate) })
+	sr, _ := newGuidedRunner(t, sStorage, nil, cfg)
+	if err := sr.ApplyReview(context.Background(), testDate, run.ReviewDecisions{
+		Unconfirm: []run.UnconfirmDecision{{BlockID: "c1", Reason: "user_retracted"}},
+		MarkEmpty: true,
+	}); err != nil {
+		t.Fatalf("scripted apply: %v", err)
+	}
+	scriptedRec := loadRecord(t, sStorage, testDate)
+
+	if len(guidedRec.Confirmed) != len(scriptedRec.Confirmed) {
+		t.Fatalf("confirmed counts differ: guided=%+v scripted=%+v", guidedRec.Confirmed, scriptedRec.Confirmed)
+	}
+	if guidedRec.Review == nil || scriptedRec.Review == nil ||
+		guidedRec.Review.Empty != scriptedRec.Review.Empty ||
+		guidedRec.Review.Reviewed != scriptedRec.Review.Reviewed {
+		t.Fatalf("review state differs:\n guided=%+v\n scripted=%+v", guidedRec.Review, scriptedRec.Review)
+	}
+}
+
+// REVIEW-UNDO-1: a MAPPED (submitted) interval is presented as non-removable: the
+// option teaches the edit-instead rule and stages nothing, so the interval stays.
+func TestGuided_MappedIntervalNotRemovable(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		*rec = readyRecord(testDate)
+		rec.RemoteMappings = []workflow.RemoteMapping{{LocalID: "c1", RemoteID: "remote-1", Date: testDate}}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// no reset (false); the mapped interval's actionable choice is the teach-the-
+	// rule option (index 2, stages nothing); no bulk; no missing work; confirm.
+	p := &fakePrompter{choose: []int{2, 0}, confirms: []bool{false, false, true}}
+	// The preview may BLOCK on the unmatched mapping (reconcile:*); the review is
+	// still applied, which is what this test inspects.
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK && code != exitBlocked {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	foundSubmit, foundRemove := false, false
+	for _, opts := range p.chooseOptions {
+		for _, o := range opts {
+			if strings.Contains(o.Label, "edit the remote entry instead") {
+				foundSubmit = true
+			}
+			if strings.Contains(o.Label, "Remove from this day") {
+				foundRemove = true
+			}
+		}
+	}
+	if !foundSubmit || foundRemove {
+		t.Fatalf("a mapped interval must offer the edit-instead rule and no removal, got submit=%v remove=%v", foundSubmit, foundRemove)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || rec.Confirmed[0].ID != "c1" {
+		t.Fatalf("a submitted interval must NOT be removed, got %+v", rec.Confirmed)
+	}
+}
+
 // --- abort on a TUI error ---------------------------------------------------
 
 // tuiErrorPrompter returns errAborted from the first prompt, simulating a huh
@@ -444,8 +538,8 @@ func TestGuided_EmptyRefreshPreservesConfirmed(t *testing.T) {
 
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 	var out, errb bytes.Buffer
-	// Existing interval is "kept" (index 0); no bulk actions; no missing work; confirm review.
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, true}}
+	// Existing interval is "kept" (index 0); no reset; no bulk actions; no missing work; confirm review.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -480,8 +574,8 @@ func TestGuided_IncompleteSourceAckUnblocks(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0), acknowledge incomplete (true), no missing work, no bulk, confirm review.
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{true, false, true}}
+	// acknowledge incomplete (true), no reset (false), no missing work (false), no bulk, confirm review.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{true, false, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -506,8 +600,8 @@ func TestGuided_IncompleteSourceNotAckedBlocks(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0), do NOT acknowledge (false), no missing work, no bulk, confirm review.
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, true}}
+	// do NOT acknowledge (false), no reset, no missing work, no bulk, confirm review.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, false, true}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
 	if code != exitBlocked {
 		t.Fatalf("want a blocked preview, got %d\n%s", code, out.String())
@@ -988,8 +1082,8 @@ func TestGuided_CancelAfterChoicesPreservesPriorState(t *testing.T) {
 
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 	var out, errb bytes.Buffer
-	// keep existing (0); no bulk (0); no missing work; then CANCEL at the final confirmation.
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false}}
+	// keep existing (0); no reset; no bulk (0); no missing work; then CANCEL at the final confirmation.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, false}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
 	if code == exitOK {
 		t.Fatalf("a cancelled final confirmation must not succeed")
@@ -1048,7 +1142,7 @@ func TestGuided_RetainedClassificationFollowup(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1114,7 +1208,7 @@ func TestGuided_ExistingConfirmedEditable(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	// edit the existing interval (1): keep times/project, set a new description.
-	p := &fakePrompter{choose: []int{1, 0}, inputs: []string{"", "", "", "edited description"}, confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{1, 0}, inputs: []string{"", "", "", "edited description"}, confirms: []bool{false, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1222,8 +1316,8 @@ func TestGuided_ExplicitAckStagedNoPrompt(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0); NO ack prompt (already staged); no missing work; no bulk; confirm.
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, true}}
+	// keep existing (0); NO ack prompt (already staged); no reset; no missing work; no bulk; confirm.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "cal-work", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1249,8 +1343,8 @@ func TestGuided_UnknownAckReportedAndSkipped(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	// keep existing (0); the unknown ack is skipped so the real prompt appears;
-	// acknowledge it (true); no missing work; no bulk; confirm.
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{true, false, true}}
+	// acknowledge it (true); no reset; no missing work; no bulk; confirm.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{true, false, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "bogus", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1275,8 +1369,8 @@ func TestGuided_ExplicitAckNotAppliedOnAbort(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0); no bulk (0); no missing work; CANCEL at the final confirmation.
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false}}
+	// keep existing (0); no reset; no bulk (0); no missing work; CANCEL at the final confirmation.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, false}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "cal-work", testDate, p, &out, &errb)
 	if code == exitOK {
 		t.Fatalf("a cancelled final confirmation must not succeed")
@@ -1336,12 +1430,12 @@ func TestGuided_ExistingEditInvalidTimeReprompts(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// edit existing (1); an invalid start, then a valid 09:30-10:30; keep project;
+	// edit existing (1); no reset; an invalid start, then a valid 09:30-10:30; keep project;
 	// new description; no missing work; confirm.
 	p := &fakePrompter{
 		choose:   []int{1, 0},
 		inputs:   []string{"9am", "09:30", "10:30", "", "edited"},
-		confirms: []bool{false, true},
+		confirms: []bool{false, false, true},
 	}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
@@ -1402,8 +1496,8 @@ func TestGuided_EOFFollowingInvalidTimePreservesPriorState(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// edit existing (1); an invalid start, then EOF (the fake runs out).
-	p := &fakePrompter{choose: []int{1}, inputs: []string{"9am"}}
+	// no reset (false); edit existing (1); an invalid start, then EOF (the fake runs out).
+	p := &fakePrompter{choose: []int{1}, inputs: []string{"9am"}, confirms: []bool{false}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
 	if code == exitOK {
 		t.Fatalf("an EOF after an invalid time must abort")
@@ -1645,8 +1739,8 @@ func TestGuided_IncompleteSourceWarningIsProminent(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0); do NOT acknowledge (false); no missing work; no bulk; confirm.
-	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, true}}
+	// do NOT acknowledge (false); no reset; no missing work; no bulk; confirm.
+	p := &fakePrompter{choose: []int{0, 0}, confirms: []bool{false, false, false, true}}
 	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
 	if code != exitBlocked {
 		t.Fatalf("want a blocked preview, got %d\n%s", code, out.String())
@@ -2240,9 +2334,9 @@ func TestBulk_EmptyScopeDoesNotMarkEmpty(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0); bulk-confirm (1) with an explicit bogus id (3) -> empty
+	// keep existing (0); no reset; bulk-confirm (1) with an explicit bogus id (3) -> empty
 	// scope; no missing work; confirm review.
-	p := &fakePrompter{choose: []int{0, 1, 3}, inputs: []string{"bogus"}, confirms: []bool{false, true}}
+	p := &fakePrompter{choose: []int{0, 1, 3}, inputs: []string{"bogus"}, confirms: []bool{false, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -2419,9 +2513,9 @@ func TestBulk_ClassificationGuidedIntegration(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0); no missing work (false); bulk classification (4) pick 0,
+	// keep existing (0); no reset; no missing work (false); bulk classification (4) pick 0,
 	// consent true; final confirm true.
-	p := &fakePrompter{choose: []int{0, 4, 0}, confirms: []bool{false, true, true}}
+	p := &fakePrompter{choose: []int{0, 4, 0}, confirms: []bool{false, false, true, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -2456,13 +2550,13 @@ func TestBulk_ClassificationSearchBeyondPageValidates(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// keep existing (0); no missing work (false); bulk classification (4) -> search
+	// keep existing (0); no reset; no missing work (false); bulk classification (4) -> search
 	// (12) -> query "intern" -> pick the beyond-page option (0), consent true;
 	// final confirm true.
 	p := &fakePrompter{
 		choose:   []int{0, 4, 12, 0},
 		inputs:   []string{"intern"},
-		confirms: []bool{false, true, true},
+		confirms: []bool{false, false, true, true},
 	}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())

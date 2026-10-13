@@ -129,7 +129,10 @@ $TS review --config "$CFG" --date "$DATE"
 ```
 
 **Output Seam**: the proposed work/meeting/manual blocks with their stable block
-ids (used by later decisions), plus the untimed journal narratives.
+ids (used by later decisions), plus the untimed journal narratives. For a day that
+is already confirmed, it also lists the day's existing confirmed intervals with
+their **full ids**, which is how the `block_id` for an `unconfirm` decision (Step 4)
+is named.
 
 ---
 
@@ -155,8 +158,9 @@ manually linked journal description. Disable it with `--no-editorial`.
 ## Step 4: `[Script]` Apply review decisions
 
 Apply a serializable decision set (confirm, exclude, join, trim, project, manual,
-acknowledge, mark-empty) through the same `internal/review` actions an interactive
-review uses. The decisions file may contain a `{date}` placeholder for a range.
+unconfirm, reset, acknowledge, mark-empty) through the same `internal/review` actions
+an interactive review uses. The decisions file may contain a `{date}` placeholder for
+a range.
 
 ```bash
 $TS review --config "$CFG" --date "$DATE" --decisions decisions.json
@@ -177,6 +181,8 @@ kind".
   "description": [{"block_id": "<BLOCK_ID>", "text": "Paired on the parser rewrite"}],
   "classification": [{"block_id": "<BLOCK_ID>", "classification_id": "<ID>", "activity_type": "<derived>", "classification_code": "<CODE>", "classification_name": "<NAME>"}],
   "manual": [{"uuid": "<UUID>", "start": "2026-10-06T09:00:00Z", "end": "2026-10-06T11:00:00Z", "project": "Proj", "description": "Pairing", "evidence_ids": ["<EVIDENCE_ID>"], "confirm": true, "classification_id": "<ID>", "activity_type": "<derived>", "classification_code": "<CODE>", "classification_name": "<NAME>"}],
+  "unconfirm": [{"block_id": "<CONFIRMED_INTERVAL_ID>", "reason": "user_retracted"}],
+  "reset": false,
   "mark_empty": false,
   "acknowledge": ["cal"]
 }
@@ -194,6 +200,8 @@ Every key and field, and what is required:
 | `description` | `block_id`, `text` (both required) |
 | `classification` | `block_id` and `classification_id` (both required), plus `activity_type`, `classification_code`, `classification_name` |
 | `manual` | `start` and `end` (required, RFC3339), plus `uuid`, `project`, `description`, `evidence_ids`, `confirm` (bool), and the same four classification fields |
+| `unconfirm` | `block_id` (required; a confirmed interval id), `reason` (optional string) |
+| `reset` | bool; defaults to `false` |
 | `mark_empty` | bool; defaults to `false` |
 | `acknowledge` | array of source ids |
 
@@ -206,8 +214,10 @@ Rules that are easy to get wrong, all stated here so they need not be looked up:
   for it.
 - **`confirm` is the exception to that id rule.** Its `block_id` must be a
   **proposal** block id from Step 2, never a confirmed interval id: confirmation is
-  what creates the interval, so a confirmed id there is an error. Only the five
-  decisions listed above may reference a confirmed interval id.
+  what creates the interval, so a confirmed id there is an error. The five decisions
+  listed above (description, trim, project, join, classification) are the only ones
+  that may reference a confirmed interval id, and `unconfirm` is the only one that
+  must (below).
 - **`attendance` is tri-state.** It is optional and it is a pointer, so omitting it
   leaves attendance **unset** rather than asserting `false`; `true` and `false` are
   the two asserted values.
@@ -218,6 +228,33 @@ Rules that are easy to get wrong, all stated here so they need not be looked up:
 - **`manual`'s `evidence_ids` links one user-timed interval to several supporting
   source records** (for example journal items); the links add **no minutes** and the
   interval's own span is authoritative.
+- **`unconfirm` retracts an already-confirmed interval.** Its `block_id` must be a
+  **confirmed interval id**, not an evidence id and not a proposal block id; the
+  `review` command lists the day's existing confirmed intervals with their **full
+  ids**, so that listing is how the id is named. The interval is removed and its
+  evidence returns to the proposal as an unconfirmed block, so it can be re-confirmed
+  or excluded; a split interval's fragments are removed together.
+- **`unconfirm` never removes a submitted interval.** If the interval carries a remote
+  mapping the whole review is refused with the specific reason
+  `unconfirm_mapped_remote:<localID>`, because a Gradion entry can be edited but never
+  deleted. The correct action for a submitted interval is an `edit` via `trim`,
+  `project`, `description`, or `classification`.
+- **`reset` returns the day to a clean review slate.** It clears the reviewed flag and
+  the reviewed-empty marker, removes every UNSUBMITTED confirmed interval, and clears
+  the other review decisions for the day (exclusions, attendance choices,
+  acknowledgements, and the descriptions and classifications of the removed
+  intervals). It RETAINS all submission records: evidence, remote mappings, plans,
+  submission outcomes, unresolved submission history, and approvals (invalidated,
+  never deleted). It never deletes the record file. After a `reset` the day is
+  unreviewed and empty; combine it with new `confirm`/`manual` decisions, or set
+  `mark_empty: true`, in the same or a later pass.
+- **`reset` is refused when the day is not clean.** It is refused if any interval on
+  the day is submitted (reason `reset_submitted_interval:<localID>`), and also if any
+  submission outcome is unresolved (in flight) (reason
+  `reset_unresolved_submission`).
+- **Both `unconfirm` and `reset` invalidate the day's active approval.** An approval
+  must never survive either action. If the operation is refused, nothing is written
+  for that day.
 - **`mark_empty` marks the day reviewed with no work**, and is refused when the day
   already carries ANY confirmed interval, or when the same decision set stages
   `confirm` or `manual` work.

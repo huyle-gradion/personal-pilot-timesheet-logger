@@ -265,9 +265,21 @@ func (g *guided) gatherReview(ctx context.Context, prop proposal.Proposal, rec *
 			fmt.Fprintf(g.stdout, "  %-9s %s  %s-%s  %s  %s\n",
 				"existing", shortID(ci.ID), ci.StartTime, ci.EndTime, orDash(ci.Project), oneLine(ci.Description))
 		}
-		for _, ci := range existing {
-			if err := g.reviewExisting(ctx, ci, &dec); err != nil {
-				return dec, err
+		// An optional whole-day reset. When chosen, the per-interval prompts are
+		// skipped: the reset clears the WHOLE local review decision set, so
+		// nothing staged for an individual interval could survive it.
+		reset, err := g.p.Confirm(ctx, "Reset this day's local review?", false)
+		if err != nil {
+			return dec, err
+		}
+		if reset {
+			dec.Reset = true
+		} else {
+			mapped := mappedLocalIDs(rec)
+			for _, ci := range existing {
+				if err := g.reviewExisting(ctx, ci, mapped[ci.ID], &dec); err != nil {
+					return dec, err
+				}
 			}
 		}
 	}
@@ -318,27 +330,59 @@ func (g *guided) gatherReview(ctx context.Context, prop proposal.Proposal, rec *
 		return dec, err
 	}
 
-	// A day with no existing and no staged confirmed work is a reviewed-empty
-	// day. Existing confirmed work is never dropped and never marked empty.
-	if len(existing) == 0 && len(dec.Confirm) == 0 && !hasManualConfirm(dec) {
+	// A day is reviewed-empty only when nothing remains confirmed after the
+	// staged removals, nothing is staged to confirm, and the day is not being
+	// reset. A day EMPTIED by removals/reset is therefore recorded honestly
+	// instead of being left half-applied (confirmed=0 but not reviewed).
+	if len(existing)-len(dec.Unconfirm) == 0 && len(dec.Confirm) == 0 && !hasManualConfirm(dec) && !dec.Reset {
 		dec.MarkEmpty = true
 	}
 	return dec, nil
 }
 
-func (g *guided) reviewExisting(ctx context.Context, ci workflow.ConfirmedInterval, dec *run.ReviewDecisions) error {
+// mappedLocalIDs indexes the confirmed-interval ids that have a remote mapping,
+// so the guided review can teach the edit-instead-of-remove rule for a submitted
+// interval.
+func mappedLocalIDs(rec *workflow.Record) map[string]bool {
+	out := map[string]bool{}
+	if rec == nil {
+		return out
+	}
+	for _, m := range rec.RemoteMappings {
+		out[m.LocalID] = true
+	}
+	return out
+}
+
+func (g *guided) reviewExisting(ctx context.Context, ci workflow.ConfirmedInterval, mapped bool, dec *run.ReviewDecisions) error {
 	title := fmt.Sprintf("Existing %s  %s-%s  %s  %s", shortID(ci.ID), ci.StartTime, ci.EndTime, orDash(ci.Project), oneLine(ci.Description))
-	idx, err := g.p.Choose(ctx, title, []promptOption{
+	opts := []promptOption{
 		{Label: "Keep as is"},
 		{Label: "Edit times / project / description"},
-	}, 0)
+	}
+	if mapped {
+		// A submitted interval cannot be removed locally: the remote entry is
+		// edited, never deleted. This option stages NOTHING and teaches the rule.
+		opts = append(opts, promptOption{Label: "Submitted - edit the remote entry instead; it cannot be removed"})
+	} else {
+		opts = append(opts, promptOption{Label: "Remove from this day (unconfirm)"})
+	}
+	idx, err := g.p.Choose(ctx, title, opts, 0)
 	if err != nil {
 		return err
 	}
-	if idx == 0 {
+	switch idx {
+	case 0:
+		return nil
+	case 1:
+		return g.editConfirmed(ctx, ci.ID, ci.StartTime, ci.EndTime, ci.Project, ci.Description, dec)
+	default:
+		if mapped {
+			return nil
+		}
+		dec.Unconfirm = append(dec.Unconfirm, run.UnconfirmDecision{BlockID: ci.ID, Reason: "user_retracted"})
 		return nil
 	}
-	return g.editConfirmed(ctx, ci.ID, ci.StartTime, ci.EndTime, ci.Project, ci.Description, dec)
 }
 
 // seedAcks stages the explicit --ack source ids, validating each against the
@@ -1439,8 +1483,13 @@ type classTarget struct {
 func (g *guided) classTargets(prop proposal.Proposal, rec *workflow.Record, dec *run.ReviewDecisions) []classTarget {
 	var out []classTarget
 	blocks := proposalBlockIndex(prop)
-	for _, ci := range existingConfirmed(rec) {
-		out = append(out, classTarget{key: ci.ID, label: fmt.Sprintf("existing interval %s · %s-%s", shortID(ci.ID), ci.StartTime, ci.EndTime), project: ci.Project, current: ci.ClassificationID})
+	// A staged reset removes every existing interval, so classifying one would
+	// stage a decision against a removed block. Existing intervals are therefore
+	// not classifiable when a reset is staged.
+	if !dec.Reset {
+		for _, ci := range existingConfirmed(rec) {
+			out = append(out, classTarget{key: ci.ID, label: fmt.Sprintf("existing interval %s · %s-%s", shortID(ci.ID), ci.StartTime, ci.EndTime), project: ci.Project, current: ci.ClassificationID})
+		}
 	}
 	for _, c := range dec.Confirm {
 		b, ok := blocks[c.BlockID]
@@ -1759,6 +1808,12 @@ func (g *guided) confirmSummary(ctx context.Context, dec run.ReviewDecisions) (b
 	fmt.Fprintf(g.stdout, "  %-22s %d time · %d project · %d description\n", "edits:", len(dec.Trim), len(dec.Project), len(dec.Description))
 	fmt.Fprintf(g.stdout, "  %-22s %d\n", "manual intervals:", len(dec.Manual))
 	fmt.Fprintf(g.stdout, "  %-22s %d\n", "classification chosen:", len(dec.Classification)+manualClassified(dec))
+	if len(dec.Unconfirm) > 0 {
+		fmt.Fprintf(g.stdout, "  %-22s %d\n", "unconfirm:", len(dec.Unconfirm))
+	}
+	if dec.Reset {
+		fmt.Fprintf(g.stdout, "  %-22s yes (clears the day's local review)\n", "reset review:")
+	}
 	if g.carryCount > 0 {
 		fmt.Fprintf(g.stdout, "  %-22s %d (a carry on the next day is confirmed separately)\n", "carryover items:", g.carryCount)
 	}

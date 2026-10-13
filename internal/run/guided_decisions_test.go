@@ -364,3 +364,51 @@ func TestApplyReview_AcknowledgeOnlyKeepsApprovalActive(t *testing.T) {
 		t.Fatalf("an acknowledge-only review must not invalidate the approval")
 	}
 }
+
+// REVIEW-UNDO-1: an unconfirm changes the reviewed schedule, so it must eagerly
+// invalidate a prior approval while KEEPING the approval row (invalidated).
+func TestApplyReview_UnconfirmInvalidatesApproval(t *testing.T) {
+	store := newStore(t)
+	r := testRunner(t, store)
+	date := "2026-10-06"
+	seedApproved(t, store, r, date)
+
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{
+		Unconfirm: []UnconfirmDecision{{BlockID: "c1", Reason: "user_retracted"}},
+	}); err != nil {
+		t.Fatalf("ApplyReview: %v", err)
+	}
+	rec, _ := store.GetDay(ctx, date)
+	if _, ok := workflow.ActiveApproval(rec, date); ok {
+		t.Fatalf("an unconfirm must invalidate the prior approval")
+	}
+	if len(rec.Approvals) != 1 || rec.Approvals[0].InvalidatedAt == nil {
+		t.Fatalf("the approval row must remain, invalidated, got %+v", rec.Approvals)
+	}
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("the interval must be removed, got %+v", rec.Confirmed)
+	}
+}
+
+// REVIEW-UNDO-1: a reset also changes the reviewed schedule, so it must eagerly
+// invalidate a prior approval while KEEPING the approval row (invalidated).
+func TestApplyReview_ResetInvalidatesApproval(t *testing.T) {
+	store := newStore(t)
+	r := testRunner(t, store)
+	date := "2026-10-06"
+	seedApproved(t, store, r, date)
+
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{Reset: true}); err != nil {
+		t.Fatalf("ApplyReview: %v", err)
+	}
+	rec, _ := store.GetDay(ctx, date)
+	if _, ok := workflow.ActiveApproval(rec, date); ok {
+		t.Fatalf("a reset must invalidate the prior approval")
+	}
+	if len(rec.Approvals) != 1 || rec.Approvals[0].InvalidatedAt == nil {
+		t.Fatalf("the approval row must remain, invalidated, got %+v", rec.Approvals)
+	}
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("the reset must clear confirmed work, got %+v", rec.Confirmed)
+	}
+}

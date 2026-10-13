@@ -82,6 +82,11 @@ Invoke this skill when the user issues any of the following triggers:
   verified by a bounded read-back first, and a mismatch or an unverifiable
   read-back leaves it unresolved (never a false confirm). Remote entries are
   editable but never deleted.
+- **A confirmed interval can be retracted with the `unconfirm` decision, and a whole
+  day reset with `reset`.** An interval that has been submitted cannot be removed:
+  the remote entry is editable but not deletable, so correct it with an edit. Both
+  actions invalidate the day's active approval, and `reset` retains submission
+  history, remote mappings, evidence and plans.
 - **Recovering from an unresolved write requires SEPARATE owner authority.** No
   self-adoption, no new-plan approval, no source hot-patching, and no debugging
   writes without that separate authority. A conversational "go" confirms ONLY the

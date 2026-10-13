@@ -265,7 +265,9 @@ Flags:
   --offline                skip the Gradion remote; source fetches (e.g. calendar ICS) still run
   --deep                   validate ALL configured sources (including disabled) during preflight
   --editorial/--no-editorial  toggle the optional editorial agent
-  --decisions FILE         decisions JSON ({date} substituted per day)
+  --decisions FILE         decisions JSON ({date} substituted per day). review keys
+                           include unconfirm (remove a confirmed interval by its full
+                           id) and reset (clear the day's local review decision set)
   --non-interactive        never prompt (force the scripted path)
   --interactive            guided run (needs a terminal on stdin AND stdout)
   --plain                  guided run with safe line-based prompts (no TUI)
@@ -533,6 +535,17 @@ func cmdReview(ctx context.Context, r *run.Runner, cfg cliConfig, editorActive b
 			if prop, err = r.CurrentProposal(ctx, d); err != nil {
 				fmt.Fprintf(stderr, "timesheet: proposal %s: %v\n", d, err)
 				return exitError
+			}
+		}
+
+		// Print the day's EXISTING confirmed intervals with their FULL ids, so a
+		// scripted operator can name the exact block an `unconfirm` decision must
+		// remove. This mirrors the guided "Existing confirmed work" section.
+		if existing, cerr := r.Confirmed(ctx, d); cerr == nil && len(existing) > 0 {
+			fmt.Fprintln(stdout, "Existing confirmed work:")
+			for _, ci := range existing {
+				fmt.Fprintf(stdout, "  %s  %s-%s  %s  %s\n",
+					ci.ID, ci.StartTime, ci.EndTime, orDash(ci.Project), oneLine(ci.Description))
 			}
 		}
 

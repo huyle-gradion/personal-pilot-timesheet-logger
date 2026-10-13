@@ -38,6 +38,18 @@ var (
 	// ErrNotEmpty refuses to mark a day reviewed-empty when it already carries
 	// confirmed work: an empty review must never drop confirmed intervals.
 	ErrNotEmpty = errors.New("review: day has confirmed work and cannot be marked empty")
+	// ErrIntervalSubmitted refuses to remove a confirmed interval that has a
+	// remote mapping: a submitted entry is EDITED remotely, never deleted.
+	ErrIntervalSubmitted = errors.New("review: interval has a remote mapping and cannot be removed")
+	// ErrUnknownInterval refuses to remove an id that names no confirmed interval,
+	// so an unconfirm typo is never silently ignored.
+	ErrUnknownInterval = errors.New("review: no confirmed interval with that id")
+	// ErrResetSubmitted refuses to reset a day that has a submitted interval: the
+	// reset would drop a confirmation whose remote entry still exists.
+	ErrResetSubmitted = errors.New("review: day has a submitted interval and cannot be reset")
+	// ErrResetUnresolved refuses to reset a day with an unresolved remote
+	// operation: the reset must not race an in-flight remote write.
+	ErrResetUnresolved = errors.New("review: day has an unresolved remote operation and cannot be reset")
 )
 
 // Stable exclusion reasons.
@@ -500,6 +512,92 @@ func ExcludeEvidence(r *workflow.Record, evID, reason string) error {
 		kept = append(kept, ci)
 	}
 	r.Confirmed = kept
+	return nil
+}
+
+// Unconfirm removes one already-confirmed interval, together with EVERY interval
+// sharing its non-empty SplitGroupID (a split is never half-removed). It is a
+// pure removal of local confirmation:
+//
+//   - It REFUSES (ErrIntervalSubmitted) when the interval has a remote mapping:
+//     a submitted entry is edited remotely, never deleted.
+//   - It REFUSES (ErrUnknownInterval) when no confirmed interval has that id, so
+//     a typo is never silent.
+//   - It leaves CollectedEvidence, ExcludedEvidence, Review, RemoteMappings,
+//     Outcomes, Plans and Approvals untouched. The evidence LINKS are dropped
+//     with the interval; the evidence ITEMS remain in CollectedEvidence.
+//
+// Carries are not handled here: the caller's RecordCarries reconciliation drops
+// carries for intervals no longer confirmed.
+func Unconfirm(r *workflow.Record, id, reason string) error {
+	if r == nil {
+		return ErrNilRecord
+	}
+	_ = reason // accepted for audit symmetry; there is no review field to store it in (Review is untouched)
+	id = strings.TrimSpace(id)
+	for _, m := range r.RemoteMappings {
+		if m.LocalID == id {
+			return fmt.Errorf("%w: %s", ErrIntervalSubmitted, id)
+		}
+	}
+	target := findConfirmed(r, id)
+	if target == nil {
+		return fmt.Errorf("%w: %s", ErrUnknownInterval, id)
+	}
+	group := strings.TrimSpace(target.SplitGroupID)
+	kept := r.Confirmed[:0]
+	for _, ci := range r.Confirmed {
+		if ci.ID == id {
+			continue
+		}
+		if group != "" && strings.TrimSpace(ci.SplitGroupID) == group {
+			continue
+		}
+		kept = append(kept, ci)
+	}
+	r.Confirmed = kept
+	return nil
+}
+
+// ResetReview clears the WHOLE local review decision set for a day: every
+// confirmed interval and the review-time outcome flags and decisions (the
+// reviewed/empty flags, the reviewed-at time, the last proposal hash, the
+// exclusions, attendance decisions, and acknowledgments).
+//
+// It REFUSES (ErrResetSubmitted) when any confirmed interval has a remote
+// mapping, and (ErrResetUnresolved) when an unresolved remote operation remains,
+// so a reset never orphans a remote entry or races an in-flight write. It NEVER
+// deletes the record file, a remote mapping, submission history, a plan, an
+// approval, an outcome, or collected evidence: those are retained, and a prior
+// approval is INVALIDATED (never deleted) by the caller's schedule-affecting
+// path. Descriptions and classification choices live on the removed
+// ConfirmedIntervals, so removing them clears those too.
+func ResetReview(r *workflow.Record) error {
+	if r == nil {
+		return ErrNilRecord
+	}
+	submitted := make(map[string]bool, len(r.RemoteMappings))
+	for _, m := range r.RemoteMappings {
+		submitted[m.LocalID] = true
+	}
+	for _, ci := range r.Confirmed {
+		if submitted[ci.ID] {
+			return fmt.Errorf("%w: %s", ErrResetSubmitted, ci.ID)
+		}
+	}
+	if len(workflow.UnresolvedOperations(r)) > 0 {
+		return ErrResetUnresolved
+	}
+	r.Confirmed = nil
+	if r.Review != nil {
+		r.Review.Reviewed = false
+		r.Review.Empty = false
+		r.Review.ReviewedAt = time.Time{}
+		r.Review.LastProposalHash = ""
+		r.Review.ExcludedEvidence = nil
+		r.Review.Attendance = nil
+		r.Review.AcknowledgedSources = nil
+	}
 	return nil
 }
 
