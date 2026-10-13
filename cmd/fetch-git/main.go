@@ -41,9 +41,11 @@ const (
 )
 
 // DefaultTimezone is the fixed, host-independent timezone used when --tz is
-// omitted. Owner decision: the collector must NEVER anchor the day window to the
-// host's zone (time.Local), so a machine with a different TZ produces identical
-// output. Asia/Ho_Chi_Minh (UTC+07:00) is the deliberate default.
+// omitted. Host independence is the PROJECT's requirement: the collector must
+// NEVER anchor the day window to the host's zone (time.Local), so a machine with
+// a different TZ produces identical output. The specific Asia/Ho_Chi_Minh
+// (UTC+07:00) value is a PROVISIONAL choice made by the orchestrating session, not
+// an owner decision, and is pending owner ratification; it is reversible.
 const DefaultTimezone = "Asia/Ho_Chi_Minh"
 
 // defaultLocation resolves DefaultTimezone, falling back to a fixed +07:00 zone
