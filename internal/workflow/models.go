@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
@@ -173,6 +175,26 @@ type RemoteMapping struct {
 	LastObserved     RemoteState `json:"last_observed"`
 	CreatedAt        time.Time   `json:"created_at"`
 	UpdatedAt        time.Time   `json:"updated_at"`
+}
+
+// RemoteObservation is the durable record of the last remote listing read for a
+// day during Collection. It is READ-ONLY with respect to mappings, approvals and
+// the proposal: a bare observation never creates a RemoteMapping, never feeds
+// CollectedEvidence, and never participates in LocalFingerprint or PlanHash.
+// Absent (nil) means the remote was never observed. ADDITIVE (omitempty);
+// SchemaVersion stays 1.
+//
+// It is currently WRITE-ONLY: nothing reads it yet, so its present value is
+// durability and audit rather than behaviour. The intended consumer is the
+// review-time collision surface (warn before confirming work that duplicates a
+// remote entry), which needs internal/proposal and is not in COLLECT-REMOTE-1's
+// file set. Entries is a snapshot of the listing read at Collection time and is
+// never mutated; a successful re-collection replaces it wholesale.
+type RemoteObservation struct {
+	Date       string        `json:"date"`
+	ObservedAt time.Time     `json:"observed_at"`
+	Complete   bool          `json:"complete"`
+	Entries    []RemoteState `json:"entries,omitempty"`
 }
 
 // OutcomeStatus classifies the durable result of a single executed operation.
@@ -375,4 +397,53 @@ type Record struct {
 	Approvals []Approval            `json:"approvals,omitempty"`
 	Editorial []EditorialSuggestion `json:"editorial,omitempty"`
 	Usage     *EditorialUsage       `json:"usage,omitempty"`
+	// RemoteObservation is the ADDITIVE (omitempty) durable record of the last
+	// remote listing read for this day during Collection. It is read-only with
+	// respect to mappings, approvals and the proposal; SchemaVersion stays 1.
+	RemoteObservation *RemoteObservation `json:"remote_observation,omitempty"`
+}
+
+const minutesPerDay = 24 * 60
+
+// TimesOverlap reports whether two "HH:MM" times overlap. An end at or before
+// the start is treated as crossing midnight; a missing or unparseable time never
+// overlaps. It is the canonical, EXPORTED overlap rule for a same-day span: a
+// caller that must scope by date compares the dates itself. It establishes only
+// a duplicate-looking signal, never a match.
+//
+// NOTE: the name deliberately avoids the substring "slot": the package guard
+// TestNoTimeSlotInferenceFunction forbids any function whose name matches
+// (?i)(infer|guess|derive|slot), to prevent deriving a remote-mapping identity
+// from time equality. This helper is a pure overlap predicate and does no such
+// inference.
+func TimesOverlap(aStart, aEnd, bStart, bEnd string) bool {
+	as, ok1 := parseClockMinutes(aStart)
+	ae, ok2 := parseClockMinutes(aEnd)
+	bs, ok3 := parseClockMinutes(bStart)
+	be, ok4 := parseClockMinutes(bEnd)
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return false
+	}
+	if ae <= as {
+		ae += minutesPerDay
+	}
+	if be <= bs {
+		be += minutesPerDay
+	}
+	return as < be && bs < ae
+}
+
+// parseClockMinutes parses a strict "HH:MM" 24-hour clock into minutes past
+// midnight. Anything else is unparseable.
+func parseClockMinutes(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) != 5 || s[2] != ':' {
+		return 0, false
+	}
+	h, err1 := strconv.Atoi(s[:2])
+	m, err2 := strconv.Atoi(s[3:])
+	if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
 }

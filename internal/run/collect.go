@@ -8,6 +8,7 @@ import (
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence/plugins"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -21,10 +22,49 @@ type CollectResult struct {
 	// empty source list or every source disabled). It distinguishes "nothing is
 	// configured" from "configured sources legitimately returned no evidence".
 	NoSourcesConfigured bool `json:"no_sources_configured,omitempty"`
+	// RemoteObservationError is a non-fatal warning set when the
+	// collection-time remote read failed. Evidence collection still succeeds and
+	// no fabricated observation is persisted. It is returned for PROGRAMMATIC
+	// consumers: no CLI surface prints it yet (see issue #49).
+	RemoteObservationError string `json:"remote_observation_error,omitempty"`
+	// RemoteCollisions lists remote entry ids observed during collection whose
+	// span overlaps a confirmed interval on the same date. A duplicate-looking
+	// signal ONLY: it never creates a mapping, never proposes, and never blocks
+	// collection. It is returned for PROGRAMMATIC consumers; no CLI surface
+	// prints it yet (see issue #49).
+	RemoteCollisions []string `json:"remote_collisions,omitempty"`
 }
 
 // Collect runs the registry for the day and merges the evidence into the record
 // under the store. Collection proceeds independently of review or submission.
+//
+// Collection also performs the day's single read of EXISTING Gradion entries, as
+// docs/timesheet-redesign.md:43 (the Collection row) requires. That read is a
+// declared, injected, read-only SOURCE over the existing `run.Remote` seam
+// (run.go), not an evidence plugin, and the distinction is deliberate:
+//
+//   - The evidence registry's only data channel is
+//     `CollectResult{Evidence []Evidence}` (internal/evidence/registry.go), and
+//     internal/evidence is workflow-free by design ("the import direction is
+//     workflow -> evidence", contract.go:12), so it cannot even name
+//     workflow.RemoteState -- the authoritative remote-entry type that
+//     submit.Reconcile, submit.BuildPlan and submit.ValidateApproval consume. A
+//     plugin would need a third representation of a remote entry and a second
+//     identity for it.
+//   - Emitting remote entries as evidence would put authoritative remote state
+//     into CollectedEvidence, which Propose feeds straight into proposal.Build.
+//     docs/timesheet-redesign.md:32 keeps that boundary: evidence never becomes
+//     confirmed working time, and Gradion is authoritative for ALREADY SUBMITTED
+//     entries, which are remote state rather than evidence.
+//   - The specification's own source enumeration (line 135) lists calendar, git
+//     and remote PR activity, manual evidence, optional agent-session evidence,
+//     and the optional journal -- and no Gradion-entries source. It also lists
+//     "manual evidence", which has a SourceKind but no plugin, so being a
+//     "source" does not imply being a registered evidence plugin.
+//
+// The read is therefore injected through run.Deps.Remote like every other remote
+// collaborator, and it is read-only: it creates no RemoteMapping, never feeds
+// CollectedEvidence or Confirmed, and never reaches the proposal.
 func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error) {
 	// Fail closed on an invalid configured timezone BEFORE collecting. `timesheet
 	// review --date <d>` reaches Collect without Preflight, so an unresolved
@@ -52,6 +92,40 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 	// count (not len(sources)) covers an all-disabled source list, whose summary
 	// would otherwise be vacuously "complete" and clobber a real partial one.
 	hasEnabledSources := enabled > 0
+	// Read the remote listing AT MOST ONCE for this run (through the shared
+	// per-run cache) when a remote is configured. A read failure is a VISIBLE,
+	// non-fatal warning: no observation is fabricated and evidence collection
+	// still succeeds. Offline (nil Remote) makes NO remote call and leaves the
+	// observation nil — never fabricated.
+	//
+	// The read goes through the DECLARED source seam, not an inline client:
+	// Deps.Remote is the injected, read-only remote source adapter
+	// (run.Remote, which embeds submit.RemoteObserver.ListEntries), so the fetch
+	// has one implementation point and the same injected-collaborator discipline
+	// as every other source. It is deliberately not an evidence plugin: the
+	// evidence registry's output is evidence.Evidence and internal/evidence is
+	// workflow-free by design, so it cannot name workflow.RemoteState, the
+	// authoritative remote-entry type that submit.Reconcile, submit.BuildPlan and
+	// submit.ValidateApproval consume. See the COLLECT-REMOTE-1 record for the
+	// full argument.
+	var (
+		listing     gradion.Listing
+		haveListing bool
+	)
+	if r.deps.Remote != nil {
+		// Collection ALWAYS live-reads: it is the authoritative read for the run,
+		// so it must not read through the per-run cache (a second Collect for the
+		// same date on a reused Runner would otherwise serve a stale listing). It
+		// then POPULATES the cache so the later observe reuses this exact read.
+		l, lErr := r.deps.Remote.ListEntries(ctx, date, date, 0)
+		if lErr != nil {
+			out.RemoteObservationError = lErr.Error()
+		} else {
+			listing = l
+			haveListing = true
+			r.cacheListing(date, l)
+		}
+	}
 	_, err = r.deps.Store.UpdateDay(ctx, date, func(rec *workflow.Record) error {
 		mergeEvidenceIntoRecord(rec, ev)
 		reconcileJournalLifecycle(rec, ev, summary)
@@ -59,12 +133,50 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 			summaryCopy := summary
 			rec.Collection = &summaryCopy
 		}
+		// Persist the observation and surface collection-time collisions. This is
+		// READ-ONLY w.r.t. mappings, evidence, approvals and the proposal: it
+		// creates no RemoteMapping and never feeds CollectedEvidence/Confirmed.
+		if haveListing {
+			// Entries shares the listing's backing array with the per-run cache.
+			// That is safe by contract: nothing mutates a listing's entries, and
+			// the observation is serialized on write. It is also never mutated
+			// after this point, so a future consumer must treat it as read-only.
+			rec.RemoteObservation = &workflow.RemoteObservation{
+				Date:       date,
+				ObservedAt: listing.ObservedAt,
+				Complete:   listing.Complete,
+				Entries:    listing.Entries,
+			}
+			out.RemoteCollisions = remoteCollisions(date, rec.Confirmed, listing.Entries)
+		}
 		return nil
 	})
 	if err != nil {
 		return out, err
 	}
 	return out, nil
+}
+
+// remoteCollisions returns the observed remote entry ids whose span overlaps a
+// confirmed interval on the same date. It is a VISIBLE duplicate-looking signal
+// only: it never creates a mapping, never proposes, and never blocks collection.
+func remoteCollisions(date string, confirmed []workflow.ConfirmedInterval, entries []workflow.RemoteState) []string {
+	var out []string
+	for _, e := range entries {
+		if e.Date != "" && e.Date != date {
+			continue
+		}
+		for _, ci := range confirmed {
+			if ci.Date != "" && ci.Date != date {
+				continue
+			}
+			if workflow.TimesOverlap(ci.StartTime, ci.EndTime, e.StartTime, e.EndTime) {
+				out = append(out, e.RemoteID)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // resolveCalendarSources returns a COPY of sources with each ENABLED calendar

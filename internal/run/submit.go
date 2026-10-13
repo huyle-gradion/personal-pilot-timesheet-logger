@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/export"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
@@ -333,5 +334,44 @@ func (r *Runner) observe(ctx context.Context, date string) (gradion.Listing, err
 	if r.deps.Remote == nil {
 		return gradion.Listing{Complete: true, ObservedAt: r.now()}, nil
 	}
+	return r.fetchListing(ctx, date)
+}
+
+// listingCache holds the listing read by Collection for a (Runner, date) pair,
+// so the later observe within the SAME run reuses that object instead of reading
+// the remote a second time. It is keyed by the Runner pointer, so a standalone
+// `preview` with a fresh Runner — or `Resolve` — misses and live-reads. The map
+// holds a strong reference to each Runner for the process's (short-lived) run, so
+// an entry is never evicted and a Runner address is never reused while cached.
+var (
+	listingCacheMu sync.Mutex
+	listingCache   = map[*Runner]map[string]gradion.Listing{}
+)
+
+// fetchListing is the single read primitive used by BOTH Collect and observe: it
+// returns a Collection-cached listing on a hit, otherwise it live-reads the
+// remote. It never populates the cache itself, so a standalone preview or a
+// Resolve always observes the CURRENT remote; only Collect (cacheListing) stores
+// a listing for the rest of the run. An error is never cached.
+func (r *Runner) fetchListing(ctx context.Context, date string) (gradion.Listing, error) {
+	listingCacheMu.Lock()
+	if byDate, ok := listingCache[r]; ok {
+		if listing, ok := byDate[date]; ok {
+			listingCacheMu.Unlock()
+			return listing, nil
+		}
+	}
+	listingCacheMu.Unlock()
 	return r.deps.Remote.ListEntries(ctx, date, date, 0)
+}
+
+// cacheListing stores a Collection listing for the rest of the run, so the later
+// observe returns the same object instead of a second remote read.
+func (r *Runner) cacheListing(date string, listing gradion.Listing) {
+	listingCacheMu.Lock()
+	if listingCache[r] == nil {
+		listingCache[r] = map[string]gradion.Listing{}
+	}
+	listingCache[r][date] = listing
+	listingCacheMu.Unlock()
 }
