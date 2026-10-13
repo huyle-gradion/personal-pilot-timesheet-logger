@@ -7,3 +7,9 @@ bin/
 HANDOFF.md
 .codegraph/
 pi-session-*.html
+
+# cmd/list-entries/ is an untracked read-only diagnostic. Its disposition is pending in issue #28.
+cmd/list-entries/
+
+# references/ is a vendor bundle deliberately kept out of the repository.
+references/

@@ -27,6 +27,8 @@ Interpretation in force, 2026-10-13: **merge records are batched.** One records 
 
 Once granted, vault synchronization covers accepted-slice records and significant-session summaries within that session. Record the grant in the authority ledger; do not ask again for each routine update or carry it silently into a different session.
 
+Merge ordering rule, 2026-10-13: **when two branches share a base commit, merging one first blocks a fast-forward for the other**, because `main` is then no longer an ancestor of the second branch. Take merges in dependency order, or expect a merge commit. Violating this cost a full packet and one deliberate merge commit (`1ec8a3c`) on 2026-10-13, when PR #42 was merged ahead of PR #40 while both still sat on the same base.
+
 ## Takeover and inventory
 
 1. Inspect branch, HEAD, ancestry, tracked changes, and untracked paths. Classify work by slice; unknown ownership is a blocker to staging it.
