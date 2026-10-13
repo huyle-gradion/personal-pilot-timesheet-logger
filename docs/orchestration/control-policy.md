@@ -19,6 +19,10 @@ At takeover, record the owner's exact authorization and these separate scopes in
 
 Remote timesheet approval is a product operation, not an orchestrator's permission to commit code. A `-approve` flag is not proof of revision-bound approval. Avoid real mutations even if the current binary permits them.
 
+## Merge records
+
+Owner rule, 2026-10-13: **every merge, including documentation-only and records-only merges, is recorded through a pull request into `main`.** A merge record is never committed directly to `main`. The direct-to-`main` records commits made at MERGE-1 (repository tip `83012d0`) and MERGE-2 (repository tip `4aca7b7`) predate this rule and stand in history as recorded deviations; no further direct commit to `main` is permitted, however small the record. This supersedes those two records' own statements that a direct ledger line was the chosen path or that a records pull request was merely the alternative.
+
 Once granted, vault synchronization covers accepted-slice records and significant-session summaries within that session. Record the grant in the authority ledger; do not ask again for each routine update or carry it silently into a different session.
 
 ## Takeover and inventory
