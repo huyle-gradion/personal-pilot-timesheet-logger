@@ -12,6 +12,43 @@ of its own**. Every deterministic decision lives in the shared core
 never parses the vault, never accounts, and never confirms, approves, or submits
 on its own.
 
+## Boundary: run the binary, never read the implementation
+
+**The binary is the contract.** The repository's design is one shared
+implementation exercised by both the CLI and this skill, so a decision derived from
+reading the source describes what the code happens to do today, while the tool the
+agent is supposed to run is the binary. Those two drift apart, and the drift is
+invisible: an agent that completes the interface from the implementation silently
+stops following the documented workflow. This skill therefore documents the
+interface **completely**, and the agent that uses it reads nothing else.
+
+**Allowed reads.** The skill's own files (`SKILL.md`, `workflow.md`), the config
+document, the workflow record, the daily note, and the binary's own `--help` output
+and standard output.
+
+**Forbidden.** `internal/`, `cmd/`, `docs/`, any Go file, any `grep` of the
+repository source, and any `git log` archaeology of the implementation. Grep your own
+records, the config, or the daily note freely; the prohibition is on searching the
+implementation.
+
+**Every cross-reference to `docs/` in this file or in [workflow.md](workflow.md) is
+maintainer provenance, not an agent read**, wherever it appears — including the ones
+below that say a detail "lives" there. An agent must not follow one. This skill
+documents every command, every flag, and every JSON document an agent needs,
+completely, in these two files: no Go file and no `docs/` file ever has to be opened
+to run the workflow. If something an agent needs appears to be missing, that is a
+defect in this skill; report it rather than reading the code (see the stop rule
+below).
+
+## When the workflow is silent (stop rule)
+
+If a command fails in a way this workflow does not cover, or the workflow is silent
+on something a step needs, **STOP and report it as a skill defect**. Do not open a
+Go file, do not grep the implementation, and do not infer the missing behaviour from
+the source. Report what you were doing, the exact command and its output, and what
+you needed. Every gap then becomes a skill fix rather than a detour, and the next
+agent reads the fact here instead of rediscovering it from the code.
+
 ## Triggers
 
 Invoke this skill when the user issues any of the following triggers:
@@ -81,6 +118,16 @@ Invoke this skill when the user issues any of the following triggers:
 - **One manual interval may cite several evidence sources.** A user-timed interval
   can link multiple supporting records; the links add no minutes and the
   interval's own span is authoritative.
+- **Pre-existing remote entries for the target date are not enumerated by any
+  supported surface.** `preview` re-observes the remote **read-only** and reports
+  it — `remote observed:`, `remote complete:`, and `remote=<id>` on each operation
+  it would edit — and that is the sanctioned check before any submission. It is
+  **not** a duplicate-detection enumeration: a full listing of a date's remote
+  entries is unavailable from any supported command, and issue #28 records the
+  disposition of the untracked `list-entries` diagnostic, which requires rebuilding
+  that capability as a supported subcommand. Never reach for `bin/list-entries`; that
+  binary is built from an untracked `cmd/` directory and is not a supported
+  surface.
 
 ## Execution workflow
 
@@ -138,9 +185,11 @@ optional vault export settings, the Gradion MCP endpoint plus a
 project→classification map. Raw secrets are never placed in it.
 
 `--offline` skips **ONLY** the Gradion remote; configured source fetches (calendar
-ICS, git, journal) still run. Source keys and boundaries live in
-[collection configuration](../../../docs/agents/collection-config.md) and
-[journal source](../../../docs/agents/journal-source.md).
+ICS, git, journal) still run. The per-source keys are listed under guided setup
+below — calendar `url_ref`, `user_email`, `timezone`; git `mode`, `local_repos`,
+`repos`, `author`, `project_map`; journal `vault`, `daily_dir`; agent `path` — and
+those are the whole of the source interface an agent needs. The `docs/` references
+in this file are maintainer provenance only (see the boundary above).
 
 ### Guided setup (`timesheet config`)
 

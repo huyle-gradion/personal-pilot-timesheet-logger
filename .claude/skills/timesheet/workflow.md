@@ -5,6 +5,11 @@ a harness-agnostic orchestration over the `timesheet` Go binary: **every step is
 documented invocation**, and no accounting or submission logic is reimplemented
 here.
 
+**Every `docs/` or `docs/adr/` reference in this file is maintainer provenance, not
+an agent read** (see the boundary in [SKILL.md](SKILL.md)): an agent must not follow
+one, even where a sentence says a detail "lives" there. Everything needed to run
+each step is stated in this file.
+
 - **`[Script]`**: deterministic Go code invoked through `cmd/timesheet`.
 - **`[AI]`**: the optional, bounded editorial agent invoked *by the core* through a
   configured command adapter. The skill never synthesizes text itself.
@@ -157,7 +162,10 @@ review uses. The decisions file may contain a `{date}` placeholder for a range.
 $TS review --config "$CFG" --date "$DATE" --decisions decisions.json
 ```
 
-Example `decisions.json` (a subset of the `run.ReviewDecisions` fields):
+Example `decisions.json`. This is the **complete** decision document: the keys and
+fields below are every one the file accepts, so nothing about it needs to be looked
+up elsewhere. Every key is optional, and an absent key means "no decision of that
+kind".
 
 ```json
 {
@@ -166,17 +174,55 @@ Example `decisions.json` (a subset of the `run.ReviewDecisions` fields):
   "join": [{"work_block_id": "<BLOCK_ID>", "meeting_ev_id": "<EVIDENCE_ID>"}],
   "trim": [{"block_id": "<BLOCK_ID>", "new_start": "09:15", "new_end": "09:45"}],
   "project": [{"block_id": "<BLOCK_ID>", "project": "Proj"}],
+  "description": [{"block_id": "<BLOCK_ID>", "text": "Paired on the parser rewrite"}],
   "classification": [{"block_id": "<BLOCK_ID>", "classification_id": "<ID>", "activity_type": "<derived>", "classification_code": "<CODE>", "classification_name": "<NAME>"}],
-  "manual": [{"uuid": "<UUID>", "start": "2026-10-06T09:00:00Z", "end": "2026-10-06T11:00:00Z", "project": "Proj", "description": "Pairing", "evidence_ids": ["<EVIDENCE_ID>"]}],
+  "manual": [{"uuid": "<UUID>", "start": "2026-10-06T09:00:00Z", "end": "2026-10-06T11:00:00Z", "project": "Proj", "description": "Pairing", "evidence_ids": ["<EVIDENCE_ID>"], "confirm": true, "classification_id": "<ID>", "activity_type": "<derived>", "classification_code": "<CODE>", "classification_name": "<NAME>"}],
   "mark_empty": false,
   "acknowledge": ["cal"]
 }
 ```
 
-A `manual` entry's `evidence_ids` links one user-timed interval to several
-supporting source records (for example journal items); the links add **no
-minutes** and the interval's own span is authoritative. Omitting `uuid` generates
-a fresh identity per call, so pass a stable `uuid` to edit the same interval.
+Every key and field, and what is required:
+
+| Key | Fields |
+| --- | --- |
+| `confirm` | `block_id` (required), `project`, `attendance` (bool) |
+| `exclude` | `evidence_id` (required), `reason` |
+| `join` | `work_block_id` (required), `meeting_ev_id` (required) |
+| `trim` | `block_id`, `new_start`, `new_end` (all required; `HH:MM` local clock) |
+| `project` | `block_id`, `project` (both required) |
+| `description` | `block_id`, `text` (both required) |
+| `classification` | `block_id` and `classification_id` (both required), plus `activity_type`, `classification_code`, `classification_name` |
+| `manual` | `start` and `end` (required, RFC3339), plus `uuid`, `project`, `description`, `evidence_ids`, `confirm` (bool), and the same four classification fields |
+| `mark_empty` | bool; defaults to `false` |
+| `acknowledge` | array of source ids |
+
+Rules that are easy to get wrong, all stated here so they need not be looked up:
+
+- **`description` is ADDITIVE and applied after `confirm`.** It sets a
+  user-authored description, so it may reference EITHER a proposal block id or a
+  confirmed interval id — as may `trim`, `project`, `join`, and `classification`.
+  `description` is the user's own text; an AI-proposed description never substitutes
+  for it.
+- **`confirm` is the exception to that id rule.** Its `block_id` must be a
+  **proposal** block id from Step 2, never a confirmed interval id: confirmation is
+  what creates the interval, so a confirmed id there is an error. Only the five
+  decisions listed above may reference a confirmed interval id.
+- **`attendance` is tri-state.** It is optional and it is a pointer, so omitting it
+  leaves attendance **unset** rather than asserting `false`; `true` and `false` are
+  the two asserted values.
+- **A `manual` entry needs a stable `uuid` to be confirmable.** Omitting `uuid`
+  generates a fresh identity per call, so pass a stable `uuid` to edit the same
+  interval; a `manual` entry with `confirm: true` and no `uuid` is an error, because
+  the materialized interval could not then be identified.
+- **`manual`'s `evidence_ids` links one user-timed interval to several supporting
+  source records** (for example journal items); the links add **no minutes** and the
+  interval's own span is authoritative.
+- **`mark_empty` marks the day reviewed with no work**, and is refused when the day
+  already carries ANY confirmed interval, or when the same decision set stages
+  `confirm` or `manual` work.
+- **`acknowledge`** lists the incomplete source ids to accept; it is the document
+  form of `--ack`.
 
 **Output Seam**: the day is reviewed (or reviewed-empty) and persisted.
 
@@ -221,6 +267,22 @@ $TS classify select --config "$CFG" --date "$DATE" --classification "<CODE|ID>" 
   unless a fresh live full complete catalog proves it. See
   [classification selection](../../../docs/agents/classification-selection.md) §3.
 
+**The classification fields, unambiguously.** Five names are in play and only one of
+them is ever sent:
+
+| Name | What it is | Where it goes |
+| --- | --- | --- |
+| `classification_id` | The catalog option's remote id. **The one payload field.** | A `classification` or `manual` decision; the only value sent in a `log_time`/`edit_time` payload. |
+| `activity_type` | Derived **by the server** from the classification. Display and validation only. | A `classification` or `manual` decision, for validation; **never** a payload field. |
+| `classification_code` | The catalog option's code, for example `INTGRADI2610`. A retrieval hint, preferred over the name. | Recorded on the confirmed interval; **never** proof and **never** a payload field. |
+| `classification_name` | The catalog option's name. A retrieval hint. | As above. |
+| `--classification` (the `classify select` flag) | An explicit user token, resolved as a **code, an id, or an unambiguous id-prefix**. | Only on the command line, and resolved to a `classification_id` before anything is recorded. |
+
+So `--classification` takes a code or an id; the decisions file takes
+`classification_id` plus optional hints; and only `classification_id` is ever
+transmitted. An unset `classification_id` blocks the plan, and a legacy interval
+with no recorded code/name fails closed with `reselect_classification`.
+
 **Output Seam**: the chosen `classification_id` (and its derived activity type, plus
 the retrieval code/name) on the day's confirmed interval(s), with any prior approval
 invalidated.
@@ -240,6 +302,22 @@ $TS preview --config "$CFG" --date "$DATE"
 
 **Output Seam**: `plan_id: <PLANID>` and the operation count. The plan id is the
 plan's content hash.
+
+**Pre-existing entries for the date.** This is the sanctioned check, and the only
+one: `preview` re-observes the remote **read-only** and reports
+`remote observed: <timestamp>`, `remote complete: <bool>`, and, for every operation
+it would edit, a `remote=<id>`. Require that observation before any submission; a
+`remote complete: false` means the observation was partial and the plan may be
+incomplete.
+
+It is **not** a duplicate-detection enumeration. No supported command lists all of a
+date's remote entries. The only thing that ever did was an untracked diagnostic
+built from `cmd/list-entries`, which is not a supported surface and must not be
+used. Issue #28 records the disposition of that untracked diagnostic and requires
+the capability to be rebuilt as a supported subcommand. Until then, the skill cannot
+answer "what is already on this date?" beyond what `preview` reports about the
+entries the plan itself touches. If that is not enough for a step, use the stop rule
+above rather than reaching for an unsupported binary.
 
 ---
 
@@ -298,8 +376,35 @@ operation:
 $TS resolve --config "$CFG" --date "$DATE" --decisions resolve.json
 ```
 
-where `resolve.json` is an array of
-`{"operation_key": "...", "kind": "adopt"|"not_applied", "remote_id": "...", "local_id": "..."}`.
+where `resolve.json` is an array of resolution objects, and these four fields are
+every one it accepts:
+
+| Field | Meaning |
+| --- | --- |
+| `operation_key` | **Required.** The unresolved operation's stable key, as the run reports it. |
+| `kind` | **Required.** Exactly `"adopt"` or `"not_applied"`; any other value is an error. |
+| `remote_id` | The remote entry's id. **Required for `kind: "adopt"`**; it may be omitted only when the operation itself already carries one. |
+| `local_id` | The local interval id to map. Optional; defaults to the operation's own local id. |
+
+```json
+[
+  {"operation_key": "<OPERATION_KEY>", "kind": "adopt", "remote_id": "<REMOTE_ID>", "local_id": "<LOCAL_ID>"},
+  {"operation_key": "<OPERATION_KEY>", "kind": "not_applied"}
+]
+```
+
+Rules, stated here so they need not be looked up:
+
+- **An unresolved CREATE is never settled by a bare absence.** Leaving its decision
+  out keeps it unresolved on purpose; only `not_applied` (the write never applied)
+  or `adopt` (it did, and here is the id) resolves it.
+- **An unresolved EDIT may settle itself from a safe read-only observation**:
+  post-edit remote content proves the edit applied, pre-edit content proves it did
+  not, and absent or ambiguous content leaves it unresolved. That needs no decision
+  from the agent, and nothing is ever resent.
+- **A decision whose `operation_key` matches no unresolved operation is an error**,
+  as is an unknown `kind` and an `adopt` with no remote id. The command reports how
+  many decisions it applied.
 
 Re-render the managed note without submitting (read-only with respect to the
 remote):
@@ -336,6 +441,9 @@ $TS metrics import --transcript "$PI_SESSION" && $TS metrics report --date "$DAT
   state from the exit code (0→completed, 3→blocked, else→failed).
 - `--commit`, `--workflow-version`, `--config-mode`, and `--optimization-change`
   annotate a run so a later `compare` can cite what changed between two days.
+- `--provider` selects the transcript adapter explicitly when auto-detection is not
+  wanted, and `--metrics-dir` overrides the metrics store location. `import`,
+  `report` and `compare` all accept `--metrics-dir`.
 - The transcript adapter extracts only counters, ids, timestamps, the `timesheet`
   subcommand token, and provider-native numeric cost; message text, tool arguments,
   and tool results are never persisted. A claude-schema run is marked
