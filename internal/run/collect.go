@@ -92,11 +92,13 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 	// count (not len(sources)) covers an all-disabled source list, whose summary
 	// would otherwise be vacuously "complete" and clobber a real partial one.
 	hasEnabledSources := enabled > 0
-	// Read the remote listing AT MOST ONCE for this run (through the shared
-	// per-run cache) when a remote is configured. A read failure is a VISIBLE,
-	// non-fatal warning: no observation is fabricated and evidence collection
-	// still succeeds. Offline (nil Remote) makes NO remote call and leaves the
-	// observation nil — never fabricated.
+	// Read the remote listing EXACTLY ONCE for this run when a remote is
+	// configured, then hand that one object to the run's later observe
+	// (cacheListing). A read failure is a non-fatal warning returned for
+	// PROGRAMMATIC consumers: no CLI surface prints it yet (issue #49). No
+	// observation is fabricated and evidence collection still succeeds. Offline
+	// (nil Remote) makes NO remote call and leaves the observation nil — never
+	// fabricated.
 	//
 	// The read goes through the DECLARED source seam, not an inline client:
 	// Deps.Remote is the injected, read-only remote source adapter
@@ -158,8 +160,10 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 }
 
 // remoteCollisions returns the observed remote entry ids whose span overlaps a
-// confirmed interval on the same date. It is a VISIBLE duplicate-looking signal
-// only: it never creates a mapping, never proposes, and never blocks collection.
+// confirmed interval on the same date. It is a duplicate-looking signal ONLY:
+// it never creates a mapping, never proposes, and never blocks collection. The
+// result is returned for PROGRAMMATIC consumers; no CLI surface prints it yet
+// (issue #49).
 func remoteCollisions(date string, confirmed []workflow.ConfirmedInterval, entries []workflow.RemoteState) []string {
 	var out []string
 	for _, e := range entries {

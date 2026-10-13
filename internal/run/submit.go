@@ -343,16 +343,26 @@ func (r *Runner) observe(ctx context.Context, date string) (gradion.Listing, err
 // `preview` with a fresh Runner — or `Resolve` — misses and live-reads. The map
 // holds a strong reference to each Runner for the process's (short-lived) run, so
 // an entry is never evicted and a Runner address is never reused while cached.
+//
+// DEBT (COLLECT-REMOTE-1 F2, low): the map is UNBOUNDED and keeps a strong
+// reference to every *Runner for the process lifetime, so a long-lived process
+// that builds many Runners would neither evict entries nor let a finished Runner
+// be collected. It is latent, not reachable in today's CLI, which builds one
+// short-lived Runner per invocation. Proposed fix: make the cache a field on
+// Runner (needs internal/run/run.go, outside COLLECT-REMOTE-1's file set) or
+// otherwise bound the map. Carried as documented debt in the COLLECT-REMOTE-1
+// record.
 var (
 	listingCacheMu sync.Mutex
 	listingCache   = map[*Runner]map[string]gradion.Listing{}
 )
 
-// fetchListing is the single read primitive used by BOTH Collect and observe: it
-// returns a Collection-cached listing on a hit, otherwise it live-reads the
-// remote. It never populates the cache itself, so a standalone preview or a
-// Resolve always observes the CURRENT remote; only Collect (cacheListing) stores
-// a listing for the rest of the run. An error is never cached.
+// fetchListing is the read primitive used by observe: it returns a
+// Collection-cached listing on a hit, otherwise it live-reads the remote. Collect
+// does NOT call it — Collection always live-reads (its own read is authoritative)
+// and then populates the cache through cacheListing. fetchListing never populates
+// the cache itself, so a standalone preview or a Resolve always observes the
+// CURRENT remote. An error is never cached.
 func (r *Runner) fetchListing(ctx context.Context, date string) (gradion.Listing, error) {
 	listingCacheMu.Lock()
 	if byDate, ok := listingCache[r]; ok {
