@@ -494,4 +494,3 @@ func TestCollision_EdgeCases(t *testing.T) {
 		t.Fatalf("expected 1 block for empty titles, got %v, %v", resEmpty, err)
 	}
 }
-

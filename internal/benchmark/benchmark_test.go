@@ -43,9 +43,9 @@ func TestParseTranscript_AntigravityFixture(t *testing.T) {
 		t.Fatalf("failed to parse Antigravity fixture: %v", err)
 	}
 
-	expectedInput := int64(200)  // 120 + 80
-	expectedOutput := int64(70)  // 45 + 25
-	expectedCache := int64(40)   // 30 + 10
+	expectedInput := int64(200) // 120 + 80
+	expectedOutput := int64(70) // 45 + 25
+	expectedCache := int64(40)  // 30 + 10
 	expectedTotal := int64(310)
 
 	if usage.InputTokens != expectedInput {

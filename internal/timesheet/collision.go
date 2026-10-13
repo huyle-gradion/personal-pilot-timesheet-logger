@@ -26,7 +26,7 @@ const (
 // Typed operating errors.
 var (
 	ErrExcessiveCollisions = errors.New("capacity exceeded: collisions count exceeds maximum allowed")
-	ErrInvalidResolution  = errors.New("invalid collision resolution strategy")
+	ErrInvalidResolution   = errors.New("invalid collision resolution strategy")
 	ErrCollisionNotFound   = errors.New("collision not found for specified block")
 )
 
