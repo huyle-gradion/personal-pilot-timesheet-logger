@@ -47,9 +47,6 @@ var (
 	// ErrResetSubmitted refuses to reset a day that has a submitted interval: the
 	// reset would drop a confirmation whose remote entry still exists.
 	ErrResetSubmitted = errors.New("review: day has a submitted interval and cannot be reset")
-	// ErrResetUnresolved refuses to reset a day with an unresolved remote
-	// operation: the reset must not race an in-flight remote write.
-	ErrResetUnresolved = errors.New("review: day has an unresolved remote operation and cannot be reset")
 )
 
 // IntervalSubmittedError is returned by Unconfirm when a confirmed interval (or
@@ -607,8 +604,10 @@ func Unconfirm(r *workflow.Record, id, reason string) error {
 // exclusions, attendance decisions, and acknowledgments).
 //
 // It REFUSES (ErrResetSubmitted) when any confirmed interval has a remote
-// mapping, and (ErrResetUnresolved) when an unresolved remote operation remains,
-// so a reset never orphans a remote entry or races an in-flight write. It NEVER
+// mapping, so a reset never orphans a remote entry. It applies NO unresolved-
+// outcome guard of its own: that guard is enforced by the CALLER (internal/run)
+// against the SINGLE predicate exported from internal/submit, so this layer holds
+// no second copy of the rule. It NEVER
 // deletes the record file, a remote mapping, submission history, a plan, an
 // approval, an outcome, or collected evidence: those are retained, and a prior
 // approval is INVALIDATED (never deleted) by the caller's schedule-affecting
@@ -626,9 +625,6 @@ func ResetReview(r *workflow.Record) error {
 		if submitted[ci.ID] {
 			return &ResetSubmittedError{ID: ci.ID}
 		}
-	}
-	if len(workflow.UnresolvedOperations(r)) > 0 {
-		return ErrResetUnresolved
 	}
 	r.Confirmed = nil
 	if r.Review != nil {

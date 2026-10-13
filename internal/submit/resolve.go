@@ -58,7 +58,7 @@ func RestartGate(rec workflow.Record) (blocked bool, reasons []string) {
 		add("in_flight:" + o.OperationKey)
 	}
 	for _, o := range rec.Outcomes {
-		if isUnresolved(o) {
+		if IsUnresolved(o) {
 			add(string(o.Status) + ":" + o.OperationKey)
 		}
 	}
@@ -69,8 +69,13 @@ func RestartGate(rec workflow.Record) (blocked bool, reasons []string) {
 	return true, out
 }
 
-// isUnresolved reports whether an outcome row still needs reconciliation.
-func isUnresolved(o workflow.OperationOutcome) bool {
+// IsUnresolved reports whether an outcome row still needs reconciliation, and is
+// the SINGLE definition of "an outcome still needing reconciliation" (the restart
+// gate, the resolver, and the reset guard all defer to it). An in_flight intent is
+// a durable write whose success was never established; uncertain and unidentified
+// are the same condition recorded after a probe. A resolved row never needs
+// reconciliation.
+func IsUnresolved(o workflow.OperationOutcome) bool {
 	if o.Resolved {
 		return false
 	}
@@ -101,7 +106,7 @@ func ResolveUnresolved(rec *workflow.Record, obs gradion.Listing, decisions []Re
 
 	rows := append([]workflow.OperationOutcome(nil), rec.Outcomes...)
 	for _, o := range rows {
-		if !isUnresolved(o) {
+		if !IsUnresolved(o) {
 			continue
 		}
 		if d, ok := byKey[o.OperationKey]; ok {

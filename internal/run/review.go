@@ -13,6 +13,7 @@ import (
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/proposal"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/review"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/selection"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/submit"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -254,6 +255,14 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 	// (post-reset) proposal, and trim/project/description resolve against the
 	// re-created interval through the existing resolver below.
 	if d.Reset {
+		// The unresolved-outcome guard lives HERE, not in internal/review: that
+		// layer cannot import internal/submit (internal/submit imports
+		// internal/review), so the reset would otherwise carry a second, narrower
+		// copy of the rule. It delegates to submit.IsUnresolved, the single
+		// definition also used by the restart gate and the resolver.
+		if hasUnresolvedOutcome(rec) {
+			return fmt.Errorf("%s: the day has an unresolved remote operation (in_flight, uncertain or unidentified); reconcile it before resetting", BlockResetUnresolved)
+		}
 		if err := review.ResetReview(rec); err != nil {
 			return wrapResetErr(err)
 		}
@@ -448,6 +457,20 @@ func scheduleAffecting(d ReviewDecisions) bool {
 		len(d.Unconfirm) > 0 || d.Reset
 }
 
+// hasUnresolvedOutcome reports whether any recorded outcome still needs
+// reconciliation, deferring to internal/submit's SINGLE definition of an
+// unresolved outcome (in_flight, uncertain, or unidentified and not resolved), so
+// the reset guard can never drift from the predicate the restart gate and the
+// resolver already use.
+func hasUnresolvedOutcome(rec *workflow.Record) bool {
+	for _, o := range rec.Outcomes {
+		if submit.IsUnresolved(o) {
+			return true
+		}
+	}
+	return false
+}
+
 // wrapUnconfirmErr turns a review-layer removal error into a stable, specific
 // operator diagnostic. A submitted interval points the operator at the CORRECT
 // action (edit the remote entry) rather than a dead end; an unknown id names the
@@ -470,15 +493,15 @@ func wrapUnconfirmErr(err error, id string) error {
 }
 
 // wrapResetErr turns a review-layer reset error into a stable, specific operator
-// diagnostic. Both cases name the offending id where one exists.
+// diagnostic, naming the offending id where one exists. The unresolved-outcome
+// refusal is NOT here: internal/run enforces it before calling ResetReview (see
+// hasUnresolvedOutcome).
 func wrapResetErr(err error) error {
 	var submitted *review.ResetSubmittedError
 	switch {
 	case errors.As(err, &submitted):
 		return fmt.Errorf("%s:%s: the day has a submitted interval and cannot be reset; edit the existing remote entry with trim, project, description, or classification instead",
 			BlockResetSubmittedInterval, submitted.ID)
-	case errors.Is(err, review.ErrResetUnresolved):
-		return fmt.Errorf("%s: the day has an unresolved remote operation; reconcile it before resetting", BlockResetUnresolved)
 	default:
 		return err
 	}

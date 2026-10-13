@@ -756,8 +756,30 @@ func TestApplyReview_ResetBlocksOnSubmittedInterval(t *testing.T) {
 
 // TestApplyReview_ResetBlocksOnUnresolvedOutcome proves a reset is refused when an
 // unresolved (in_flight) remote operation remains, naming the reason, with nothing
-// written.
+// written: both the confirmed interval and the outcome survive.
 func TestApplyReview_ResetBlocksOnUnresolvedOutcome(t *testing.T) {
+	assertResetBlockedOnOutcome(t, workflow.OutcomeInFlight, "op-inflight")
+}
+
+// TestApplyReview_ResetBlocksOnUncertainOutcome proves REVIEW-UNDO-1 F5: an
+// uncertain outcome is a write whose success was never established, so a reset
+// blocks on it exactly as it blocks on an in_flight intent.
+func TestApplyReview_ResetBlocksOnUncertainOutcome(t *testing.T) {
+	assertResetBlockedOnOutcome(t, workflow.OutcomeUncertain, "op-uncertain")
+}
+
+// TestApplyReview_ResetBlocksOnUnidentifiedOutcome proves REVIEW-UNDO-1 F5: an
+// unidentified outcome is a write whose success was never established, so a reset
+// blocks on it exactly as it blocks on an in_flight intent.
+func TestApplyReview_ResetBlocksOnUnidentifiedOutcome(t *testing.T) {
+	assertResetBlockedOnOutcome(t, workflow.OutcomeUnidentified, "op-unidentified")
+}
+
+// assertResetBlockedOnOutcome seeds one confirmed interval and one outcome of the
+// given status, then asserts the reset is refused with the SPECIFIC reason and
+// that nothing is written: the interval and the outcome both survive.
+func assertResetBlockedOnOutcome(t *testing.T, status workflow.OutcomeStatus, key string) {
+	t.Helper()
 	store := newStore(t)
 	r := testRunner(t, store)
 	date := "2026-10-06"
@@ -765,22 +787,67 @@ func TestApplyReview_ResetBlocksOnUnresolvedOutcome(t *testing.T) {
 	if err := r.ApplyReview(ctx, date, ReviewDecisions{Confirm: []ConfirmDecision{{BlockID: blockID}}}); err != nil {
 		t.Fatalf("ApplyReview(confirm): %v", err)
 	}
+	seeded, _ := store.GetDay(ctx, date)
+	if len(seeded.Confirmed) != 1 {
+		t.Fatalf("want 1 confirmed interval, got %+v", seeded.Confirmed)
+	}
+	confirmedID := seeded.Confirmed[0].ID
 	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error {
-		x.Outcomes = append(x.Outcomes, workflow.OperationOutcome{OperationKey: "op-1", Status: workflow.OutcomeInFlight, Date: date})
+		x.Outcomes = append(x.Outcomes, workflow.OperationOutcome{OperationKey: key, Status: status, Date: date})
 		return nil
 	}); err != nil {
 		t.Fatalf("seed outcome: %v", err)
 	}
+
 	err := r.ApplyReview(ctx, date, ReviewDecisions{Reset: true})
 	if err == nil {
-		t.Fatalf("resetting a day with an unresolved operation must fail")
+		t.Fatalf("resetting a day with an unresolved %s operation must fail", status)
 	}
-	if !strings.Contains(err.Error(), "reset_unresolved_submission") {
-		t.Fatalf("the error must name the unresolved-submission reason: %v", err)
+	if !strings.Contains(err.Error(), BlockResetUnresolved) {
+		t.Fatalf("the error must name the %s reason: %v", BlockResetUnresolved, err)
 	}
 	after, _ := store.GetDay(ctx, date)
-	if len(after.Confirmed) != 1 {
+	if len(after.Confirmed) != 1 || after.Confirmed[0].ID != confirmedID {
 		t.Fatalf("nothing may be written on the refused reset, got %+v", after.Confirmed)
+	}
+	if len(after.Outcomes) != 1 || after.Outcomes[0].OperationKey != key {
+		t.Fatalf("the unresolved outcome must survive the refused reset, got %+v", after.Outcomes)
+	}
+}
+
+// TestApplyReview_ResetAllowsResolvedUncertainOutcome proves a reconciled
+// uncertain outcome (Resolved true) does NOT block the reset: the reset applies
+// and the confirmed work is cleared.
+func TestApplyReview_ResetAllowsResolvedUncertainOutcome(t *testing.T) {
+	store := newStore(t)
+	r := testRunner(t, store)
+	date := "2026-10-06"
+	blockID := seedGitDay(t, store, r, date)
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{Confirm: []ConfirmDecision{{BlockID: blockID}}}); err != nil {
+		t.Fatalf("ApplyReview(confirm): %v", err)
+	}
+	seeded, _ := store.GetDay(ctx, date)
+	if len(seeded.Confirmed) != 1 {
+		t.Fatalf("want 1 confirmed interval, got %+v", seeded.Confirmed)
+	}
+	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error {
+		x.Outcomes = append(x.Outcomes, workflow.OperationOutcome{
+			OperationKey: "op-reconciled", Status: workflow.OutcomeUncertain, Resolved: true, Date: date,
+		})
+		return nil
+	}); err != nil {
+		t.Fatalf("seed outcome: %v", err)
+	}
+
+	if err := r.ApplyReview(ctx, date, ReviewDecisions{Reset: true}); err != nil {
+		t.Fatalf("a reconciled uncertain outcome must not block the reset: %v", err)
+	}
+	after, _ := store.GetDay(ctx, date)
+	if len(after.Confirmed) != 0 {
+		t.Fatalf("the reset must clear confirmed work, got %+v", after.Confirmed)
+	}
+	if len(after.Outcomes) != 1 {
+		t.Fatalf("the reset must retain the outcome history, got %+v", after.Outcomes)
 	}
 }
 
