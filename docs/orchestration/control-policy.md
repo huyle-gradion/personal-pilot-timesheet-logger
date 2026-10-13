@@ -23,6 +23,8 @@ Remote timesheet approval is a product operation, not an orchestrator's permissi
 
 Owner rule, 2026-10-13: **every merge, including documentation-only and records-only merges, is recorded through a pull request into `main`.** A merge record is never committed directly to `main`. The direct-to-`main` records commits made at MERGE-1 (repository tip `83012d0`) and MERGE-2 (repository tip `4aca7b7`) predate this rule and stand in history as recorded deviations; no further direct commit to `main` is permitted, however small the record. This supersedes those two records' own statements that a direct ledger line was the chosen path or that a records pull request was merely the alternative.
 
+Interpretation in force, 2026-10-13: **merge records are batched.** One records pull request per merge regresses, because the records pull request for a merge is itself a merge and would need its own records pull request in turn. Each merge therefore gets a ledger record, and that record ships inside the next records pull request rather than in its own. This is the orchestrating session's reading of the owner's rule, not a new owner decision, and the owner may reject it in favour of one records pull request per merge, which would supersede this paragraph. The rule itself does not change: nothing is recorded by a direct commit to `main`.
+
 Once granted, vault synchronization covers accepted-slice records and significant-session summaries within that session. Record the grant in the authority ledger; do not ask again for each routine update or carry it silently into a different session.
 
 ## Takeover and inventory
