@@ -171,15 +171,15 @@ Rules:
 - **`--offline` does not suppress a calendar fetch.** The calendar ICS fetch is a
   **source** fetch, not a Gradion remote call; `--offline` skips only the remote.
 - **A calendar source's `timezone` must match the run's configured zone.** The run's
-  `evidence.timezone` governs date-window interpretation for every source, and a
-  calendar source is no longer free to pick its own. A per-source `timezone` equal
-  to the run zone is a no-op; a per-source `timezone` that differs is **refused** at
-  collection rather than silently re-anchoring that one source to a different day.
-  An unset run zone resolves to `UTC`, so a per-source calendar `timezone` other
-  than `UTC` fails at collect time. That mismatch is therefore **not** caught at
-  configuration or preflight time: the source reports incomplete at collection,
-  which is a change in where the mistake surfaces and must be expected rather than
-  discovered.
+  `evidence.timezone` governs date-window interpretation for every date-window source
+  (calendar and git), and a calendar source is no longer free to pick its own. A
+  per-source `timezone` equal to the run zone is a no-op; a per-source `timezone`
+  that differs is **refused** at collection rather than silently re-anchoring that
+  one source to a different day. An unset run zone resolves to `UTC`, so a per-source
+  calendar `timezone` other than `UTC` fails at collect time. That mismatch is
+  therefore **not** caught at configuration or preflight time: the source reports
+  incomplete at collection, which is a change in where the mistake surfaces and must
+  be expected rather than discovered.
 
 ## Command sequence
 
