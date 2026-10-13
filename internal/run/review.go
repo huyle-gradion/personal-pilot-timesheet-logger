@@ -369,6 +369,23 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 		return err
 	}
 
+	// Any decision that changes the user-reviewed schedule invalidates a prior
+	// approval for the date (mirroring `classify select`), so a stale approval
+	// cannot survive an edit. This is EAGER: submit also blocks via the plan's
+	// LocalFingerprint, but the approval is marked invalidated here as well.
+	// Acknowledge alone does not invalidate (it does not change the schedule), and
+	// collection never calls ApplyReview, so an unchanged approved day stays valid.
+	//
+	// It runs BEFORE the mark_empty branch: the guided "remove from this day" flow
+	// sets MarkEmpty together with Unconfirm (or Reset), and that removal DOES
+	// change the schedule, so the approval must be invalidated. `scheduleAffecting`
+	// does not include MarkEmpty, so a mark_empty-only review still leaves the
+	// approval untouched. A refused apply (e.g. mark_empty over a nonempty day)
+	// persists nothing, so an eager invalidation on the refuse path is not written.
+	if scheduleAffecting(d) {
+		invalidateApprovalsForDate(rec, date, r.now())
+	}
+
 	if d.MarkEmpty {
 		// A nonempty day is NEVER marked empty: refuse when the record already
 		// carries confirmed work or the decision set stages any confirm/manual
@@ -378,16 +395,6 @@ func (r *Runner) applyDecisions(rec *workflow.Record, date string, d ReviewDecis
 			return fmt.Errorf("run: mark_empty: the day has confirmed or staged work and cannot be marked empty")
 		}
 		return review.MarkReviewedEmpty(rec)
-	}
-
-	// Any decision that changes the user-reviewed schedule invalidates a prior
-	// approval for the date (mirroring `classify select`), so a stale approval
-	// cannot survive an edit. This is EAGER: submit also blocks via the plan's
-	// LocalFingerprint, but the approval is marked invalidated here as well.
-	// Acknowledge alone does not invalidate (it does not change the schedule), and
-	// collection never calls ApplyReview, so an unchanged approved day stays valid.
-	if scheduleAffecting(d) {
-		invalidateApprovalsForDate(rec, date, r.now())
 	}
 
 	// A reset that stages NO replacement work leaves the day UNREVIEWED: the
@@ -445,11 +452,16 @@ func scheduleAffecting(d ReviewDecisions) bool {
 // operator diagnostic. A submitted interval points the operator at the CORRECT
 // action (edit the remote entry) rather than a dead end; an unknown id names the
 // offending id so a typo is never silent.
+//
+// The mapped id comes from the typed error (it may differ from the requested id
+// when a split group's MAPPED sibling blocks the removal); the unknown id is the
+// one the caller requested.
 func wrapUnconfirmErr(err error, id string) error {
+	var mapped *review.IntervalSubmittedError
 	switch {
-	case errors.Is(err, review.ErrIntervalSubmitted):
+	case errors.As(err, &mapped):
 		return fmt.Errorf("%s:%s: interval %s has already been submitted to the remote; edit the existing entry with trim, project, description, or classification instead of removing it",
-			BlockUnconfirmMappedRemote, id, id)
+			BlockUnconfirmMappedRemote, mapped.ID, mapped.ID)
 	case errors.Is(err, review.ErrUnknownInterval):
 		return fmt.Errorf("%s:%s: no confirmed interval with that id on this day", BlockUnconfirmUnknownInterval, id)
 	default:
@@ -460,28 +472,16 @@ func wrapUnconfirmErr(err error, id string) error {
 // wrapResetErr turns a review-layer reset error into a stable, specific operator
 // diagnostic. Both cases name the offending id where one exists.
 func wrapResetErr(err error) error {
+	var submitted *review.ResetSubmittedError
 	switch {
-	case errors.Is(err, review.ErrResetSubmitted):
+	case errors.As(err, &submitted):
 		return fmt.Errorf("%s:%s: the day has a submitted interval and cannot be reset; edit the existing remote entry with trim, project, description, or classification instead",
-			BlockResetSubmittedInterval, trailingErrorID(err))
+			BlockResetSubmittedInterval, submitted.ID)
 	case errors.Is(err, review.ErrResetUnresolved):
 		return fmt.Errorf("%s: the day has an unresolved remote operation; reconcile it before resetting", BlockResetUnresolved)
 	default:
 		return err
 	}
-}
-
-// trailingErrorID recovers the id a wrapped typed error carries as its trailing
-// ": <id>" suffix. It returns "" when there is no suffix.
-func trailingErrorID(err error) string {
-	if err == nil {
-		return ""
-	}
-	msg := err.Error()
-	if i := strings.LastIndex(msg, ": "); i >= 0 {
-		return strings.TrimSpace(msg[i+2:])
-	}
-	return ""
 }
 
 // confirmProposedBlock confirms one proposed block and returns the confirmed

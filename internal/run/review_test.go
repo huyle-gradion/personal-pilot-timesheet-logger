@@ -783,3 +783,40 @@ func TestApplyReview_ResetBlocksOnUnresolvedOutcome(t *testing.T) {
 		t.Fatalf("nothing may be written on the refused reset, got %+v", after.Confirmed)
 	}
 }
+
+// REVIEW-UNDO-1 (F2): Unconfirm removes a split group as a whole, but a group
+// whose SIBLING is mapped must be refused entirely. Removing the UNMAPPED
+// fragment would otherwise orphan the mapped sibling's remote mapping and let a
+// later re-confirm/submit create a duplicate remote entry.
+func TestApplyReview_UnconfirmSplitGroupMappedSiblingBlocks(t *testing.T) {
+	store := newStore(t)
+	r := testRunner(t, store)
+	date := "2026-10-06"
+	if _, err := store.UpdateDay(ctx, date, func(rec *workflow.Record) error {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "conf-a", Date: date, StartTime: "09:00", EndTime: "10:00", Project: "P", SplitGroupID: "g1", PartIndex: 0},
+			{ID: "conf-b", Date: date, StartTime: "10:00", EndTime: "11:00", Project: "P", SplitGroupID: "g1", PartIndex: 1},
+		}
+		rec.RemoteMappings = []workflow.RemoteMapping{{LocalID: "conf-b", RemoteID: "remote-1", Date: date}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Unconfirm the UNMAPPED fragment: the mapped SIBLING must block the removal.
+	err := r.ApplyReview(ctx, date, ReviewDecisions{Unconfirm: []UnconfirmDecision{{BlockID: "conf-a"}}})
+	if err == nil {
+		t.Fatalf("unconfirming a fragment whose split-group sibling is mapped must fail")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "unconfirm_mapped_remote") || !strings.Contains(msg, "conf-b") {
+		t.Fatalf("the error must name the reason and the MAPPED sibling's id: %v", err)
+	}
+	after, _ := store.GetDay(ctx, date)
+	if len(after.Confirmed) != 2 {
+		t.Fatalf("both intervals must remain on the refused unconfirm, got %+v", after.Confirmed)
+	}
+	if len(after.RemoteMappings) != 1 || after.RemoteMappings[0].LocalID != "conf-b" {
+		t.Fatalf("the mapping must be intact, got %+v", after.RemoteMappings)
+	}
+}

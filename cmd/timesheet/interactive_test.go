@@ -462,6 +462,87 @@ func TestGuided_MappedIntervalNotRemovable(t *testing.T) {
 	}
 }
 
+// REVIEW-UNDO-1 (F2 guided): a fragment whose split-group SIBLING is mapped is
+// presented as non-removable too, because the group is removed as a whole. The
+// guided path must not offer a removal that apply would refuse.
+func TestGuided_MappedSiblingMakesFragmentNonRemovable(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 0},
+			{ID: "c2", Date: testDate, StartTime: "10:00", EndTime: "11:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 1},
+		}
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+		rec.RemoteMappings = []workflow.RemoteMapping{{LocalID: "c2", RemoteID: "remote-1", Date: testDate}}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// For BOTH fragments the only actionable choice (index 2) is the teach-the-rule
+	// option, which stages nothing; no bulk; no missing work; confirm.
+	p := &fakePrompter{choose: []int{2, 2, 0}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK && code != exitBlocked {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	foundSubmit, foundRemove := false, false
+	for _, opts := range p.chooseOptions {
+		for _, o := range opts {
+			if strings.Contains(o.Label, "edit the remote entry instead") {
+				foundSubmit = true
+			}
+			if strings.Contains(o.Label, "Remove from this day") {
+				foundRemove = true
+			}
+		}
+	}
+	if !foundSubmit || foundRemove {
+		t.Fatalf("a fragment with a mapped sibling must offer the edit-instead rule and no removal, got submit=%v remove=%v", foundSubmit, foundRemove)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 2 {
+		t.Fatalf("no fragment of a group with a mapped sibling may be removed, got %+v", rec.Confirmed)
+	}
+}
+
+// REVIEW-UNDO-1 (F3): removing BOTH fragments of one split group in a single
+// guided pass stages exactly ONE removal (the group is removed as a whole), so
+// apply never fails with unconfirm_unknown_interval. Because that removal empties
+// the day, the day is recorded honestly as reviewed-empty.
+func TestGuided_SplitGroupRemoveBothFragmentsStagesOnce(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 0},
+			{ID: "c2", Date: testDate, StartTime: "10:00", EndTime: "11:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 1},
+		}
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// no reset (false); remove c1 (2); c2 offers "Removed with the rest" (still
+	// index 2, stages nothing); no bulk (0); no missing work (false); confirm (true).
+	p := &fakePrompter{choose: []int{2, 2, 0}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d (an unconfirm_unknown_interval means two ids of one group were staged)\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("the whole split group must be removed, got %+v", rec.Confirmed)
+	}
+	if rec.Review == nil || !rec.Review.Reviewed || !rec.Review.Empty {
+		t.Fatalf("a day emptied by removals must be recorded reviewed-empty, got %+v", rec.Review)
+	}
+}
+
 // --- abort on a TUI error ---------------------------------------------------
 
 // tuiErrorPrompter returns errAborted from the first prompt, simulating a huh

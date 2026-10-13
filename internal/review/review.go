@@ -52,6 +52,35 @@ var (
 	ErrResetUnresolved = errors.New("review: day has an unresolved remote operation and cannot be reset")
 )
 
+// IntervalSubmittedError is returned by Unconfirm when a confirmed interval (or
+// a member of its split group) has a remote mapping and cannot be removed
+// locally. It CARRIES the MAPPED interval's id, which may differ from the id the
+// caller requested (a split group is removed as a whole), so an operator
+// diagnostic never has to parse it back out of the message. It unwraps to
+// ErrIntervalSubmitted.
+type IntervalSubmittedError struct {
+	ID string
+}
+
+func (e *IntervalSubmittedError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrIntervalSubmitted, e.ID)
+}
+
+func (e *IntervalSubmittedError) Unwrap() error { return ErrIntervalSubmitted }
+
+// ResetSubmittedError is returned by ResetReview when a confirmed interval has a
+// remote mapping. It CARRIES the mapped interval's id so the operator diagnostic
+// never parses it back out of the message. It unwraps to ErrResetSubmitted.
+type ResetSubmittedError struct {
+	ID string
+}
+
+func (e *ResetSubmittedError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrResetSubmitted, e.ID)
+}
+
+func (e *ResetSubmittedError) Unwrap() error { return ErrResetSubmitted }
+
 // Stable exclusion reasons.
 const (
 	ReasonNotAttended  = "not_attended"
@@ -519,8 +548,10 @@ func ExcludeEvidence(r *workflow.Record, evID, reason string) error {
 // sharing its non-empty SplitGroupID (a split is never half-removed). It is a
 // pure removal of local confirmation:
 //
-//   - It REFUSES (ErrIntervalSubmitted) when the interval has a remote mapping:
-//     a submitted entry is edited remotely, never deleted.
+//   - It REFUSES (ErrIntervalSubmitted) when the interval, OR ANY member of its
+//     non-empty SplitGroupID, has a remote mapping: a submitted entry is edited
+//     remotely, never deleted, and a split group is removed as a whole. The error
+//     names the MAPPED member's id, which may differ from the requested one.
 //   - It REFUSES (ErrUnknownInterval) when no confirmed interval has that id, so
 //     a typo is never silent.
 //   - It leaves CollectedEvidence, ExcludedEvidence, Review, RemoteMappings,
@@ -535,22 +566,33 @@ func Unconfirm(r *workflow.Record, id, reason string) error {
 	}
 	_ = reason // accepted for audit symmetry; there is no review field to store it in (Review is untouched)
 	id = strings.TrimSpace(id)
-	for _, m := range r.RemoteMappings {
-		if m.LocalID == id {
-			return fmt.Errorf("%w: %s", ErrIntervalSubmitted, id)
-		}
-	}
 	target := findConfirmed(r, id)
 	if target == nil {
 		return fmt.Errorf("%w: %s", ErrUnknownInterval, id)
 	}
+
+	// Compute the WHOLE removal set FIRST (the target plus every interval sharing
+	// its non-empty SplitGroupID), then refuse if ANY member has a remote mapping.
+	// Checking only the target would let an unmapped fragment drag its MAPPED
+	// sibling out of the record and orphan the sibling's remote mapping.
 	group := strings.TrimSpace(target.SplitGroupID)
+	remove := map[string]bool{id: true}
+	if group != "" {
+		for _, ci := range r.Confirmed {
+			if strings.TrimSpace(ci.SplitGroupID) == group {
+				remove[ci.ID] = true
+			}
+		}
+	}
+	for _, m := range r.RemoteMappings {
+		if remove[m.LocalID] {
+			return &IntervalSubmittedError{ID: m.LocalID}
+		}
+	}
+
 	kept := r.Confirmed[:0]
 	for _, ci := range r.Confirmed {
-		if ci.ID == id {
-			continue
-		}
-		if group != "" && strings.TrimSpace(ci.SplitGroupID) == group {
+		if remove[ci.ID] {
 			continue
 		}
 		kept = append(kept, ci)
@@ -582,7 +624,7 @@ func ResetReview(r *workflow.Record) error {
 	}
 	for _, ci := range r.Confirmed {
 		if submitted[ci.ID] {
-			return fmt.Errorf("%w: %s", ErrResetSubmitted, ci.ID)
+			return &ResetSubmittedError{ID: ci.ID}
 		}
 	}
 	if len(workflow.UnresolvedOperations(r)) > 0 {

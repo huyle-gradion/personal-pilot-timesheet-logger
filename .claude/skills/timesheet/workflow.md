@@ -239,6 +239,11 @@ Rules that are easy to get wrong, all stated here so they need not be looked up:
   `unconfirm_mapped_remote:<localID>`, because a Gradion entry can be edited but never
   deleted. The correct action for a submitted interval is an `edit` via `trim`,
   `project`, `description`, or `classification`.
+- **`unconfirm` refuses an id that names no confirmed interval on the day.** If its
+  `block_id` matches no confirmed interval, the whole review is refused with the
+  specific reason `unconfirm_unknown_interval:<id>`, so a mistyped or already-removed
+  id is never silently ignored. Re-read the `review` command's existing-confirmed-work
+  listing to get the current full id.
 - **`reset` returns the day to a clean review slate.** It clears the reviewed flag and
   the reviewed-empty marker, removes every UNSUBMITTED confirmed interval, and clears
   the other review decisions for the day (exclusions, attendance choices,

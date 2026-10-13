@@ -275,9 +275,16 @@ func (g *guided) gatherReview(ctx context.Context, prop proposal.Proposal, rec *
 		if reset {
 			dec.Reset = true
 		} else {
-			mapped := mappedLocalIDs(rec)
+			// A fragment is NON-removable when it, or ANY member of its split
+			// group, has a remote mapping (a split group is removed as a whole).
+			// stagedGroups records a group already staged for removal, so an
+			// interactive pass stages at most ONE removal per group: apply removes
+			// the whole group on the first id and a second id would fail the apply
+			// with unconfirm_unknown_interval.
+			nonRemovable := nonRemovableIntervals(rec)
+			stagedGroups := map[string]bool{}
 			for _, ci := range existing {
-				if err := g.reviewExisting(ctx, ci, mapped[ci.ID], &dec); err != nil {
+				if err := g.reviewExisting(ctx, ci, nonRemovable[ci.ID], stagedGroups, &dec); err != nil {
 					return dec, err
 				}
 			}
@@ -332,12 +339,45 @@ func (g *guided) gatherReview(ctx context.Context, prop proposal.Proposal, rec *
 
 	// A day is reviewed-empty only when nothing remains confirmed after the
 	// staged removals, nothing is staged to confirm, and the day is not being
-	// reset. A day EMPTIED by removals/reset is therefore recorded honestly
-	// instead of being left half-applied (confirmed=0 but not reviewed).
-	if len(existing)-len(dec.Unconfirm) == 0 && len(dec.Confirm) == 0 && !hasManualConfirm(dec) && !dec.Reset {
+	// reset. Removing ONE fragment of a split group removes the WHOLE group, so
+	// the remaining set is computed from the ids AND groups the removals cover.
+	// A day EMPTIED by removals/reset is therefore recorded honestly instead of
+	// being left half-applied (confirmed=0 but not reviewed).
+	if remainingConfirmedAfterRemovals(existing, dec.Unconfirm) == 0 &&
+		len(dec.Confirm) == 0 && !hasManualConfirm(dec) && !dec.Reset {
 		dec.MarkEmpty = true
 	}
 	return dec, nil
+}
+
+// remainingConfirmedAfterRemovals counts the existing confirmed intervals that
+// would SURVIVE the staged removals. An interval is removed when its id is
+// staged, OR when any member of its non-empty split group is staged (a split
+// group is removed as a whole).
+func remainingConfirmedAfterRemovals(existing []workflow.ConfirmedInterval, unconfirm []run.UnconfirmDecision) int {
+	staged := map[string]bool{}
+	for _, u := range unconfirm {
+		staged[u.BlockID] = true
+	}
+	stagedGroups := map[string]bool{}
+	for _, ci := range existing {
+		if staged[ci.ID] {
+			if g := strings.TrimSpace(ci.SplitGroupID); g != "" {
+				stagedGroups[g] = true
+			}
+		}
+	}
+	remaining := 0
+	for _, ci := range existing {
+		if staged[ci.ID] {
+			continue
+		}
+		if g := strings.TrimSpace(ci.SplitGroupID); g != "" && stagedGroups[g] {
+			continue
+		}
+		remaining++
+	}
+	return remaining
 }
 
 // mappedLocalIDs indexes the confirmed-interval ids that have a remote mapping,
@@ -354,17 +394,57 @@ func mappedLocalIDs(rec *workflow.Record) map[string]bool {
 	return out
 }
 
-func (g *guided) reviewExisting(ctx context.Context, ci workflow.ConfirmedInterval, mapped bool, dec *run.ReviewDecisions) error {
+// nonRemovableIntervals returns the set of confirmed-interval ids the guided
+// review must present as NON-removable: an interval that itself has a remote
+// mapping, or whose non-empty split group has a member with a remote mapping. A
+// split group is removed as a whole, so a mapped sibling blocks the whole group
+// and the guided path must tell the truth about it.
+func nonRemovableIntervals(rec *workflow.Record) map[string]bool {
+	out := map[string]bool{}
+	if rec == nil {
+		return out
+	}
+	mappedLocal := mappedLocalIDs(rec)
+	mappedGroups := map[string]bool{}
+	for _, ci := range rec.Confirmed {
+		if !mappedLocal[ci.ID] {
+			continue
+		}
+		if g := strings.TrimSpace(ci.SplitGroupID); g != "" {
+			mappedGroups[g] = true
+		}
+	}
+	for _, ci := range rec.Confirmed {
+		if mappedLocal[ci.ID] {
+			out[ci.ID] = true
+			continue
+		}
+		if g := strings.TrimSpace(ci.SplitGroupID); g != "" && mappedGroups[g] {
+			out[ci.ID] = true
+		}
+	}
+	return out
+}
+
+func (g *guided) reviewExisting(ctx context.Context, ci workflow.ConfirmedInterval, nonRemovable bool, stagedGroups map[string]bool, dec *run.ReviewDecisions) error {
 	title := fmt.Sprintf("Existing %s  %s-%s  %s  %s", shortID(ci.ID), ci.StartTime, ci.EndTime, orDash(ci.Project), oneLine(ci.Description))
 	opts := []promptOption{
 		{Label: "Keep as is"},
 		{Label: "Edit times / project / description"},
 	}
-	if mapped {
+	group := strings.TrimSpace(ci.SplitGroupID)
+	alreadyStaged := group != "" && stagedGroups[group]
+	switch {
+	case nonRemovable:
 		// A submitted interval cannot be removed locally: the remote entry is
 		// edited, never deleted. This option stages NOTHING and teaches the rule.
 		opts = append(opts, promptOption{Label: "Submitted - edit the remote entry instead; it cannot be removed"})
-	} else {
+	case alreadyStaged:
+		// Another fragment of the SAME split group is already staged for removal;
+		// the whole group is removed as one, so this fragment offers no second
+		// removal.
+		opts = append(opts, promptOption{Label: "Removed with the rest of this split group"})
+	default:
 		opts = append(opts, promptOption{Label: "Remove from this day (unconfirm)"})
 	}
 	idx, err := g.p.Choose(ctx, title, opts, 0)
@@ -377,10 +457,13 @@ func (g *guided) reviewExisting(ctx context.Context, ci workflow.ConfirmedInterv
 	case 1:
 		return g.editConfirmed(ctx, ci.ID, ci.StartTime, ci.EndTime, ci.Project, ci.Description, dec)
 	default:
-		if mapped {
+		if nonRemovable || alreadyStaged {
 			return nil
 		}
 		dec.Unconfirm = append(dec.Unconfirm, run.UnconfirmDecision{BlockID: ci.ID, Reason: "user_retracted"})
+		if group != "" {
+			stagedGroups[group] = true
+		}
 		return nil
 	}
 }
