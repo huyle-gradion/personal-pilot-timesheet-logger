@@ -29,6 +29,16 @@ Once granted, vault synchronization covers accepted-slice records and significan
 
 Merge ordering rule, 2026-10-13: **when two branches share a base commit, merging one first blocks a fast-forward for the other**, because `main` is then no longer an ancestor of the second branch. Take merges in dependency order, or expect a merge commit. Violating this cost a full packet and one deliberate merge commit (`1ec8a3c`) on 2026-10-13, when PR #42 was merged ahead of PR #40 while both still sat on the same base.
 
+## Owner standing instructions
+
+Owner rule, 2026-10-13. These are the owner's standing instructions for orchestrating sessions, recorded here as the operating contract. They were restated at the resume handoff (HANDOFF-1) and apply to this and every later session, not only to the slice that recorded them.
+
+1. **Control the orchestrator context window against a 1M limit.** Hand off to a fresh orchestrator near 80 percent rather than pushing a nearly full session to the end; a full session loses continuity and wastes tokens re-deriving its own state.
+2. **Take a rollback snapshot before major drives.** One exists for the 2026-10-13 full drive: annotated tag `snapshot/pre-full-drive-2026-10-13`, which peels to the commit `main` was on, `cfd3a4b`, with archives under `~/backups/assignment-1/2026-10-13/` (`ai-database.tar.gz`, `timesheet-records.tar.gz`, plus handoff diffs). Take an equivalent snapshot before the next major drive.
+3. **Control the directing session's own context too.** The rule is not only about worker sessions; the session that directs the work must also stay within its window and hand off before it fills.
+4. **Use every agent lane available**, not only `oracle`, `fixer` and `ai-database`. `librarian` for vendor documentation and MCP semantics, and `observer` for measurement, are lanes the owner expects to be used where they fit.
+5. **Keep logging activity to the vault `~/ai-database` with real observed start and finish times**, per `06 - Knowledge & Wiki/Timesheet time recording standard.md`, rather than leaving boundaries as `unknown`. A genuinely unknown boundary is written as `unknown`; an observed one is never omitted or invented.
+
 ## Takeover and inventory
 
 1. Inspect branch, HEAD, ancestry, tracked changes, and untracked paths. Classify work by slice; unknown ownership is a blocker to staging it.
