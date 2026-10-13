@@ -255,7 +255,7 @@ Rules that are easy to get wrong, all stated here so they need not be looked up:
   `mark_empty: true`, in the same or a later pass.
 - **`reset` is refused when the day is not clean.** It is refused if any interval on
   the day is submitted (reason `reset_submitted_interval:<localID>`), and also if any
-  submission outcome is unresolved (in flight) (reason
+  submission outcome is unresolved (in_flight, uncertain, or unidentified) (reason
   `reset_unresolved_submission`).
 - **Both `unconfirm` and `reset` invalidate the day's active approval.** An approval
   must never survive either action. If the operation is refused, nothing is written

@@ -313,15 +313,13 @@ func (r *Runner) Acknowledge(ctx context.Context, date string, sourceIDs []strin
 	return err
 }
 
-// unresolvedKeySet returns the operation keys of a record's unresolved outcomes.
+// unresolvedKeySet returns the operation keys of a record's unresolved outcomes,
+// deferring to submit.IsUnresolved, the SINGLE definition of an outcome still
+// needing reconciliation, so this map and the reset guard cannot drift.
 func unresolvedKeySet(rec *workflow.Record) map[string]bool {
 	out := map[string]bool{}
 	for _, o := range rec.Outcomes {
-		if o.Resolved {
-			continue
-		}
-		switch o.Status {
-		case workflow.OutcomeInFlight, workflow.OutcomeUncertain, workflow.OutcomeUnidentified:
+		if submit.IsUnresolved(o) {
 			out[o.OperationKey] = true
 		}
 	}
