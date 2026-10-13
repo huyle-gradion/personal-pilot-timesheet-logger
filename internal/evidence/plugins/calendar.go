@@ -128,11 +128,25 @@ func (p *CalendarPlugin) Collect(ctx context.Context, cfg evidence.SourceConfig,
 		return evidence.CollectResult{}, errors.New("calendar: invalid target date")
 	}
 
+	// The RUN's configured timezone (req.Location) governs the day window. A
+	// per-source calendar `timezone` is an override that must MATCH it or be
+	// refused: it may never silently re-anchor a source to a different zone. The
+	// default is req.Location, else UTC; the host zone (time.Local) is never used.
 	loc := time.UTC
+	if req.Location != nil {
+		loc = req.Location
+	}
 	if tz := strings.TrimSpace(cfg.Config[CalendarConfigTimezone]); tz != "" {
 		loaded, loadErr := time.LoadLocation(tz)
 		if loadErr != nil {
 			return evidence.CollectResult{}, errors.New("calendar: invalid timezone")
+		}
+		// Conflict check is gated on req.Location != nil so contract mode (which
+		// builds CollectRequest{Mode: ModeContract} with a nil Location) keeps
+		// working with a per-source timezone alone. Zones are compared by name
+		// (.String()), never by pointer identity.
+		if req.Location != nil && loaded.String() != req.Location.String() {
+			return evidence.CollectResult{}, errors.New("calendar: per-source timezone conflicts with the configured timezone")
 		}
 		loc = loaded
 	}

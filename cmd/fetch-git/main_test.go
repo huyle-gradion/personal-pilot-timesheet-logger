@@ -377,3 +377,28 @@ func TestAssertion_Subprocess(t *testing.T) {
 		t.Errorf("expected invariant ID %q in output, got:\n%s", AssertWritersNonNil, string(out))
 	}
 }
+
+// COLLECTOR-TIMEZONE-1: with --tz omitted the resolved zone is the fixed
+// host-independent +07:00 default, NOT the host zone. Under the old code the
+// default was time.Local, so TZ=America/New_York leaked in.
+func TestTargetTimezoneDefaultsToHostIndependentZone(t *testing.T) {
+	t.Setenv("TZ", "America/New_York")
+
+	loc, err := resolveTargetLocation("")
+	if err != nil {
+		t.Fatalf("resolveTargetLocation(\"\"): %v", err)
+	}
+	probe := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+	if _, offset := probe.In(loc).Zone(); offset != 7*60*60 {
+		t.Fatalf("default location offset = %d, want +07:00 (%d)", offset, 7*60*60)
+	}
+
+	// The host zone must NOT leak in: America/New_York has a different offset.
+	host, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load America/New_York: %v", err)
+	}
+	if _, hostOffset := probe.In(host).Zone(); hostOffset == 7*60*60 {
+		t.Fatal("the test host zone unexpectedly carries the +07:00 offset")
+	}
+}

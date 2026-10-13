@@ -145,7 +145,7 @@ A calendar source is one entry in `evidence.sources` with `"type": "calendar"`:
 | --- | --- |
 | `url_ref` | **Required** `keychain:<service>` reference to the ICS feed URL. Never a raw URL. |
 | `user_email` | Optional owner email used to match invitations. |
-| `timezone` | Optional IANA timezone for date-window parsing. |
+| `timezone` | **Restricted, not freely optional.** Must match the run's configured zone; see the rule below. |
 | `cache_path` / `no_cache` | Optional local ICS cache controls. |
 | `fixture` / `fixture_date` | **Test-only** fixed input for fixture-based contract/determinism verification. NEVER required at runtime. |
 
@@ -170,6 +170,16 @@ Rules:
   acknowledgment (`--ack <source-id>`) before `preview`/`submit`.
 - **`--offline` does not suppress a calendar fetch.** The calendar ICS fetch is a
   **source** fetch, not a Gradion remote call; `--offline` skips only the remote.
+- **A calendar source's `timezone` must match the run's configured zone.** The run's
+  `evidence.timezone` governs date-window interpretation for every date-window source
+  (calendar and git), and a calendar source is no longer free to pick its own. A
+  per-source `timezone` equal to the run zone is a no-op; a per-source `timezone`
+  that differs is **refused** at collection rather than silently re-anchoring that
+  one source to a different day. An unset run zone resolves to `UTC`, so a per-source
+  calendar `timezone` other than `UTC` fails at collect time. That mismatch is
+  therefore **not** caught at configuration or preflight time: the source reports
+  incomplete at collection, which is a change in where the mistake surfaces and must
+  be expected rather than discovered.
 
 ## Command sequence
 

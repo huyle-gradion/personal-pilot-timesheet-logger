@@ -26,6 +26,12 @@ type CollectResult struct {
 // Collect runs the registry for the day and merges the evidence into the record
 // under the store. Collection proceeds independently of review or submission.
 func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error) {
+	// Fail closed on an invalid configured timezone BEFORE collecting. `timesheet
+	// review --date <d>` reaches Collect without Preflight, so an unresolved
+	// location would otherwise silently anchor the day window to UTC.
+	if r.locErr != nil {
+		return CollectResult{Date: date}, r.locErr
+	}
 	resolved := r.resolveCalendarSources(ctx, r.cfg.Evidence.Sources)
 	ev, summary, err := r.deps.Registry.CollectDay(ctx, resolved, evidence.CollectRequest{Date: date, Location: r.loc})
 	if err != nil {
