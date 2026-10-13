@@ -125,7 +125,8 @@ func TestCollect_OfflineLeavesNoRemoteObservation(t *testing.T) {
 }
 
 // COLLECT-REMOTE-1: a FAILING remote read must not fail collection and must not
-// persist a fabricated observation; it records a visible warning and continues.
+// persist a fabricated observation; it records a non-fatal warning in the
+// returned CollectResult and continues.
 func TestCollect_RemoteReadErrorWarnsAndContinues(t *testing.T) {
 	store := newStore(t)
 	date := "2026-10-06"
@@ -141,7 +142,7 @@ func TestCollect_RemoteReadErrorWarnsAndContinues(t *testing.T) {
 		t.Fatalf("a failed remote read must not fail evidence collection: %v", err)
 	}
 	if res.RemoteObservationError == "" {
-		t.Fatal("a failed remote read must be surfaced as a visible warning")
+		t.Fatal("a failed remote read must be surfaced as a non-fatal warning in CollectResult")
 	}
 	if len(res.Evidence) != 1 {
 		t.Fatalf("evidence must still be collected, got %+v", res.Evidence)
@@ -162,4 +163,53 @@ type listErrRemote struct{ *fakeRemote }
 func (f *listErrRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, limit int) (gradion.Listing, error) {
 	f.listCalls++
 	return gradion.Listing{}, &gradion.Error{Code: gradion.CodeReadSchema, Message: "read failed"}
+}
+
+// COLLECT-REMOTE-1 re-review finding CR1-L1: a FAILED re-read must INVALIDATE the
+// cached listing, so a later observe in the same run live-reads (and fails
+// loudly) rather than silently serving the older, successful listing.
+func TestCollect_FailedReReadInvalidatesCache(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := &flakyRemote{fakeRemote: newFakeRemote(), failAfter: 1}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+
+	if _, err := r.Collect(ctx, date); err != nil {
+		t.Fatalf("first Collect: %v", err)
+	}
+	if remote.listCalls != 1 {
+		t.Fatalf("want 1 read after the first Collect, got %d", remote.listCalls)
+	}
+
+	res, err := r.Collect(ctx, date)
+	if err != nil {
+		t.Fatalf("a failed re-read must not fail collection: %v", err)
+	}
+	if res.RemoteObservationError == "" {
+		t.Fatal("a failed re-read must warn")
+	}
+
+	// The cache entry was invalidated, so Preview must live-read (and fail)
+	// rather than reuse the stale listing from the first Collect.
+	if _, err := r.Preview(ctx, date, clsResolver); err == nil {
+		t.Fatal("Preview must live-read after a failed re-read invalidated the cache, not reuse the stale listing")
+	}
+	if remote.listCalls != 3 {
+		t.Fatalf("want 3 reads (2 Collect + 1 Preview), got %d", remote.listCalls)
+	}
+}
+
+// flakyRemote succeeds for its first failAfter ListEntries calls and fails every
+// later one, counting every attempt.
+type flakyRemote struct {
+	*fakeRemote
+	failAfter int
+}
+
+func (f *flakyRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, limit int) (gradion.Listing, error) {
+	f.listCalls++
+	if f.listCalls > f.failAfter {
+		return gradion.Listing{}, &gradion.Error{Code: gradion.CodeReadSchema, Message: "read failed"}
+	}
+	return gradion.Listing{Complete: true, ObservedAt: fixedNow()}, nil
 }

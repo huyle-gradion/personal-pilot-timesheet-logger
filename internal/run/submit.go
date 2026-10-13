@@ -385,3 +385,14 @@ func (r *Runner) cacheListing(date string, listing gradion.Listing) {
 	listingCache[r][date] = listing
 	listingCacheMu.Unlock()
 }
+
+// dropListing removes any Collection-cached listing for (r, date). Collect calls
+// it when a re-read FAILS, so a failed refresh never silently leaves an older
+// listing cached for a later observe in the same run.
+func (r *Runner) dropListing(date string) {
+	listingCacheMu.Lock()
+	if byDate, ok := listingCache[r]; ok {
+		delete(byDate, date)
+	}
+	listingCacheMu.Unlock()
+}

@@ -118,10 +118,14 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 		// Collection ALWAYS live-reads: it is the authoritative read for the run,
 		// so it must not read through the per-run cache (a second Collect for the
 		// same date on a reused Runner would otherwise serve a stale listing). It
-		// then POPULATES the cache so the later observe reuses this exact read.
+		// then POPULATES the cache on success and INVALIDATES it on failure, so
+		// the run's later observe reuses exactly the read Collection just made and
+		// never a stale one — a failed re-read must not silently fall back to an
+		// older listing.
 		l, lErr := r.deps.Remote.ListEntries(ctx, date, date, 0)
 		if lErr != nil {
 			out.RemoteObservationError = lErr.Error()
+			r.dropListing(date)
 		} else {
 			listing = l
 			haveListing = true

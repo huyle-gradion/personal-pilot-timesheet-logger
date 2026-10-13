@@ -407,9 +407,12 @@ const minutesPerDay = 24 * 60
 
 // TimesOverlap reports whether two "HH:MM" times overlap. An end at or before
 // the start is treated as crossing midnight; a missing or unparseable time never
-// overlaps. It is the canonical, EXPORTED overlap rule for a same-day span: a
-// caller that must scope by date compares the dates itself. It establishes only
-// a duplicate-looking signal, never a match.
+// overlaps. It is the EXPORTED overlap rule for a same-day span: a caller that
+// must scope by date compares the dates itself. It establishes only a
+// duplicate-looking signal, never a match. It is INTENDED to be the one shared
+// rule, but internal/submit's slotsOverlap still mirrors this logic rather than
+// calling it (the COLLECT-REMOTE-1 F4 debt), so the two are not yet pinned to
+// each other by a test.
 //
 // NOTE: the name deliberately avoids the substring "slot": the package guard
 // TestNoTimeSlotInferenceFunction forbids any function whose name matches
