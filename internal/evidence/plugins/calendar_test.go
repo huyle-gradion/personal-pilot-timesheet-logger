@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 )
@@ -232,5 +233,115 @@ func TestCalendarPlugin_SecretFree(t *testing.T) {
 	}{Evidence: ev, Summary: summary})
 	if strings.Contains(string(artifact), sentinel) {
 		t.Errorf("secret leaked into serialized output: %s", artifact)
+	}
+}
+
+// COLLECTOR-TIMEZONE-1: the calendar plugin anchors the day window to
+// req.Location (the RUN's configured zone), never UTC and never the host zone.
+// An event whose UTC instant falls on the target day only under +07 must be
+// included; the old `loc := time.UTC` anchor excluded it.
+func TestCalendarPlugin_HonorsRequestLocation(t *testing.T) {
+	hcm, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load Asia/Ho_Chi_Minh: %v", err)
+	}
+
+	// 2026-10-05T18:00Z is 2026-10-06T01:00 +07: on the target day only under the
+	// +07 zone.
+	const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:late-night@test
+DTSTART:20261005T180000Z
+DTEND:20261005T190000Z
+SUMMARY:Late Night
+END:VEVENT
+END:VCALENDAR`
+
+	p := &CalendarPlugin{Fetch: staticFetcher(ics)}
+	res, err := p.Collect(context.Background(), calendarConfig(),
+		evidence.CollectRequest{Date: "2026-10-06", Location: hcm})
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(res.Evidence) != 1 || res.Evidence[0].Title != "Late Night" {
+		t.Fatalf("an event on the target day in req.Location must be included, got %+v", res.Evidence)
+	}
+}
+
+// COLLECTOR-TIMEZONE-1: the local-midnight boundary under Asia/Ho_Chi_Minh.
+// Local midnight for 2026-10-06 is 2026-10-05T17:00:00Z. The parser uses
+// half-open interval overlap ([start,end) intersecting the local day), so an
+// event whose window ends AT local midnight is excluded and one starting AT local
+// midnight is included. (A bare DTSTART defaults to a 1h duration and would
+// overlap midnight, so the window ends are stated explicitly.)
+func TestCalendarPlugin_LocalMidnightBoundary(t *testing.T) {
+	hcm, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load Asia/Ho_Chi_Minh: %v", err)
+	}
+
+	const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:before-midnight@test
+DTSTART:20261005T165959Z
+DTEND:20261005T170000Z
+SUMMARY:Before Midnight
+END:VEVENT
+BEGIN:VEVENT
+UID:at-midnight@test
+DTSTART:20261005T170000Z
+DTEND:20261005T180000Z
+SUMMARY:At Midnight
+END:VEVENT
+END:VCALENDAR`
+
+	p := &CalendarPlugin{Fetch: staticFetcher(ics)}
+	res, err := p.Collect(context.Background(), calendarConfig(),
+		evidence.CollectRequest{Date: "2026-10-06", Location: hcm})
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(res.Evidence) != 1 || res.Evidence[0].Title != "At Midnight" {
+		t.Fatalf("exactly the at-local-midnight event must be included, got %+v", res.Evidence)
+	}
+}
+
+// COLLECTOR-TIMEZONE-1: the run's configured timezone governs. A per-source
+// calendar `timezone` must MATCH req.Location or be refused; a per-source key
+// alone (nil req.Location, as in contract mode) must still work.
+func TestCalendarPlugin_PerSourceTimezoneConflict(t *testing.T) {
+	hcm, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load Asia/Ho_Chi_Minh: %v", err)
+	}
+	p := &CalendarPlugin{Fetch: staticFetcher(calendarTestICS)}
+
+	// Conflict: req.Location is +07 but the per-source key says UTC -> refused.
+	conflict := calendarConfig()
+	conflict.Config[CalendarConfigTimezone] = "UTC"
+	if _, err := p.Collect(context.Background(), conflict,
+		evidence.CollectRequest{Date: "2026-10-06", Location: hcm}); err == nil {
+		t.Fatal("a per-source timezone differing from req.Location must be refused")
+	}
+
+	// Match by name: allowed.
+	match := calendarConfig()
+	match.Config[CalendarConfigTimezone] = "Asia/Ho_Chi_Minh"
+	if _, err := p.Collect(context.Background(), match,
+		evidence.CollectRequest{Date: "2026-10-06", Location: hcm}); err != nil {
+		t.Fatalf("a matching per-source timezone must be allowed, got %v", err)
+	}
+
+	// Contract-mode compatibility: a per-source timezone with a nil req.Location
+	// (Registry.contractSource builds CollectRequest{Mode: ModeContract}) works.
+	contract := calendarConfig()
+	contract.Config[CalendarConfigTimezone] = "Asia/Ho_Chi_Minh"
+	if _, err := p.Collect(context.Background(), contract,
+		evidence.CollectRequest{Date: "2026-10-06"}); err != nil {
+		t.Fatalf("a per-source timezone with nil req.Location must still work, got %v", err)
 	}
 }

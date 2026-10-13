@@ -40,6 +40,32 @@ const (
 	ExitErr   = 1
 )
 
+// DefaultTimezone is the fixed, host-independent timezone used when --tz is
+// omitted. Owner decision: the collector must NEVER anchor the day window to the
+// host's zone (time.Local), so a machine with a different TZ produces identical
+// output. Asia/Ho_Chi_Minh (UTC+07:00) is the deliberate default.
+const DefaultTimezone = "Asia/Ho_Chi_Minh"
+
+// defaultLocation resolves DefaultTimezone, falling back to a fixed +07:00 zone
+// when the IANA database is unavailable, so the default stays host-independent
+// even without zoneinfo. It deliberately never consults time.Local.
+func defaultLocation() *time.Location {
+	loc, err := time.LoadLocation(DefaultTimezone)
+	if err != nil {
+		return time.FixedZone("UTC+07:00", 7*60*60)
+	}
+	return loc
+}
+
+// resolveTargetLocation resolves the collector's target timezone: the explicit
+// --tz value when set, otherwise the fixed host-independent DefaultTimezone.
+func resolveTargetLocation(tz string) (*time.Location, error) {
+	if tz != "" {
+		return time.LoadLocation(tz)
+	}
+	return defaultLocation(), nil
+}
+
 // Invariant assertions (TigerStyle).
 const (
 	AssertWritersNonNil = "ASSERT_GIT_CLI_001_NIL_IO_WRITER"
@@ -119,7 +145,7 @@ func parseFlags(args []string, stderr io.Writer) (*Config, int, error) {
 
 	today := time.Now().Format("2006-01-02")
 	dateFlag := fs.String("date", today, "Target date YYYY-MM-DD (default: today)")
-	tzFlag := fs.String("tz", "", "Timezone for target date (e.g. Asia/Ho_Chi_Minh; default: local)")
+	tzFlag := fs.String("tz", "", "Timezone for target date (e.g. Asia/Ho_Chi_Minh; default: "+DefaultTimezone+")")
 	reposFlag := fs.String("repos", "", "Comma-separated repositories: 'owner/repo' or local directory paths (default: TRACKED_REPOS or '.')")
 	authorFlag := fs.String("author", "", "Author username or email to filter commits (default: GIT_AUTHOR or GITHUB_USER)")
 	tokenFlag := fs.String("token", "", "GitHub Personal Access Token (default: GITHUB_TOKEN or GH_TOKEN)")
@@ -306,7 +332,7 @@ func deduplicateActivity(repo string, commits []git.GitHubCommit, prs []git.GitH
 
 	loc := targetDate.Location()
 	if loc == nil {
-		loc = time.Local
+		loc = time.UTC
 	}
 	startOfDay := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, loc).Format(time.RFC3339)
 	endOfDay := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 23, 59, 59, 999999999, loc).Format(time.RFC3339)
@@ -488,16 +514,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	token := preflight.Token
 
 	// Parse date with timezone support
-	var loc *time.Location
-	if cfg.Timezone != "" {
-		var tzErr error
-		loc, tzErr = time.LoadLocation(cfg.Timezone)
-		if tzErr != nil {
-			fmt.Fprintf(stderr, "Error: invalid timezone %q: %v\n", cfg.Timezone, tzErr)
-			return ExitUsage
-		}
-	} else {
-		loc = time.Local
+	loc, tzErr := resolveTargetLocation(cfg.Timezone)
+	if tzErr != nil {
+		fmt.Fprintf(stderr, "Error: invalid timezone %q: %v\n", cfg.Timezone, tzErr)
+		return ExitUsage
 	}
 
 	targetDate, err := time.ParseInLocation("2006-01-02", cfg.Date, loc)

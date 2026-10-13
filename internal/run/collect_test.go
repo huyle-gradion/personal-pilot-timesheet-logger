@@ -410,3 +410,73 @@ func runGitDated(t *testing.T, dir, date string, args ...string) {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
 }
+
+// COLLECTOR-TIMEZONE-1: a run with a configured timezone collects a calendar
+// source whose day window is anchored to THAT zone, unaffected by the host TZ.
+// 2026-10-05T18:00Z is 2026-10-06T01:00 +07: on the target day only under the
+// configured +07 zone; under the old UTC anchor the plugin dropped it.
+func TestCollect_CalendarWindowAnchoredToConfiguredTimezone(t *testing.T) {
+	const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:late-night@test
+DTSTART:20261005T180000Z
+DTEND:20261005T190000Z
+SUMMARY:Late Night
+END:VEVENT
+END:VCALENDAR`
+
+	for _, hostTZ := range []string{"UTC", "Pacific/Kiritimati"} {
+		t.Run("host_TZ="+hostTZ, func(t *testing.T) {
+			t.Setenv("TZ", hostTZ)
+
+			store := newStore(t)
+			reg := evidence.NewRegistry()
+			reg.Register(&plugins.CalendarPlugin{Fetch: func(context.Context, evidence.SourceConfig, evidence.CollectRequest) ([]byte, error) {
+				return []byte(ics), nil
+			}})
+			sources := []evidence.SourceConfig{{
+				ID: "cal", Type: evidence.SourceCalendar, Enabled: true,
+				Config: map[string]string{plugins.CalendarConfigURLRef: "keychain:calendar-feed"},
+			}}
+			r := newRunner(t, Deps{
+				Store: store, Registry: reg,
+				Keychain: &fakeKeychain{values: map[string]string{"calendar-feed": "https://calendar.example/feed.ics"}},
+			}, Config{Evidence: evidence.Config{Timezone: "Asia/Ho_Chi_Minh", Sources: sources}})
+
+			hcm := r.loc
+			if hcm == nil || hcm.String() != "Asia/Ho_Chi_Minh" {
+				t.Fatalf("runner location = %v, want Asia/Ho_Chi_Minh", hcm)
+			}
+
+			res, err := r.Collect(ctx, "2026-10-06")
+			if err != nil {
+				t.Fatalf("Collect: %v", err)
+			}
+			if len(res.Evidence) != 1 || res.Evidence[0].Title != "Late Night" {
+				t.Fatalf("the calendar day window must be anchored to the configured zone, got %+v", res.Evidence)
+			}
+		})
+	}
+}
+
+// COLLECTOR-TIMEZONE-1: an invalid configured timezone with an explicit date must
+// make Collect fail closed (non-nil error), not silently anchor to UTC. Under the
+// old code Collect ignored locErr and returned a nil error.
+func TestCollect_InvalidConfiguredTimezoneFailsClosed(t *testing.T) {
+	store := newStore(t)
+	reg := evidence.NewRegistry()
+	reg.Register(&fakePlugin{kind: evidence.SourceLocalGit, ev: []evidence.Evidence{gitEvidence("e1", "acme/repo", "work")}})
+	sources := []evidence.SourceConfig{{ID: "git", Type: evidence.SourceLocalGit, Enabled: true}}
+	r := newRunner(t, Deps{Store: store, Registry: reg},
+		Config{Evidence: evidence.Config{Timezone: "Not/AZone", Sources: sources}})
+
+	res, err := r.Collect(ctx, "2026-10-06")
+	if err == nil {
+		t.Fatalf("an invalid configured timezone must fail closed, got result %+v", res)
+	}
+	if res.Date != "2026-10-06" {
+		t.Fatalf("the failed result must still carry the requested date, got %q", res.Date)
+	}
+}
