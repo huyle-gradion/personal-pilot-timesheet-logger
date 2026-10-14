@@ -157,9 +157,10 @@ Invoke this skill when the user issues any of the following triggers:
   `remote observed:`, `remote complete:`, and `remote=<id>` on each operation it
   would edit. Offline (`--offline`, or no configured endpoint) is reported honestly
   as `remote observed: unobserved (offline; no remote was contacted)` with
-  `remote complete: false`, because nothing about the remote is known. Never reach
-  for `bin/list-entries`; that binary is built from an untracked `cmd/` directory
-  and is not a supported surface (issue #28 records its disposition).
+  `remote complete: false`, because nothing about the remote is known. A remote id
+  is obtained from that supported enumeration alone: `review` (Step 2) prints the
+  day's observed remote entries with their full id, and `preview` prints
+  `remote=<id>` on each operation it would edit.
 
 ## Execution workflow
 

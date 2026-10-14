@@ -424,8 +424,9 @@ incomplete. Offline (`--offline`, or no configured endpoint) is reported honestl
 as `remote observed: unobserved (offline; no remote was contacted)` with
 `remote complete: false`: nothing about the remote is known.
 
-The untracked `cmd/list-entries` diagnostic is not a supported surface and must not
-be used. Issue #28 records the disposition of that untracked diagnostic.
+A remote id is obtained from the supported enumeration alone: `review` (Step 2)
+prints the day's observed remote entries with their full id, and `preview` prints
+`remote=<id>` on each operation it would edit.
 
 ---
 
