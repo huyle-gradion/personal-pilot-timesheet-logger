@@ -58,5 +58,18 @@ if [ -z "${VAULT}" ]; then
   exit 2
 fi
 
+# A relative --vault would resolve against the repository (the wrapper cds into
+# it) and write a repository file, so refuse it here too. Rejecting it in the
+# wrapper — not only in the Go program — keeps the exit code at 2, because
+# `go run` collapses the program's own exit 2 into 1.
+case "${VAULT}" in
+  /*) ;;
+  *)
+    echo "--vault must be an absolute path, got '${VAULT}'" >&2
+    echo "Usage: ./scripts/sync-vault.sh --write|--check [--vault DIR]" >&2
+    exit 2
+    ;;
+esac
+
 cd "${REPO_ROOT}"
 exec go run ./scripts/vaultgen "${MODE}" --vault "${VAULT}"

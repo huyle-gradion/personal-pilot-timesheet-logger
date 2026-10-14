@@ -145,14 +145,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: vaultgen --write|--check [--vault DIR]")
 		os.Exit(2)
 	}
-	if err := validateVaultRoot(*vault); err != nil {
-		fmt.Fprintf(os.Stderr, "usage: vaultgen --write|--check --vault DIR: %v\n", err)
-		os.Exit(2)
-	}
 
+	// The repository root is resolved FIRST: the vault-root validation needs it
+	// to refuse a --vault that resolves to or inside the repository.
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vaultgen: cannot determine repository root: %v\n", err)
+		os.Exit(2)
+	}
+	if err := validateVaultRoot(repoRoot, *vault); err != nil {
+		fmt.Fprintf(os.Stderr, "usage: vaultgen --write|--check --vault DIR: %v\n", err)
 		os.Exit(2)
 	}
 	commit, err := headCommit(repoRoot)
@@ -518,19 +520,46 @@ func normalizeForCompare(content string) string {
 	return strings.Join(lines, "\n") + body
 }
 
-// validateVaultRoot rejects a vault root that is empty or relative. An empty
-// value would make filepath.Join(vaultRoot, rel) resolve against the process
-// working directory — inside the repository after the wrapper's cd — breaking the
-// "never writes a repository file" invariant. A relative path is refused for the
-// same reason: its meaning depends on the working directory.
-func validateVaultRoot(vaultRoot string) error {
+// validateVaultRoot rejects a vault root that is empty, relative, or that
+// resolves to or under the repository root. An empty value would make
+// filepath.Join(vaultRoot, rel) resolve against the process working directory —
+// inside the repository after the wrapper's cd — and an absolute path that IS
+// the repository root or sits inside it would write the generated files into the
+// checkout. Both break the "never writes a repository file" invariant, so both
+// are refused. A relative path is refused for the same reason: its meaning
+// depends on the working directory.
+func validateVaultRoot(repoRoot, vaultRoot string) error {
 	if vaultRoot == "" {
 		return errors.New("--vault must not be empty")
 	}
 	if !filepath.IsAbs(vaultRoot) {
 		return fmt.Errorf("--vault must be an absolute path, got %q", vaultRoot)
 	}
+	// Resolve both sides (absolute + cleaned, and symlink-resolved where that
+	// succeeds) so an absolute path carrying ".." segments — or one reached
+	// through a symlink — cannot slip inside the repository.
+	vaultResolved := resolvePath(vaultRoot)
+	repoResolved := resolvePath(repoRoot)
+	if vaultResolved == repoResolved ||
+		strings.HasPrefix(vaultResolved, repoResolved+string(filepath.Separator)) {
+		return fmt.Errorf("--vault must not be the repository root or a path inside it, got %q", vaultRoot)
+	}
 	return nil
+}
+
+// resolvePath returns the cleaned absolute form of p, and — where the path can
+// be resolved — its symlink-resolved form, so a vault root reached through a
+// symlink cannot bypass the containment check. Resolution is best-effort: a path
+// that does not exist yet is returned as its cleaned absolute form.
+func resolvePath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = filepath.Clean(p)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
 }
 
 // runWrite regenerates the WHOLE set.
@@ -545,12 +574,15 @@ func validateVaultRoot(vaultRoot string) error {
 //     two with it.
 //   - Per-file atomic on write: each file is written through a temp file in its
 //     own directory plus a rename, so no reader ever sees a half-written file.
-//     The write of the set is not itself a single transaction: if the process
-//     died between two renames, earlier files would already be updated. That is
-//     the honest limit, and it is covered by a test that hand-edits one file and
-//     asserts all three stay byte-for-byte unchanged.
+//     This per-file atomicity is ARCHITECTED, not test-proven: it rests on
+//     os.CreateTemp plus os.Rename, and no test here exercises it under a crash.
+//     The set write is not a single transaction — a crash between two renames
+//     could leave earlier files updated and later ones not.
+//
+// What IS test-proven is the all-or-nothing VALIDATION above: the test hand-edits
+// one file and asserts all three stay byte-for-byte unchanged.
 func runWrite(repoRoot, vaultRoot string, now time.Time, commit string, out io.Writer) int {
-	if err := validateVaultRoot(vaultRoot); err != nil {
+	if err := validateVaultRoot(repoRoot, vaultRoot); err != nil {
 		fmt.Fprintf(out, "usage: vaultgen --write|--check --vault DIR: %v\n", err)
 		return 2
 	}
@@ -601,7 +633,7 @@ func runWrite(repoRoot, vaultRoot string, now time.Time, commit string, out io.W
 //
 // It exits non-zero if any file differs.
 func runCheck(repoRoot, vaultRoot string, now time.Time, commit string, out io.Writer) int {
-	if err := validateVaultRoot(vaultRoot); err != nil {
+	if err := validateVaultRoot(repoRoot, vaultRoot); err != nil {
 		fmt.Fprintf(out, "usage: vaultgen --write|--check --vault DIR: %v\n", err)
 		return 2
 	}

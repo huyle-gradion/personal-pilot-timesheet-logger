@@ -270,6 +270,53 @@ func TestVaultRootRejected(t *testing.T) {
 	}
 }
 
+// TestVaultRootInsideRepoRejected pins F1: an ABSOLUTE --vault that resolves to
+// the repository root, or to a path under it, is refused with exit 2 and writes
+// NOTHING. Without this, `vaultgen --write --vault "$PWD"` would write the three
+// generated files INTO the checkout, breaking the "never writes a repository
+// file" invariant. The ".." case proves the path is RESOLVED rather than
+// compared textually.
+func TestVaultRootInsideRepoRejected(t *testing.T) {
+	const repoRoot = "testdata"
+	absRepo, err := filepath.Abs(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, vault string }{
+		{"equal to repo root", absRepo},
+		{"under repo root", filepath.Join(absRepo, "nested", "vault")},
+		{"dot-dot into repo", absRepo + "/want/../nested"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Safety net: if a buggy build writes, clean the generated leaf
+			// directories out of the checkout. Never remove tc.vault itself —
+			// in the "equal" case that IS the repository root.
+			for _, a := range generatedSet {
+				defer os.RemoveAll(filepath.Dir(filepath.Join(tc.vault, a.rel)))
+			}
+
+			var sb strings.Builder
+			if code := runWrite(repoRoot, tc.vault, testNow, testCommit, &sb); code != 2 {
+				t.Fatalf("--write with a vault %s (%s) must exit 2, got %d, said: %q",
+					tc.name, tc.vault, code, sb.String())
+			}
+			if !strings.Contains(sb.String(), "vault") {
+				t.Errorf("refusal must name the vault usage error, said: %q", sb.String())
+			}
+			for _, a := range generatedSet {
+				if _, err := os.Stat(filepath.Join(tc.vault, a.rel)); !os.IsNotExist(err) {
+					t.Errorf("a refused --write must create no file, but %s exists", filepath.Join(tc.vault, a.rel))
+				}
+			}
+
+			var sb2 strings.Builder
+			if code := runCheck(repoRoot, tc.vault, testNow, testCommit, &sb2); code != 2 {
+				t.Fatalf("--check with a vault %s must exit 2, got %d, said: %q", tc.name, code, sb2.String())
+			}
+		})
+	}
+}
+
 // TestStampInCommentIsIgnored pins that only the frontmatter BETWEEN the two
 // "---" delimiters supplies body_sha256, for EVERY file in the set. A hand-edited
 // file that hides a MATCHING stamp in the do-not-edit comment must be refused,
