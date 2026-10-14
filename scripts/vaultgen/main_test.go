@@ -367,6 +367,87 @@ func TestVaultRootCaseVariantRejected(t *testing.T) {
 	}
 }
 
+// TestVaultRootSymlinkContainment pins F8 and the symlink surface of the
+// containment guarantee. A symlink whose TARGET is the repository root or an
+// inner repository subdirectory must be refused (exit 2, no write) for both
+// --write and --check, including when a NON-EXISTENT leaf hangs below the
+// symlink; a symlink pointing OUTSIDE the repository must NOT be over-rejected.
+// Without the longest-existing-ancestor resolution, the inner-subdirectory
+// symlinks slip the identity walk and write into the checkout.
+func TestVaultRootSymlinkContainment(t *testing.T) {
+	const repoRoot = "testdata"
+	absRepo, err := filepath.Abs(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	innerRepo := filepath.Join(absRepo, "want") // an existing inner subdirectory
+
+	linkDir := t.TempDir()
+	outsideTarget := t.TempDir()
+
+	toRoot := filepath.Join(linkDir, "to-root")
+	toInner := filepath.Join(linkDir, "to-inner")
+	toOutside := filepath.Join(linkDir, "to-outside")
+	if err := os.Symlink(absRepo, toRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(innerRepo, toInner); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideTarget, toOutside); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ name, vault string }{
+		{"symlink to repo root", toRoot},
+		{"symlink to inner repo subdir", toInner},
+		{"symlink to inner repo subdir + nonexistent leaf", filepath.Join(toInner, "nonexistent", "leaf")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Safety net: if a buggy build writes through the symlink into the
+			// repository, remove the generated leaf directories.
+			for _, a := range generatedSet {
+				defer os.RemoveAll(filepath.Dir(filepath.Join(tc.vault, a.rel)))
+			}
+			var sb strings.Builder
+			if code := runWrite(repoRoot, tc.vault, testNow, testCommit, &sb); code != 2 {
+				t.Fatalf("--write with a %s (%s) must exit 2, got %d, said: %q", tc.name, tc.vault, code, sb.String())
+			}
+			if !strings.Contains(sb.String(), "vault") {
+				t.Errorf("refusal must name the vault usage error, said: %q", sb.String())
+			}
+			for _, a := range generatedSet {
+				if _, err := os.Stat(filepath.Join(tc.vault, a.rel)); !os.IsNotExist(err) {
+					t.Errorf("a refused --write must create no file, but %s exists", filepath.Join(tc.vault, a.rel))
+				}
+			}
+			var sb2 strings.Builder
+			if code := runCheck(repoRoot, tc.vault, testNow, testCommit, &sb2); code != 2 {
+				t.Fatalf("--check with a %s must exit 2, got %d, said: %q", tc.name, code, sb2.String())
+			}
+		})
+	}
+
+	t.Run("symlink outside the repo is not over-rejected", func(t *testing.T) {
+		// --check must NOT treat it as a vault-root violation; it returns 1 only
+		// because the generated files are simply absent in the target.
+		var sb strings.Builder
+		if code := runCheck(repoRoot, toOutside, testNow, testCommit, &sb); code == 2 {
+			t.Fatalf("a symlink OUTSIDE the repo must not be refused as a vault-root violation, said: %q", sb.String())
+		}
+		// --write must succeed and land the three files in the OUTSIDE target.
+		var sb2 strings.Builder
+		if code := runWrite(repoRoot, toOutside, testNow, testCommit, &sb2); code != 0 {
+			t.Fatalf("--write through an outside symlink must succeed, got %d, said: %q", code, sb2.String())
+		}
+		for _, a := range generatedSet {
+			if _, err := os.Stat(filepath.Join(outsideTarget, a.rel)); err != nil {
+				t.Errorf("write through the outside symlink must land %s in the target: %v", a.rel, err)
+			}
+		}
+	})
+}
+
 // TestStampInCommentIsIgnored pins that only the frontmatter BETWEEN the two
 // "---" delimiters supplies body_sha256, for EVERY file in the set. A hand-edited
 // file that hides a MATCHING stamp in the do-not-edit comment must be refused,

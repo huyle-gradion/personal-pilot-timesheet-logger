@@ -521,24 +521,31 @@ func normalizeForCompare(content string) string {
 }
 
 // validateVaultRoot rejects a vault root that is empty, relative, or that is the
-// repository root or sits inside it. An empty value would make
-// filepath.Join(vaultRoot, rel) resolve against the process working directory —
-// inside the repository after the wrapper's cd — and an absolute path that is the
-// repository root or sits inside it would write the generated files into the
-// checkout. Both break the "never writes a repository file" invariant, so both
-// are refused. A relative path is refused for the same reason: its meaning
-// depends on the working directory.
+// repository root or sits inside it.
 //
-// Containment is decided by FILESYSTEM IDENTITY, not by comparing path strings.
-// A string prefix is defeated by case: macOS's default APFS is case-insensitive
-// but case-preserving, and neither filepath.Abs nor filepath.EvalSymlinks
-// canonicalizes case, so a --vault differing from the repository root only by
-// case slips a prefix test and writes INTO the checkout. Instead this walks UP
-// from the vault path to the filesystem root; if any ancestor is the SAME file
-// as the repository root, the vault is the repository root or under it. os.Stat
-// follows symlinks, so a symlinked route into the repository is caught too, and
-// the walk naturally covers a deep non-existent leaf whose existing ancestor is
-// the repository.
+// THE MECHANISM, and its exact strength. Containment is decided by FILESYSTEM
+// IDENTITY, not by comparing path strings. The vault path's longest existing
+// ancestor is resolved with filepath.EvalSymlinks (best effort; a non-existent
+// remainder is re-appended), and then os.SameFile walks UP the resolved path's
+// ancestors against the statted repository root. Identity is used rather than a
+// string prefix because macOS's default APFS is case-insensitive but
+// case-preserving and neither filepath.Abs nor filepath.EvalSymlinks
+// canonicalizes case, so a case-variant --vault would slip a prefix test; and
+// resolution is needed because filepath.Dir yields a symlink's own STRING parent,
+// never its target's, so a symlink INTO the repository would otherwise never
+// reach the repository root in the walk.
+//
+// COVERED AND TESTED — each yields a usage error, exit 2, and no write: an empty
+// --vault; a relative --vault; the repository root itself; a path under the
+// repository root; a ".."-carrying path into the repository; a case-variant path
+// (guarded by a case-sensitivity probe) and a case-variant under it; a symlink
+// whose target is the repository root; and a symlink whose target is an inner
+// repository subdirectory, including one with a non-existent leaf beneath it.
+//
+// NOT COVERED — stated rather than implied: a HARDLINK, a BIND MOUNT, and any
+// other mechanism that makes two distinct paths name one file without a symlink.
+// Those cannot be detected from path resolution alone, so this function refuses
+// only the routes listed above and claims nothing more.
 func validateVaultRoot(repoRoot, vaultRoot string) error {
 	if vaultRoot == "" {
 		return errors.New("--vault must not be empty")
@@ -551,7 +558,7 @@ func validateVaultRoot(repoRoot, vaultRoot string) error {
 		// No repository to contend with, so containment cannot be violated.
 		return nil
 	}
-	for dir := filepath.Clean(vaultRoot); ; {
+	for dir := resolveVaultPath(vaultRoot); ; {
 		if info, err := os.Stat(dir); err == nil && os.SameFile(info, repoInfo) {
 			return fmt.Errorf("--vault must not be the repository root or a path inside it, got %q", vaultRoot)
 		}
@@ -560,6 +567,28 @@ func validateVaultRoot(repoRoot, vaultRoot string) error {
 			return nil // reached the filesystem root without meeting the repository
 		}
 		dir = parent
+	}
+}
+
+// resolveVaultPath resolves p as far as the filesystem allows: it finds p's
+// longest EXISTING ancestor, resolves THAT with filepath.EvalSymlinks (so a
+// symlink anywhere in the path is followed to its real target), and re-appends
+// the non-existent remainder — the location a write would actually land in.
+// On any resolution failure it returns p cleaned, which keeps the identity walk
+// conservative. It is best-effort: EvalSymlinks does not canonicalize case, and
+// a hardlink or bind mount is invisible to it.
+func resolveVaultPath(p string) string {
+	remainder := ""
+	for cur := p; ; {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, remainder)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return filepath.Clean(p)
+		}
+		remainder = filepath.Join(filepath.Base(cur), remainder)
+		cur = parent
 	}
 }
 
