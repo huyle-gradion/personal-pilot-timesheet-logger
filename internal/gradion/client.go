@@ -128,10 +128,24 @@ func (c *Client) ListEntries(ctx context.Context, dateFrom, dateTo string, limit
 	if err := c.guardVerified(); err != nil {
 		return Listing{}, err
 	}
+	var (
+		listing Listing
+		err     error
+	)
 	if c.hasWeek {
-		return c.listEntriesByWeek(ctx, dateFrom, dateTo)
+		listing, err = c.listEntriesByWeek(ctx, dateFrom, dateTo)
+	} else {
+		listing, err = c.listEntriesLegacy(ctx, dateFrom, dateTo, limit)
 	}
-	return c.listEntriesLegacy(ctx, dateFrom, dateTo, limit)
+	if err != nil {
+		return Listing{}, err
+	}
+	// A REAL read always yields an OBSERVED listing, so every consumer can tell it
+	// apart from the offline (UNOBSERVED) listing. The two builders leave Observed
+	// false; this is the single point where a real read marks it, so no real
+	// listing can be mistaken for an offline one.
+	listing.Observed = true
+	return listing, nil
 }
 
 // listEntriesByWeek reads full structured entries via get_my_week, iterating the

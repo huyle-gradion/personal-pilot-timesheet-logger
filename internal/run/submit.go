@@ -22,6 +22,11 @@ type PlanResult struct {
 	Plan         workflow.SubmissionPlan
 	Reconcile    submit.ReconcileResult
 	Suggestions  []submit.ClassificationSuggestion
+	// RemoteObserved is true when a REAL remote read produced the listing the plan
+	// was built from. It is ADDITIVE, NOT part of the plan, and NOT hashed: it only
+	// lets the CLI report an offline (UNOBSERVED) preview honestly instead of
+	// printing a local timestamp as if it were a remote observation.
+	RemoteObserved bool
 }
 
 // Preview builds the submission plan for the day and persists it. It performs NO
@@ -39,7 +44,7 @@ func (r *Runner) Preview(ctx context.Context, date string, resolver submit.Class
 	if err != nil {
 		return PlanResult{}, err
 	}
-	out := PlanResult{Blocked: res.Blocked, BlockReasons: res.Reasons, Plan: res.Plan, Reconcile: res.Reconcile, Suggestions: res.Suggestions}
+	out := PlanResult{Blocked: res.Blocked, BlockReasons: res.Reasons, Plan: res.Plan, Reconcile: res.Reconcile, Suggestions: res.Suggestions, RemoteObserved: listing.Observed}
 	if res.Blocked {
 		return out, nil
 	}
@@ -326,11 +331,13 @@ func unresolvedKeySet(rec *workflow.Record) map[string]bool {
 	return out
 }
 
-// observe re-fetches the remote listing, or returns an empty complete listing when
-// the run is offline.
+// observe re-fetches the remote listing. When the run is offline (nil Remote) it
+// returns an UNOBSERVED, empty listing: no remote was contacted, so no ObservedAt
+// is fabricated and Complete stays false. An offline listing is deliberately NOT
+// Complete — Complete is meaningful only for a REAL read.
 func (r *Runner) observe(ctx context.Context, date string) (gradion.Listing, error) {
 	if r.deps.Remote == nil {
-		return gradion.Listing{Complete: true, ObservedAt: r.now()}, nil
+		return gradion.Listing{Observed: false, Complete: false}, nil
 	}
 	return r.fetchListing(ctx, date)
 }

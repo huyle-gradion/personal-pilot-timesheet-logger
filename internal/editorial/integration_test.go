@@ -11,7 +11,7 @@ import (
 )
 
 func emptyListing() gradion.Listing {
-	return gradion.Listing{Complete: true, ObservedAt: testNow}
+	return gradion.Listing{Observed: true, Complete: true, ObservedAt: testNow}
 }
 
 func clsResolver(string) (string, bool) { return "cls-1", true }

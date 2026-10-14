@@ -180,6 +180,16 @@ is already confirmed, it also lists the day's existing confirmed intervals with
 their **full ids**, which is how the `block_id` for an `unconfirm` decision (Step 4)
 is named.
 
+**Pre-existing remote entries for the date.** `review` performs the day's
+authoritative collection read and enumerates every **observed** remote entry for
+the date with its full id, span and description under `Remote entries (<date>):`.
+It also prints `remote observation failed: <error>` when that read failed (a
+non-fatal warning: evidence collection still succeeds), and a non-blocking
+`remote collision: <id>[, <id>...]` warning for an observed entry whose span
+overlaps a confirmed interval — a duplicate-looking signal that never blocks.
+Nothing is printed for a signal that is absent; offline (no remote) prints no
+entries section.
+
 ---
 
 ## Step 3: `[AI]` Editorial synthesis (optional)
@@ -391,21 +401,21 @@ $TS preview --config "$CFG" --date "$DATE"
 **Output Seam**: `plan_id: <PLANID>` and the operation count. The plan id is the
 plan's content hash.
 
-**Pre-existing entries for the date.** This is the sanctioned check, and the only
-one: `preview` re-observes the remote **read-only** and reports
+**Pre-existing entries for the date.** `review` (Step 2) performs the day's
+authoritative collection read and enumerates every **observed** remote entry for
+the date with its full id, span and description, so "what is already on this
+date?" is answerable from a supported command.
+
+`preview` separately re-observes the remote **read-only** and reports
 `remote observed: <timestamp>`, `remote complete: <bool>`, and, for every operation
 it would edit, a `remote=<id>`. Require that observation before any submission; a
 `remote complete: false` means the observation was partial and the plan may be
-incomplete.
+incomplete. Offline (`--offline`, or no configured endpoint) is reported honestly
+as `remote observed: unobserved (offline; no remote was contacted)` with
+`remote complete: false`: nothing about the remote is known.
 
-It is **not** a duplicate-detection enumeration. No supported command lists all of a
-date's remote entries. The only thing that ever did was an untracked diagnostic
-built from `cmd/list-entries`, which is not a supported surface and must not be
-used. Issue #28 records the disposition of that untracked diagnostic and requires
-the capability to be rebuilt as a supported subcommand. Until then, the skill cannot
-answer "what is already on this date?" beyond what `preview` reports about the
-entries the plan itself touches. If that is not enough for a step, use the stop rule
-above rather than reaching for an unsupported binary.
+The untracked `cmd/list-entries` diagnostic is not a supported surface and must not
+be used. Issue #28 records the disposition of that untracked diagnostic.
 
 ---
 

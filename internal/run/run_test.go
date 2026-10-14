@@ -158,7 +158,7 @@ func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, l
 		e.ContentObserved = true
 		entries = append(entries, e)
 	}
-	return gradion.Listing{Complete: f.complete, ObservedAt: fixedNow(), Entries: entries}, nil
+	return gradion.Listing{Observed: true, Complete: f.complete, ObservedAt: fixedNow(), Entries: entries}, nil
 }
 
 // EntryByID is the bounded stable-ID read-back used to verify an

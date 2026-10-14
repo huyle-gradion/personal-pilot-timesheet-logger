@@ -292,8 +292,13 @@ func TestRunCLI_SubmitWithoutApprovalBlocked(t *testing.T) {
 }
 
 // submitFakeRemote is a hermetic run.Remote whose writes are counted (and never
-// expected on the blocked path).
-type submitFakeRemote struct{ writes int }
+// expected on the blocked path). Its remote listing is configurable so the review
+// surfaces can be driven: nil listing means a successful OBSERVED empty read.
+type submitFakeRemote struct {
+	writes  int
+	listing *gradion.Listing
+	listErr error
+}
 
 func (f *submitFakeRemote) Initialize(context.Context) (mcp.ServerInfo, error) {
 	return mcp.ServerInfo{}, nil
@@ -307,7 +312,13 @@ func (f *submitFakeRemote) ClassificationCatalog(_ context.Context, query string
 		Options: []gradion.ClassificationOption{{ID: "cls-1"}}}, nil
 }
 func (f *submitFakeRemote) ListEntries(context.Context, string, string, int) (gradion.Listing, error) {
-	return gradion.Listing{Complete: true, ObservedAt: time.Now().UTC()}, nil
+	if f.listErr != nil {
+		return gradion.Listing{}, f.listErr
+	}
+	if f.listing != nil {
+		return *f.listing, nil
+	}
+	return gradion.Listing{Observed: true, Complete: true, ObservedAt: time.Now().UTC()}, nil
 }
 func (f *submitFakeRemote) EntryByID(context.Context, string, string, string) (workflow.RemoteState, bool, error) {
 	return workflow.RemoteState{}, false, nil
@@ -681,8 +692,8 @@ func TestRunCLI_PreviewShowsOperationsAndTotal(t *testing.T) {
 	for _, want := range []string{
 		"plan_id: ",
 		"operations: 2",
-		"remote observed: ",
-		"remote complete: true",
+		"remote observed: unobserved (offline; no remote was contacted)",
+		"remote complete: false",
 		"  create 09:00-10:30 Proj first",
 		"  create 11:00-15:30 Proj second",
 		"total: 6h 0m across 2 operation(s)",

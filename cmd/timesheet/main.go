@@ -522,6 +522,7 @@ func cmdReview(ctx context.Context, r *run.Runner, cfg cliConfig, editorActive b
 		// Surface every enabled source that is not complete/skipped, so a remote
 		// failure or an incomplete collection is visible.
 		printSourceStatus(stdout, collectRes.Summary)
+		printRemoteObservation(stdout, d, collectRes)
 		prop, err := r.Propose(ctx, d)
 		if err != nil {
 			fmt.Fprintf(stderr, "timesheet: propose %s: %v\n", d, err)
@@ -600,6 +601,28 @@ func printSourceStatus(w io.Writer, sum evidence.CollectionSummary) {
 	}
 }
 
+// printRemoteObservation surfaces the collection-time remote signals on stdout:
+// (a) a FAILED remote read, (b) the day's OBSERVED remote entries with their full
+// ids, spans and descriptions — the supported enumeration of a date's remote
+// entries (issue #43) — and (c) any duplicate-looking collisions. It is shared by
+// the scripted `review` and the guided run so both surfaces report the same three
+// things. Nothing is printed for a signal that is absent: a successful read with
+// no entries and no collisions adds no output.
+func printRemoteObservation(w io.Writer, date string, cr run.CollectResult) {
+	if cr.RemoteObservationError != "" {
+		fmt.Fprintf(w, "remote observation failed: %s\n", cr.RemoteObservationError)
+	}
+	if cr.RemoteObserved && len(cr.RemoteEntries) > 0 {
+		fmt.Fprintf(w, "Remote entries (%s):\n", date)
+		for _, e := range cr.RemoteEntries {
+			fmt.Fprintf(w, "  %s  %s-%s  %s\n", e.RemoteID, e.StartTime, e.EndTime, oneLine(e.Description))
+		}
+	}
+	if len(cr.RemoteCollisions) > 0 {
+		fmt.Fprintf(w, "remote collision: %s (duplicate-looking; informational, does not block)\n", strings.Join(cr.RemoteCollisions, ", "))
+	}
+}
+
 func cmdExport(ctx context.Context, r *run.Runner, date, from, to string, stdout, stderr io.Writer) int {
 	dates, err := resolveDates(r, date, from, to)
 	if err != nil {
@@ -646,8 +669,13 @@ func cmdPreview(ctx context.Context, store workflow.Store, r *run.Runner, cfg cl
 	// Human-readable detail: the EXACT creates/edits, intervals, descriptions,
 	// projects, and total hours the user approves (secret-free: plan fields only).
 	projects := confirmedProjects(ctx, store, d)
-	fmt.Fprintf(stdout, "remote observed: %s\n", res.Plan.RemoteObservedAt.Format(time.RFC3339))
-	fmt.Fprintf(stdout, "remote complete: %t\n", res.Plan.RemoteComplete)
+	if res.RemoteObserved {
+		fmt.Fprintf(stdout, "remote observed: %s\n", res.Plan.RemoteObservedAt.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "remote complete: %t\n", res.Plan.RemoteComplete)
+	} else {
+		fmt.Fprintln(stdout, "remote observed: unobserved (offline; no remote was contacted)")
+		fmt.Fprintln(stdout, "remote complete: false")
+	}
 	totalMinutes := 0
 	for _, op := range res.Plan.Operations {
 		fmt.Fprintln(stdout, formatPlanOperation(op, cfg, projects))

@@ -1990,6 +1990,10 @@ func (g *guided) printCollection(cr run.CollectResult, rec *workflow.Record) {
 	if pending := pendingIncompleteSources(rec, splitCSV(g.ack)); len(pending) > 0 {
 		fmt.Fprintf(g.stdout, "  %d source(s) incomplete -> the preview blocks until acknowledged in the review step below\n", len(pending))
 	}
+	// Surface the collection-time remote signals (failed read, the day's OBSERVED
+	// remote entries, and duplicate-looking collisions) in the SAME review section
+	// the scripted `review` reports them, so the agent sees them before deciding.
+	printRemoteObservation(g.stdout, g.date, cr)
 }
 
 func (g *guided) printOverview(prop proposal.Proposal, rec *workflow.Record, evByID map[string]evidence.Evidence) {
@@ -2053,8 +2057,13 @@ func (g *guided) printPlan(res run.PlanResult) {
 	fmt.Fprintf(g.stdout, "operations: %d\n", len(res.Plan.Operations))
 	printSuggestions(g.stdout, res.Suggestions)
 	projects := confirmedProjects(context.Background(), g.store, g.date)
-	fmt.Fprintf(g.stdout, "remote observed: %s\n", res.Plan.RemoteObservedAt.Format(time.RFC3339))
-	fmt.Fprintf(g.stdout, "remote complete: %t\n", res.Plan.RemoteComplete)
+	if res.RemoteObserved {
+		fmt.Fprintf(g.stdout, "remote observed: %s\n", res.Plan.RemoteObservedAt.Format(time.RFC3339))
+		fmt.Fprintf(g.stdout, "remote complete: %t\n", res.Plan.RemoteComplete)
+	} else {
+		fmt.Fprintln(g.stdout, "remote observed: unobserved (offline; no remote was contacted)")
+		fmt.Fprintln(g.stdout, "remote complete: false")
+	}
 	total := 0
 	for _, op := range res.Plan.Operations {
 		fmt.Fprintln(g.stdout, formatPlanOperation(op, g.cfg, projects))

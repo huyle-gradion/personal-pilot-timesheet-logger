@@ -70,6 +70,21 @@ func TestCollect_PersistsRemoteObservationAndSurfacesCollision(t *testing.T) {
 		t.Fatalf("RemoteCollisions must contain r1, got %v", res.RemoteCollisions)
 	}
 
+	// (b2) OBSERVATION-SURFACE-1: the successful read is reported OBSERVED and the
+	// day's entries are surfaced for enumeration (#43).
+	if !res.RemoteObserved {
+		t.Error("a successful remote read must report RemoteObserved=true")
+	}
+	hasEntry := false
+	for _, e := range res.RemoteEntries {
+		if e.RemoteID == "r1" {
+			hasEntry = true
+		}
+	}
+	if !hasEntry {
+		t.Fatalf("RemoteEntries must carry the day's observed entries, got %+v", res.RemoteEntries)
+	}
+
 	// (c) Preview reuses the SAME listing: the remote is read only ONCE per run.
 	before := remote.listCalls
 	pre, err := r.Preview(ctx, date, clsResolver)
@@ -114,6 +129,12 @@ func TestCollect_OfflineLeavesNoRemoteObservation(t *testing.T) {
 	}
 	if len(res.RemoteCollisions) != 0 {
 		t.Fatalf("an offline collection must surface no collisions, got %v", res.RemoteCollisions)
+	}
+	if res.RemoteObserved {
+		t.Error("an offline collection must report RemoteObserved=false")
+	}
+	if len(res.RemoteEntries) != 0 {
+		t.Fatalf("an offline collection must surface no remote entries, got %+v", res.RemoteEntries)
 	}
 	got, err := store.GetDay(ctx, date)
 	if err != nil {
@@ -211,5 +232,5 @@ func (f *flakyRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, 
 	if f.listCalls > f.failAfter {
 		return gradion.Listing{}, &gradion.Error{Code: gradion.CodeReadSchema, Message: "read failed"}
 	}
-	return gradion.Listing{Complete: true, ObservedAt: fixedNow()}, nil
+	return gradion.Listing{Observed: true, Complete: true, ObservedAt: fixedNow()}, nil
 }

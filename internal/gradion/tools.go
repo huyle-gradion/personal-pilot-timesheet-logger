@@ -120,6 +120,12 @@ type Classification struct {
 // only when the scan terminated on a short page with no duplicates and no
 // truncation.
 type Listing struct {
+	// Observed is true ONLY when a REAL remote read produced this listing (see
+	// Client.ListEntries). The offline path never sets it: an offline listing is
+	// UNOBSERVED and carries no ObservedAt, because no local timestamp may stand
+	// in for a remote observation. Complete is meaningful only when Observed is
+	// true.
+	Observed   bool
 	Entries    []workflow.RemoteState
 	Complete   bool
 	Pages      int

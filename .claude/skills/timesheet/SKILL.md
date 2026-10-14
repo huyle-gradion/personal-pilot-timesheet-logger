@@ -144,16 +144,18 @@ Invoke this skill when the user issues any of the following triggers:
 - **One manual interval may cite several evidence sources.** A user-timed interval
   can link multiple supporting records; the links add no minutes and the
   interval's own span is authoritative.
-- **Pre-existing remote entries for the target date are not enumerated by any
-  supported surface.** `preview` re-observes the remote **read-only** and reports
-  it — `remote observed:`, `remote complete:`, and `remote=<id>` on each operation
-  it would edit — and that is the sanctioned check before any submission. It is
-  **not** a duplicate-detection enumeration: a full listing of a date's remote
-  entries is unavailable from any supported command, and issue #28 records the
-  disposition of the untracked `list-entries` diagnostic, which requires rebuilding
-  that capability as a supported subcommand. Never reach for `bin/list-entries`; that
-  binary is built from an untracked `cmd/` directory and is not a supported
-  surface.
+- **A date's remote entries are enumerated by `review`.** `review` performs the
+  day's authoritative collection read and prints every observed remote entry for
+  the date with its full id, span and description (`Remote entries (<date>):`),
+  plus `remote observation failed:` if that read failed and a non-blocking
+  `remote collision:` warning for a duplicate-looking overlap. `preview` separately
+  re-observes the remote **read-only** and reports it — `remote observed:`,
+  `remote complete:`, and `remote=<id>` on each operation it would edit. Offline
+  (`--offline`, or no configured endpoint) is reported honestly as
+  `remote observed: unobserved (offline; no remote was contacted)` with
+  `remote complete: false`, because nothing about the remote is known. Never reach
+  for `bin/list-entries`; that binary is built from an untracked `cmd/` directory
+  and is not a supported surface (issue #28 records its disposition).
 
 ## Execution workflow
 

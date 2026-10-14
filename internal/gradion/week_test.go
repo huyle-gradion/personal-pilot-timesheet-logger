@@ -257,6 +257,44 @@ func TestListEntries_EmptyWeekPayloadIsSchemaError(t *testing.T) {
 	}
 }
 
+// OBSERVATION-SURFACE-1: a REAL read marks the listing OBSERVED, so an offline
+// (UNOBSERVED) listing can never be mistaken for one the client actually read.
+// Fail-before: the Observed field did not exist, so this test did not compile and
+// no real listing carried the signal.
+func TestListEntries_RealReadIsObserved(t *testing.T) {
+	c := weekFake(t, func(name string, _ map[string]any) callOutcome {
+		if name != ToolGetMyWeek {
+			return callOutcome{}
+		}
+		return weekEnvelope(weekDayFixture("2026-10-06", weekEntryFixture("e1", "09:00", "10:00", "cls-1", "work", "")))
+	})
+	l, err := c.ListEntries(context.Background(), "2026-10-06", "2026-10-06", 0)
+	if err != nil {
+		t.Fatalf("ListEntries: %v", err)
+	}
+	if !l.Observed {
+		t.Fatal("a real read must mark the listing OBSERVED")
+	}
+}
+
+// A FAILED read returns no listing at all, so Observed is false: the client never
+// claims an observation it did not make.
+func TestListEntries_FailedReadIsNotObserved(t *testing.T) {
+	c := weekFake(t, func(name string, _ map[string]any) callOutcome {
+		if name != ToolGetMyWeek {
+			return callOutcome{}
+		}
+		return callOutcome{IsError: true, Text: "tool failed"}
+	})
+	l, err := c.ListEntries(context.Background(), "2026-10-06", "2026-10-06", 0)
+	if err == nil {
+		t.Fatal("want a read error")
+	}
+	if l.Observed {
+		t.Fatal("a failed read must not yield an OBSERVED listing")
+	}
+}
+
 func TestClassifications_ReferenceEnvelopeFailsClosedOnUnknownShape(t *testing.T) {
 	f := newFakeMCP()
 	f.onCall = func(name string, _ map[string]any) callOutcome {

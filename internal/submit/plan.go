@@ -63,7 +63,13 @@ func BuildPlan(rec workflow.Record, obs gradion.Listing, adoptions []Adoption, r
 	if unresolved := workflow.UnresolvedOperations(&rec); len(unresolved) > 0 {
 		reasons = append(reasons, "unresolved_operation")
 	}
-	if !obs.Complete {
+	// An INCOMPLETE but OBSERVED listing blocks: absence cannot be established
+	// from a partial remote read, so a create could duplicate an unseen entry. An
+	// UNOBSERVED listing (offline: no remote was contacted) is the supported
+	// local-only mode and does not block here; the plan honestly records
+	// RemoteComplete=false and a ZERO RemoteObservedAt instead of fabricating an
+	// observation.
+	if obs.Observed && !obs.Complete {
 		reasons = append(reasons, "remote_listing_incomplete")
 	}
 	for _, u := range res.Unresolved {
@@ -238,7 +244,15 @@ func overlappingUnmappedRemote(date, start, end string, entries []workflow.Remot
 	return ""
 }
 
+// observedAt is the plan's recorded remote observation time. An UNOBSERVED
+// listing (offline) has NO observation time: it returns the ZERO time, never a
+// local "now" standing in for a remote read it never made. The now fallback
+// applies ONLY to the defensive case of an OBSERVED listing that carries no
+// timestamp.
 func observedAt(obs gradion.Listing, now time.Time) time.Time {
+	if !obs.Observed {
+		return time.Time{}
+	}
 	if obs.ObservedAt.IsZero() {
 		return now
 	}

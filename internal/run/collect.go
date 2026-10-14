@@ -24,14 +24,24 @@ type CollectResult struct {
 	NoSourcesConfigured bool `json:"no_sources_configured,omitempty"`
 	// RemoteObservationError is a non-fatal warning set when the
 	// collection-time remote read failed. Evidence collection still succeeds and
-	// no fabricated observation is persisted. It is returned for PROGRAMMATIC
-	// consumers: no CLI surface prints it yet (see issue #49).
+	// no fabricated observation is persisted. It is surfaced by `review` (see
+	// issue #49).
 	RemoteObservationError string `json:"remote_observation_error,omitempty"`
+	// RemoteObserved is true when the collection-time remote read SUCCEEDED and
+	// produced an OBSERVED listing. It is false offline (no remote was contacted)
+	// and on a failed read (RemoteObservationError set). It is ADDITIVE.
+	RemoteObserved bool `json:"remote_observed,omitempty"`
+	// RemoteEntries is the day's OBSERVED remote entries, set from the SAME
+	// listing the observation is persisted from, so a CLI surface can enumerate a
+	// date's remote entries with their ids (see issue #43). It is empty when the
+	// remote was not observed. It is ADDITIVE and shares the listing's backing
+	// array, which is read-only by contract.
+	RemoteEntries []workflow.RemoteState `json:"remote_entries,omitempty"`
 	// RemoteCollisions lists remote entry ids observed during collection whose
 	// span overlaps a confirmed interval on the same date. A duplicate-looking
 	// signal ONLY: it never creates a mapping, never proposes, and never blocks
-	// collection. It is returned for PROGRAMMATIC consumers; no CLI surface
-	// prints it yet (see issue #49).
+	// collection. It is surfaced by `review` as a non-blocking warning (see issue
+	// #49).
 	RemoteCollisions []string `json:"remote_collisions,omitempty"`
 }
 
@@ -147,6 +157,8 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 			// That is safe by contract: nothing mutates a listing's entries, and
 			// the observation is serialized on write. It is also never mutated
 			// after this point, so a future consumer must treat it as read-only.
+			out.RemoteObserved = listing.Observed
+			out.RemoteEntries = listing.Entries
 			rec.RemoteObservation = &workflow.RemoteObservation{
 				Date:       date,
 				ObservedAt: listing.ObservedAt,

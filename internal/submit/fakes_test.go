@@ -62,7 +62,7 @@ func (f *fakeRemote) ListEntries(ctx context.Context, dateFrom, dateTo string, l
 	if f.incompleteAt > 0 && f.listCalls == f.incompleteAt {
 		complete = false
 	}
-	return gradion.Listing{Complete: complete, ObservedAt: testNow, Entries: entries}, nil
+	return gradion.Listing{Observed: true, Complete: complete, ObservedAt: testNow, Entries: entries}, nil
 }
 
 // EntryByID is the bounded stable-ID read-back used to verify an

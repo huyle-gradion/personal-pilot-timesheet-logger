@@ -488,6 +488,65 @@ func TestPreview_OfflineIsZeroRemoteWrites(t *testing.T) {
 	}
 }
 
+// OBSERVATION-SURFACE-1: an OFFLINE preview (nil Remote) is UNOBSERVED. The plan
+// records a ZERO RemoteObservedAt and RemoteComplete=false, and PlanResult reports
+// RemoteObserved=false — no local timestamp stands in for a remote observation.
+// Fail-before: the offline listing was {Complete:true, ObservedAt:now}, so
+// RemoteObservedAt was now and RemoteComplete true.
+func TestPreview_OfflineIsUnobserved(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	rec := readyRecord(date)
+	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error { *x = rec; return nil }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry()}, Config{})
+	pre, err := r.Preview(ctx, date, clsResolver)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if pre.Blocked {
+		t.Fatalf("an offline preview must still plan, got %v", pre.BlockReasons)
+	}
+	if pre.RemoteObserved {
+		t.Error("an offline preview must report RemoteObserved=false")
+	}
+	if !pre.Plan.RemoteObservedAt.IsZero() {
+		t.Errorf("an offline plan must record a ZERO RemoteObservedAt, got %v", pre.Plan.RemoteObservedAt)
+	}
+	if pre.Plan.RemoteComplete {
+		t.Error("an offline plan must record RemoteComplete=false")
+	}
+}
+
+// OBSERVATION-SURFACE-1: an ONLINE preview reports the observed timestamp and
+// complete=true, and PlanResult reports RemoteObserved=true.
+func TestPreview_OnlineReportsObserved(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	rec := readyRecord(date)
+	if _, err := store.UpdateDay(ctx, date, func(x *workflow.Record) error { *x = rec; return nil }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: newFakeRemote()}, Config{})
+	pre, err := r.Preview(ctx, date, clsResolver)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if pre.Blocked {
+		t.Fatalf("want a plan, got %v", pre.BlockReasons)
+	}
+	if !pre.RemoteObserved {
+		t.Error("an online preview must report RemoteObserved=true")
+	}
+	if !pre.Plan.RemoteObservedAt.Equal(fixedNow()) {
+		t.Errorf("an online plan must record the observed timestamp, got %v", pre.Plan.RemoteObservedAt)
+	}
+	if !pre.Plan.RemoteComplete {
+		t.Error("an online plan must record RemoteComplete=true")
+	}
+}
+
 // S8L1-7: Resolve adopts an unresolved operation through the explicit decision.
 func TestResolve_AdoptUnresolved(t *testing.T) {
 	store := newStore(t)

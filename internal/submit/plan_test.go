@@ -32,7 +32,7 @@ func reviewedRecord() workflow.Record {
 }
 
 func completeListing(entries ...workflow.RemoteState) gradion.Listing {
-	return gradion.Listing{Complete: true, ObservedAt: testNow, Entries: entries}
+	return gradion.Listing{Observed: true, Complete: true, ObservedAt: testNow, Entries: entries}
 }
 
 func remoteState(id, start, end, class, desc string) workflow.RemoteState {
@@ -420,5 +420,41 @@ func TestBuildPlan_CreateWithNonOverlappingUnmappedRemote(t *testing.T) {
 	}
 	if len(res.Plan.Operations) != 1 || res.Plan.Operations[0].Kind != workflow.PlanOpCreate {
 		t.Fatalf("want one create, got %+v", res.Plan.Operations)
+	}
+}
+
+// OBSERVATION-SURFACE-1: an UNOBSERVED listing (offline: no remote was contacted)
+// does not block the plan, but it records NO remote observation: RemoteObservedAt
+// is the ZERO time (never a local "now") and RemoteComplete is false.
+// Fail-before: the old offline listing was {Complete:true, ObservedAt:now}, so
+// RemoteObservedAt was now and RemoteComplete true.
+func TestBuildPlan_UnobservedListingRecordsNoObservation(t *testing.T) {
+	rec := reviewedRecord()
+	res, err := BuildPlan(rec, gradion.Listing{Observed: false, Complete: false}, nil, alwaysResolver("cls-1"), testNow)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if res.Blocked {
+		t.Fatalf("an unobserved (offline) listing must not block, got %v", res.Reasons)
+	}
+	if !res.Plan.RemoteObservedAt.IsZero() {
+		t.Errorf("an unobserved listing must record a ZERO RemoteObservedAt, got %v", res.Plan.RemoteObservedAt)
+	}
+	if res.Plan.RemoteComplete {
+		t.Error("an unobserved listing must record RemoteComplete=false")
+	}
+}
+
+// observedAt: the now fallback is for an OBSERVED listing with no timestamp only.
+func TestObservedAt_UnobservedIsZeroObservedFallsBackToNow(t *testing.T) {
+	if got := observedAt(gradion.Listing{}, testNow); !got.IsZero() {
+		t.Errorf("an unobserved listing must yield the zero time, got %v", got)
+	}
+	if got := observedAt(gradion.Listing{Observed: true}, testNow); !got.Equal(testNow) {
+		t.Errorf("an observed listing without a timestamp must fall back to now, got %v", got)
+	}
+	stamped := testNow.Add(-time.Hour)
+	if got := observedAt(gradion.Listing{Observed: true, ObservedAt: stamped}, testNow); !got.Equal(stamped) {
+		t.Errorf("an observed listing's own timestamp must win, got %v", got)
 	}
 }
