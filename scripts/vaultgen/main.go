@@ -16,8 +16,11 @@
 // note, not the dashboard, not a daily note, and not any repository file.
 //
 // Standard library only. The generated BODY is deterministic: no wall-clock
-// value appears in it, so only the header's generated_at (and the generation
-// date) vary between runs, and body_sha256 changes only when a source changes.
+// value appears in it, so only the header's three wall-clock fields
+// (generated_at, source_date, and the do-not-edit comment's date) vary between
+// runs, and body_sha256 changes only when a source changes. --check excludes
+// exactly those three fields, so a file generated on one day still checks OK on
+// the next.
 //
 // Usage:
 //
@@ -90,6 +93,10 @@ func main() {
 
 	if *write == *check {
 		fmt.Fprintln(os.Stderr, "usage: vaultgen --write|--check [--vault DIR]")
+		os.Exit(2)
+	}
+	if err := validateVaultRoot(*vault); err != nil {
+		fmt.Fprintf(os.Stderr, "usage: vaultgen --write|--check --vault DIR: %v\n", err)
 		os.Exit(2)
 	}
 
@@ -225,12 +232,12 @@ func renderBody(items []Item, lessons []string, adrs []ADR, commit string) strin
 	return b.String()
 }
 
-// splitHeader separates the leading header/frontmatter block from the body.
-// The body is everything after the frontmatter's closing "---" line, and is
-// exactly what body_sha256 hashes.
-func splitHeader(content string) (header, body string, ok bool) {
+// delimIndices locates the frontmatter's opening and closing "---" lines. It
+// skips any leading do-not-edit HTML comment, so the delimiters it returns are
+// always the real frontmatter pair.
+func delimIndices(content string) (open, close int, ok bool) {
 	lines := strings.SplitAfter(content, "\n")
-	open := -1
+	open = -1
 	for i, l := range lines {
 		if strings.TrimRight(l, "\n") == "---" {
 			open = i
@@ -238,18 +245,48 @@ func splitHeader(content string) (header, body string, ok bool) {
 		}
 	}
 	if open < 0 {
-		return "", "", false
+		return 0, 0, false
 	}
 	for j := open + 1; j < len(lines); j++ {
 		if strings.TrimRight(lines[j], "\n") == "---" {
-			return strings.Join(lines[:j+1], ""), strings.Join(lines[j+1:], ""), true
+			return open, j, true
 		}
 	}
-	return "", "", false
+	return 0, 0, false
 }
 
+// splitHeader separates the leading header/frontmatter block from the body.
+// The body is everything after the frontmatter's closing "---" line, and is
+// exactly what body_sha256 hashes.
+func splitHeader(content string) (header, body string, ok bool) {
+	lines := strings.SplitAfter(content, "\n")
+	_, close, ok := delimIndices(content)
+	if !ok {
+		return "", "", false
+	}
+	return strings.Join(lines[:close+1], ""), strings.Join(lines[close+1:], ""), true
+}
+
+// frontmatterBlock returns ONLY the text between the two "---" delimiter lines,
+// excluding the delimiters themselves and any leading do-not-edit HTML comment.
+// The comment is deliberately outside the block: a body_sha256 (or any other
+// stamp) placed in the comment must never be read as the real stamp.
+func frontmatterBlock(content string) (string, bool) {
+	lines := strings.SplitAfter(content, "\n")
+	open, close, ok := delimIndices(content)
+	if !ok {
+		return "", false
+	}
+	return strings.Join(lines[open+1:close], ""), true
+}
+
+// hex64 is the exact shape a body_sha256 must have: 64 lowercase hex chars.
+var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 // verifyIntact reports whether a file's body still matches the body_sha256 its
-// own frontmatter declares. A mismatch means the file was HAND-EDITED.
+// own frontmatter declares. A mismatch means the file was HAND-EDITED. A stamp
+// that is absent or not exactly 64 lowercase hex characters is treated as an
+// unreadable stamp and refused, never trusted.
 func verifyIntact(content string) error {
 	_, body, ok := splitHeader(content)
 	if !ok {
@@ -258,6 +295,9 @@ func verifyIntact(content string) error {
 	declared := frontmatterField(content, "body_sha256")
 	if declared == "" {
 		return errors.New("no body_sha256 declared in the frontmatter")
+	}
+	if !hex64.MatchString(declared) {
+		return fmt.Errorf("unreadable stamp: body_sha256 %q is not 64 lowercase hex characters", declared)
 	}
 	got := sha256Hex(body)
 	if got != declared {
@@ -271,13 +311,15 @@ func sha256Hex(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// frontmatterField reads a scalar from the frontmatter block only.
+// frontmatterField reads a scalar from the frontmatter block BETWEEN the two
+// "---" delimiters only. The leading do-not-edit comment is ignored, so a
+// stamp hidden in the comment cannot shadow the real one.
 func frontmatterField(content, key string) string {
-	header, _, ok := splitHeader(content)
+	block, ok := frontmatterBlock(content)
 	if !ok {
 		return ""
 	}
-	for _, l := range strings.Split(header, "\n") {
+	for _, l := range strings.Split(block, "\n") {
 		if k, v, ok := splitKV(strings.TrimSpace(l)); ok && k == key {
 			return unquote(v)
 		}
@@ -285,27 +327,63 @@ func frontmatterField(content, key string) string {
 	return ""
 }
 
-// normalizeForCompare blanks the fields that legitimately vary between runs so
-// a check does not report a false difference. A difference in generated_at
-// ALONE is NOT a difference; neither is one in source_date, which is simply the
-// generation date.
+// normalizeForCompare blanks the wall-clock fields that legitimately vary
+// between runs so a check does not report a false difference. Exactly three
+// fields are excluded, and each is blanked only inside the HEADER block:
+//
+//   - generated_at:   the frontmatter's exact run timestamp (RFC3339)
+//   - source_date:    the frontmatter's generation date
+//   - date:           the do-not-edit comment's generation date (a third
+//     wall-clock field, which changes at midnight and would otherwise make a
+//     file generated on day D look STALE when checked on day D+1)
+//
+// The body is NOT normalized: it contains no wall-clock value, and a body line
+// that merely begins with one of these keys must stay untouched so a real body
+// change is never masked.
 func normalizeForCompare(content string) string {
-	lines := strings.Split(content, "\n")
+	header, body, ok := splitHeader(content)
+	if !ok {
+		// No header block: leave the content as-is so a malformed file still
+		// compares (and mismatches) rather than normalizing to a false OK.
+		return content
+	}
+	lines := strings.Split(header, "\n")
 	for i, l := range lines {
 		switch {
 		case strings.HasPrefix(l, "generated_at:"):
 			lines[i] = "generated_at: <excluded>"
 		case strings.HasPrefix(l, "source_date:"):
 			lines[i] = "source_date: <excluded>"
+		case strings.HasPrefix(l, "date:"):
+			lines[i] = "date: <excluded>"
 		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n") + body
+}
+
+// validateVaultRoot rejects a vault root that is empty or relative. An empty
+// value would make filepath.Join(vaultRoot, generatedRel) resolve against the
+// process working directory — inside the repository after the wrapper's cd —
+// breaking the "never writes a repository file" invariant. A relative path is
+// refused for the same reason: its meaning depends on the working directory.
+func validateVaultRoot(vaultRoot string) error {
+	if vaultRoot == "" {
+		return errors.New("--vault must not be empty")
+	}
+	if !filepath.IsAbs(vaultRoot) {
+		return fmt.Errorf("--vault must be an absolute path, got %q", vaultRoot)
+	}
+	return nil
 }
 
 // runWrite regenerates the file. If the target already exists it first proves
 // the file is intact; a hand edit (or an unreadable stamp) makes it REFUSE and
 // exit non-zero without overwriting.
 func runWrite(repoRoot, vaultRoot string, now time.Time, commit string, out io.Writer) int {
+	if err := validateVaultRoot(vaultRoot); err != nil {
+		fmt.Fprintf(out, "usage: vaultgen --write|--check --vault DIR: %v\n", err)
+		return 2
+	}
 	target := filepath.Join(vaultRoot, generatedRel)
 	want, err := generate(repoRoot, now, commit)
 	if err != nil {
@@ -334,6 +412,10 @@ func runWrite(repoRoot, vaultRoot string, now time.Time, commit string, out io.W
 // runCheck regenerates in memory and compares against disk. It lists each
 // differing file and whether the cause is staleness or a hand edit.
 func runCheck(repoRoot, vaultRoot string, now time.Time, commit string, out io.Writer) int {
+	if err := validateVaultRoot(vaultRoot); err != nil {
+		fmt.Fprintf(out, "usage: vaultgen --write|--check --vault DIR: %v\n", err)
+		return 2
+	}
 	target := filepath.Join(vaultRoot, generatedRel)
 	want, err := generate(repoRoot, now, commit)
 	if err != nil {

@@ -12,12 +12,12 @@ source: docs/orchestration/status.yaml
 source_commit: abc1234
 source_date: 2026-10-14
 generated_at: 2026-10-14T09:30:00Z
-body_sha256: cefd6090db4d295274ece691319914926cb622af551582505c150f0f38ce7bbe
+body_sha256: 04791a688f3be2c68016c09d07b386e7b226e3ac76140d4dd62214d114d4476a
 ---
 
 # assignment-1 (generated)
 
-Status: generated from `docs/orchestration/status.yaml` at commit `abc1234`; 3 tracked items.
+Status: generated from `docs/orchestration/status.yaml` at commit `abc1234`; 4 tracked items.
 
 ## Milestones
 
@@ -26,6 +26,7 @@ Status: generated from `docs/orchestration/status.yaml` at commit `abc1234`; 3 t
 | EXAMPLE-1 | merged | 2026-01-02 | aaa1111, bbb2222 | #7 | #11, #12 | A merged slice used by the golden fixture. |
 | MERGE-2 | merged | 2026-01-03 | ccc3333 | #7 | #11 | A merge used by the golden fixture. |
 | DECISION-3 | implemented | 2026-01-04 | — | — | — | A decision with no commits and no PR. |
+| PIPE-4 | implemented | 2026-01-05 | ddd4444 | — | — | A value with a pipe \| in it. |
 
 ## Links
 

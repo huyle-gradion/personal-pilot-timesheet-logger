@@ -26,7 +26,12 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --vault)
-      VAULT="${2:-}"
+      if [ $# -lt 2 ]; then
+        echo "Missing value for --vault" >&2
+        echo "Usage: ./scripts/sync-vault.sh --write|--check [--vault DIR]" >&2
+        exit 2
+      fi
+      VAULT="$2"
       shift 2
       ;;
     *)
@@ -38,6 +43,14 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "${MODE}" ]; then
+  echo "Usage: ./scripts/sync-vault.sh --write|--check [--vault DIR]" >&2
+  exit 2
+fi
+
+# An empty --vault would resolve the target against the repository and write a
+# repository file, so refuse it explicitly with a usage error.
+if [ -z "${VAULT}" ]; then
+  echo "--vault must not be empty" >&2
   echo "Usage: ./scripts/sync-vault.sh --write|--check [--vault DIR]" >&2
   exit 2
 fi

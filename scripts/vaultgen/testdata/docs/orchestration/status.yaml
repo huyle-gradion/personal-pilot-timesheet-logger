@@ -26,3 +26,12 @@ items:
     issues: []
     date: 2026-01-04
     one_line: "A decision with no commits and no PR."
+
+  - id: PIPE-4
+    kind: slice
+    state: implemented
+    commits: [ddd4444]
+    pr: null
+    issues: []
+    date: 2026-01-05
+    one_line: "A value with a pipe | in it."
