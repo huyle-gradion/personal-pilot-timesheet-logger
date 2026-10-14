@@ -24,6 +24,8 @@ const (
 	FilePermPrivate os.FileMode = 0600
 	// runsSubdir holds one JSON file per run, keyed by run id.
 	runsSubdir = "runs"
+	// sessionsSubdir holds one JSON file per session, keyed by session id.
+	sessionsSubdir = "sessions"
 )
 
 // ErrAggregateNotFound is returned when a day has no aggregate file.
@@ -37,7 +39,8 @@ type Store struct {
 	dir string
 }
 
-// NewStore creates the metrics store rooted at dir, creating <dir>/runs.
+// NewStore creates the metrics store rooted at dir, creating <dir>/runs and
+// <dir>/sessions.
 func NewStore(dir string) (*Store, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -46,6 +49,9 @@ func NewStore(dir string) (*Store, error) {
 	dir = filepath.Clean(dir)
 	if err := os.MkdirAll(filepath.Join(dir, runsSubdir), DirPermPrivate); err != nil {
 		return nil, fmt.Errorf("metrics: create metrics directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, sessionsSubdir), DirPermPrivate); err != nil {
+		return nil, fmt.Errorf("metrics: create sessions directory: %w", err)
 	}
 	return &Store{dir: dir}, nil
 }
@@ -59,6 +65,10 @@ func (s *Store) runPath(runID string) string {
 
 func (s *Store) aggregatePath(date string) string {
 	return filepath.Join(s.dir, date+".json")
+}
+
+func (s *Store) sessionPath(sessionID string) string {
+	return filepath.Join(s.dir, sessionsSubdir, sessionID+".json")
 }
 
 // WriteRun persists a run file. It writes ONLY when the run file is absent or its
@@ -137,6 +147,82 @@ func (s *Store) ListRuns(date string) ([]RunRecord, error) {
 	return out, nil
 }
 
+// WriteSession persists a session file. It mirrors WriteRun: it writes ONLY when
+// the session file is absent or its ContentHash differs from rec.ContentHash, so
+// re-deriving an unchanged session is a no-op. It returns whether a write
+// occurred. LoggedDate and Association may be set by the caller before this call;
+// they are NOT part of the idempotency key.
+func (s *Store) WriteSession(rec SessionRecord) (bool, error) {
+	id, err := sanitizeRunID(rec.SessionID)
+	if err != nil {
+		return false, err
+	}
+	path := s.sessionPath(id)
+
+	existing, rerr := readSessionFile(path)
+	switch {
+	case rerr == nil:
+		if existing.ContentHash != "" && existing.ContentHash == rec.ContentHash {
+			return false, nil
+		}
+	case errors.Is(rerr, os.ErrNotExist):
+		// fall through to write
+	default:
+		return false, rerr
+	}
+
+	data, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("metrics: marshal session: %w", err)
+	}
+	if err := atomicWrite(path, append(data, '\n')); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ReadSession reads a single session by id.
+func (s *Store) ReadSession(sessionID string) (SessionRecord, error) {
+	id, err := sanitizeRunID(sessionID)
+	if err != nil {
+		return SessionRecord{}, err
+	}
+	return readSessionFile(s.sessionPath(id))
+}
+
+// ListSessions returns every stored session, ordered by file name. A missing
+// sessions directory yields zero sessions, never an error. It is bounded by
+// MaxRunFilesCount.
+func (s *Store) ListSessions() ([]SessionRecord, error) {
+	entries, err := os.ReadDir(filepath.Join(s.dir, sessionsSubdir))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("metrics: read sessions directory: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	if len(names) > MaxRunFilesCount {
+		names = names[:MaxRunFilesCount]
+	}
+	out := make([]SessionRecord, 0, len(names))
+	for _, n := range names {
+		rec, err := readSessionFile(filepath.Join(s.dir, sessionsSubdir, n))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
 // WriteAggregate persists the daily aggregate. It writes only when the on-disk
 // bytes differ, so re-aggregating identical inputs is a byte-identical no-op. It
 // returns whether a write occurred.
@@ -190,6 +276,17 @@ func (s *Store) Aggregate(ctx context.Context, date string, src RecordSource) (D
 	if err != nil {
 		return DailyAggregate{}, err
 	}
+	sessions, err := s.ListSessions()
+	if err != nil {
+		return DailyAggregate{}, err
+	}
+	// The day's session lane is ONLY sessions associated with this exact date. An
+	// unassociated session is excluded from every day's lane (its usage must never
+	// be attributed to a day it may not belong to), but it stays VISIBLE via the
+	// UnassociatedSessions count, which applySessions cannot supply here because it
+	// is handed the associated lane only.
+	applySessions(&agg, sessionsForDate(sessions, date))
+	agg.UnassociatedSessions = unassociatedSessionsForDate(sessions, date)
 	if _, err := s.WriteAggregate(agg); err != nil {
 		return DailyAggregate{}, err
 	}
@@ -232,6 +329,18 @@ func readRunFile(path string) (RunRecord, error) {
 	var rec RunRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return RunRecord{}, fmt.Errorf("metrics: corrupt run file %s: %w", filepath.Base(path), err)
+	}
+	return rec, nil
+}
+
+func readSessionFile(path string) (SessionRecord, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SessionRecord{}, err
+	}
+	var rec SessionRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return SessionRecord{}, fmt.Errorf("metrics: corrupt session file %s: %w", filepath.Base(path), err)
 	}
 	return rec, nil
 }

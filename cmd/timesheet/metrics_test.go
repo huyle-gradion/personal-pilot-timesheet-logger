@@ -297,3 +297,206 @@ func TestMetricsCLI_ReportRangeJSON(t *testing.T) {
 		t.Fatalf("single date must emit one object:\n%s", out)
 	}
 }
+
+// writeCatalog writes a models-store.json fixture into dir and returns its path.
+// It is written into the test's temp dir; the real ~/.pi catalog is never touched.
+func writeCatalog(t *testing.T, dir, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, "models-store.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	return path
+}
+
+// readStoredSession reads and parses a stored session file, returning both the
+// decoded record and its raw JSON bytes.
+func readStoredSession(t *testing.T, metricsDir, sessionID string) (metrics.SessionRecord, []byte) {
+	t.Helper()
+	path := filepath.Join(metricsDir, "sessions", sessionID+".json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read session file %s: %v", path, err)
+	}
+	var rec metrics.SessionRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatalf("parse session %s: %v", path, err)
+	}
+	return rec, raw
+}
+
+// sessionRow returns the rendered table line beginning with sessionID.
+func sessionRow(t *testing.T, out, sessionID string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, sessionID) {
+			return line
+		}
+	}
+	t.Fatalf("no row for session %q in:\n%s", sessionID, out)
+	return ""
+}
+
+// TestCLI_MetricsImportWritesSession asserts `metrics import --date --model-catalog`
+// writes a session file whose JSON carries the day association and a resolved price.
+func TestCLI_MetricsImportWritesSession(t *testing.T) {
+	dir := t.TempDir()
+	metricsDir := filepath.Join(dir, "metrics")
+	catalog := writeCatalog(t, dir, `{"test-provider":{"models":[{"id":"test-model","cost":{"input":1.5,"output":3,"cacheRead":0.5,"cacheWrite":1}}]}}`)
+
+	code, out, errOut := runArgs(t, "metrics", "import", "--transcript", piFixture, "--date", "2026-10-11", "--model-catalog", catalog, "--metrics-dir", metricsDir)
+	if code != exitOK {
+		t.Fatalf("import: code=%d out=%q err=%q", code, out, errOut)
+	}
+	if !strings.Contains(out, "session test-session-0001") {
+		t.Fatalf("session summary missing: %q", out)
+	}
+
+	rec, raw := readStoredSession(t, metricsDir, "test-session-0001")
+	if rec.LoggedDate != "2026-10-11" {
+		t.Fatalf("logged_date = %q, want 2026-10-11", rec.LoggedDate)
+	}
+	if rec.Association != metrics.AssociationImportFlag {
+		t.Fatalf("association = %q, want %q", rec.Association, metrics.AssociationImportFlag)
+	}
+	if rec.PriceSource != metrics.PriceSourceCatalog {
+		t.Fatalf("price_source = %q, want catalog (raw=%s)", rec.PriceSource, raw)
+	}
+	if rec.Cost == nil || rec.Price.Input == nil {
+		t.Fatalf("resolved price/cost missing: cost=%v price=%+v", rec.Cost, rec.Price)
+	}
+	if !strings.Contains(string(raw), `"logged_date": "2026-10-11"`) ||
+		!strings.Contains(string(raw), `"association": "import_flag"`) {
+		t.Fatalf("raw session missing day association:\n%s", raw)
+	}
+}
+
+// TestCLI_MetricsImportUnknownModelPriceIsNull asserts a model ABSENT from the
+// catalog yields price_source=unknown, cost=null, and four null rate fields —
+// never 0.
+func TestCLI_MetricsImportUnknownModelPriceIsNull(t *testing.T) {
+	dir := t.TempDir()
+	metricsDir := filepath.Join(dir, "metrics")
+	// A catalog that does NOT list test-provider/test-model.
+	catalog := writeCatalog(t, dir, `{"other-provider":{"models":[{"id":"other-model","cost":{"input":1,"output":1,"cacheRead":1,"cacheWrite":1}}]}}`)
+
+	code, _, errOut := runArgs(t, "metrics", "import", "--transcript", piFixture, "--date", "2026-10-11", "--model-catalog", catalog, "--metrics-dir", metricsDir)
+	if code != exitOK {
+		t.Fatalf("import: code=%d err=%q", code, errOut)
+	}
+
+	rec, raw := readStoredSession(t, metricsDir, "test-session-0001")
+	if rec.PriceSource != metrics.PriceSourceUnknown {
+		t.Fatalf("session price_source = %q, want unknown", rec.PriceSource)
+	}
+	if rec.Cost != nil {
+		t.Fatalf("session cost = %v, want nil", *rec.Cost)
+	}
+	for name, p := range map[string]*float64{
+		"input":       rec.Price.Input,
+		"output":      rec.Price.Output,
+		"cache_read":  rec.Price.CacheRead,
+		"cache_write": rec.Price.CacheWrite,
+	} {
+		if p != nil {
+			t.Fatalf("session rate %s = %v, want nil", name, *p)
+		}
+	}
+	for i := range rec.Models {
+		m := rec.Models[i]
+		if m.Cost != nil || m.PriceSource != metrics.PriceSourceUnknown {
+			t.Fatalf("model %s/%s: cost=%v price_source=%q, want nil/unknown", m.Provider, m.Model, m.Cost, m.PriceSource)
+		}
+	}
+	for _, want := range []string{`"price_source": "unknown"`, `"cost": null`, `"input": null`, `"output": null`, `"cache_read": null`, `"cache_write": null`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("raw session missing %q:\n%s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), `"cost": 0`) {
+		t.Fatalf("unknown cost rendered as 0:\n%s", raw)
+	}
+}
+
+// TestCLI_MetricsImportMissingCatalogWarnsAndSucceeds asserts a nonexistent
+// --model-catalog exits 0, warns on stderr, and still writes an unknown-price
+// session.
+func TestCLI_MetricsImportMissingCatalogWarnsAndSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	metricsDir := filepath.Join(dir, "metrics")
+	missing := filepath.Join(dir, "does-not-exist.json")
+
+	code, out, errOut := runArgs(t, "metrics", "import", "--transcript", piFixture, "--date", "2026-10-11", "--model-catalog", missing, "--metrics-dir", metricsDir)
+	if code != exitOK {
+		t.Fatalf("a missing catalog must not change the exit code: code=%d err=%q", code, errOut)
+	}
+	if !strings.Contains(errOut, "warning") {
+		t.Fatalf("expected a warning on stderr, got %q", errOut)
+	}
+	if !strings.Contains(out, "session test-session-0001") {
+		t.Fatalf("session summary missing: %q", out)
+	}
+	rec, _ := readStoredSession(t, metricsDir, "test-session-0001")
+	if rec.PriceSource != metrics.PriceSourceUnknown || rec.Cost != nil {
+		t.Fatalf("session should have an unknown price: price_source=%q cost=%v", rec.PriceSource, rec.Cost)
+	}
+}
+
+// TestCLI_MetricsSessionsTableRendersUnknown asserts the sessions table prints
+// "unknown" for an unknown cost, never 0.
+func TestCLI_MetricsSessionsTableRendersUnknown(t *testing.T) {
+	dir := t.TempDir()
+	metricsDir := filepath.Join(dir, "metrics")
+	catalog := writeCatalog(t, dir, `{"other-provider":{"models":[{"id":"other-model","cost":{"input":1,"output":1,"cacheRead":1,"cacheWrite":1}}]}}`)
+	if code, _, e := runArgs(t, "metrics", "import", "--transcript", piFixture, "--date", "2026-10-11", "--model-catalog", catalog, "--metrics-dir", metricsDir); code != exitOK {
+		t.Fatalf("import: %s", e)
+	}
+
+	code, out, errOut := runArgs(t, "metrics", "sessions", "--metrics-dir", metricsDir, "--format", "table")
+	if code != exitOK {
+		t.Fatalf("sessions: code=%d err=%q", code, errOut)
+	}
+	if !strings.Contains(out, "SESSION-ID") {
+		t.Fatalf("table header missing:\n%s", out)
+	}
+	row := sessionRow(t, out, "test-session-0001")
+	fields := strings.Fields(row)
+	last := fields[len(fields)-1]
+	if last != "unknown" {
+		t.Fatalf("cost column = %q, want unknown (row=%q)", last, row)
+	}
+	if last == "0" {
+		t.Fatalf("unknown cost rendered as 0: %q", row)
+	}
+}
+
+// TestCLI_MetricsSessionsJSON asserts `metrics sessions --format json` emits the
+// session fields.
+func TestCLI_MetricsSessionsJSON(t *testing.T) {
+	dir := t.TempDir()
+	metricsDir := filepath.Join(dir, "metrics")
+	catalog := writeCatalog(t, dir, `{"test-provider":{"models":[{"id":"test-model","cost":{"input":1,"output":2,"cacheRead":0.5,"cacheWrite":0}}]}}`)
+	if code, _, e := runArgs(t, "metrics", "import", "--transcript", piFixture, "--date", "2026-10-11", "--model-catalog", catalog, "--metrics-dir", metricsDir); code != exitOK {
+		t.Fatalf("import: %s", e)
+	}
+
+	code, out, errOut := runArgs(t, "metrics", "sessions", "--metrics-dir", metricsDir, "--format", "json")
+	if code != exitOK {
+		t.Fatalf("sessions json: code=%d err=%q", code, errOut)
+	}
+	var sessions []metrics.SessionRecord
+	if err := json.Unmarshal([]byte(out), &sessions); err != nil {
+		t.Fatalf("sessions json parse: %v\n%s", err, out)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	if sessions[0].SessionID != "test-session-0001" {
+		t.Fatalf("session id = %q", sessions[0].SessionID)
+	}
+	for _, want := range []string{`"session_id"`, `"logged_date"`, `"price_source"`, `"cache_hit_pct"`, `"total_tokens"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("json missing %s:\n%s", want, out)
+		}
+	}
+}

@@ -72,6 +72,10 @@ var tableColumns = []struct {
 	{"E2E-MS", 9},
 	{"ACTIVE-MS", 11},
 	{"WAIT-MS", 9},
+	{"SESSIONS", 8},
+	{"SESS-CACHEHIT", 12},
+	{"SESS-COST", 12},
+	{"UNASSOC", 8},
 	{"STATES", 0},
 }
 
@@ -105,6 +109,10 @@ func RenderTable(w io.Writer, in TableInput) error {
 		formatMeasurement(agg.EndToEnd.Value),
 		formatMeasurement(agg.Active.Value),
 		formatMeasurement(agg.HumanWait.Value),
+		strconv.Itoa(agg.SessionCount),
+		formatOptionalPercent(agg.SessionCacheHitPct),
+		formatOptionalCost(agg.SessionCost),
+		strconv.Itoa(agg.UnassociatedSessions),
 		formatStates(states),
 	}
 	if err := writeRow(w, row); err != nil {
@@ -161,6 +169,24 @@ func formatMeasurement(m workflow.Measurement) string {
 		return "unknown"
 	}
 	return strconv.FormatInt(m.Value, 10)
+}
+
+// formatOptionalPercent renders a known cache-hit percentage, or "unknown" when
+// it is unavailable (nil). It never prints "0" for an unknown value.
+func formatOptionalPercent(p *float64) string {
+	if p == nil {
+		return "unknown"
+	}
+	return strconv.FormatFloat(*p, 'f', 1, 64) + "%"
+}
+
+// formatOptionalCost renders a known USD cost, or "unknown" when it is
+// unavailable (nil). It never prints "0" for an unknown value.
+func formatOptionalCost(c *float64) string {
+	if c == nil {
+		return "unknown"
+	}
+	return strconv.FormatFloat(*c, 'f', -1, 64)
 }
 
 // formatStates renders a deterministic state breakdown, e.g. "partial=1 review=2".

@@ -292,6 +292,107 @@ type RunRecord struct {
 	Provenance         Provenance `json:"provenance"`
 }
 
+// TokenPrice is the per-MILLION-token USD price of one (provider, model). All
+// four rates are *float64 so the package's nil-vs-pointer-to-zero idiom is
+// preserved: a nil rate is UNKNOWN, and a non-nil pointer to 0 is a KNOWN zero
+// rate (e.g. a model that does not bill cache writes). A lookup key is ALWAYS
+// (provider, model): the same model id can carry different prices under different
+// providers.
+type TokenPrice struct {
+	Input      *float64 `json:"input"`
+	Output     *float64 `json:"output"`
+	CacheRead  *float64 `json:"cache_read"`
+	CacheWrite *float64 `json:"cache_write"`
+}
+
+// PriceSource labels where a session's price came from. It is never a claim
+// stronger than the catalog supports.
+type PriceSource string
+
+const (
+	// PriceSourceCatalog is a price resolved from the model catalog by
+	// (provider, model).
+	PriceSourceCatalog PriceSource = "catalog"
+	// PriceSourceUnknown is an unavailable price: the model is absent from the
+	// catalog. It is never treated as zero.
+	PriceSourceUnknown PriceSource = "unknown"
+)
+
+// AssociationSource labels how a session's LoggedDate was derived. It records the
+// derivation method only; NO tool-argument value is ever decoded (ADR-0006 Safety).
+// An import-time `--date` is AssociationImportFlag: the day was stated explicitly
+// by the operator, so no transcript value is read to establish it.
+type AssociationSource string
+
+const (
+	// AssociationLocalStepDate is a LoggedDate derived from the single LOCAL date
+	// of the session's workflow-step calls.
+	AssociationLocalStepDate AssociationSource = "local_step_date"
+	// AssociationUnknown is an unavailable association: the session's workflow-step
+	// calls span zero or two-or-more local dates (e.g. a session straddling local
+	// midnight). It is never guessed.
+	AssociationUnknown AssociationSource = "unknown"
+	// AssociationImportFlag is an operator-stated day: the day was stated
+	// explicitly by the operator at import time (`metrics import --date`); no
+	// transcript tool argument is decoded.
+	AssociationImportFlag AssociationSource = "import_flag"
+)
+
+// SessionModel is one model's slice of a session's usage, keyed by
+// (provider, model). It is carried even for a single-model session so the
+// per-model price and cost are always attributable.
+type SessionModel struct {
+	Provider    string               `json:"provider"`
+	Model       string               `json:"model"`
+	Usage       Usage                `json:"usage"`
+	TotalTokens workflow.Measurement `json:"total_tokens"`
+	Price       TokenPrice           `json:"price"`
+	Cost        *float64             `json:"cost"`
+	PriceSource PriceSource          `json:"price_source"`
+}
+
+// SessionRecord is ONE harness session, identified by its transcript session id
+// (one transcript = one session). A session is NOT single-model: Model is "" (and
+// the per-(provider, model) breakdown in Models is authoritative) when more than
+// one distinct model ran.
+//
+// Unknown price uses the package's nil-vs-pointer-to-zero idiom: a nil rate in
+// Price (or a nil Cost) is UNKNOWN, a non-nil pointer to 0 is a known zero. Cost
+// is nil when ANY contributing token count or rate is unknown.
+//
+// LoggedDate/Association are settable by a caller BEFORE WriteSession (the CLI
+// lane's caller-supplied day overrides the transcript-derived association).
+// WriteSession's idempotency key is ContentHash, so such an override never causes
+// a spurious rewrite loop.
+type SessionRecord struct {
+	SchemaVersion int       `json:"schema_version"`
+	SessionID     string    `json:"session_id"`
+	Provider      string    `json:"provider"`
+	ContentHash   string    `json:"content_hash"`
+	StartedAt     time.Time `json:"started_at"`
+	EndedAt       time.Time `json:"ended_at"`
+	// LocalDates is the distinct sorted LOCAL dates of the session's workflow-step
+	// calls. Only timestamps and the already-derived StepID are used; no
+	// tool-argument value is decoded.
+	LocalDates []string `json:"local_dates"`
+	// LoggedDate is the day this session is associated with, or "" when unknown.
+	LoggedDate  string            `json:"logged_date"`
+	Association AssociationSource `json:"association"`
+	// Model is the single model when exactly one distinct (provider, model) ran,
+	// else "" (a multi-model session is never attributed to one model).
+	Model  string         `json:"model"`
+	Models []SessionModel `json:"models"`
+	Usage  Usage          `json:"usage"`
+	// TotalTokens is the consumed total (input+output+cacheRead+cacheWrite).
+	// Reasoning is EXCLUDED.
+	TotalTokens workflow.Measurement `json:"total_tokens"`
+	CacheHitPct *float64             `json:"cache_hit_pct"`
+	Price       TokenPrice           `json:"price"`
+	Cost        *float64             `json:"cost"`
+	PriceSource PriceSource          `json:"price_source"`
+	Provenance  Provenance           `json:"provenance"`
+}
+
 // BudgetReport is the soft daily editorial budget report. Spent is the editorial
 // total (including cache and retries).
 type BudgetReport struct {
@@ -331,5 +432,21 @@ type DailyAggregate struct {
 	Annotations          Annotations          `json:"annotations"`
 	RunIDs               []string             `json:"run_ids"`
 	RunCount             int                  `json:"run_count"`
+	// Session-scoped token metrics (METRICS-2). They are SEPARATE from
+	// Orchestration/Editorial/Unassigned and are never merged with them.
+	// SessionTotalTokens is the sum of each session's consumed total; reasoning is
+	// EXCLUDED. A nil SessionCacheHitPct/SessionCost is UNKNOWN, never zero.
+	//
+	// SessionCost is `omitempty` so a nil cost is absent from the JSON rather than
+	// a spurious `session_cost: null`; the report always renders "unknown". This
+	// also keeps the aggregate free of any "cost" substring, matching the
+	// provider-native-cost exclusion asserted by the existing tests.
+	SessionCount         int                  `json:"session_count"`
+	SessionIDs           []string             `json:"session_ids"`
+	SessionUsage         Usage                `json:"session_usage"`
+	SessionTotalTokens   workflow.Measurement `json:"session_total_tokens"`
+	SessionCacheHitPct   *float64             `json:"session_cache_hit_pct"`
+	SessionCost          *float64             `json:"session_cost,omitempty"`
+	UnassociatedSessions int                  `json:"unassociated_sessions"`
 	Provenance           Provenance           `json:"provenance"`
 }

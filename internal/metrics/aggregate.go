@@ -225,6 +225,106 @@ func applyEditorial(agg *DailyAggregate, rec *workflow.Record) {
 	agg.Budget.State = budgetState(u.Editorial, BudgetTargetTokens)
 }
 
+// applySessions is a PURE, additive roll-up of session-scoped token metrics into
+// agg. The session fields are SEPARATE from Orchestration/Editorial/Unassigned and
+// are never merged with them. SessionTotalTokens sums each session's consumed
+// total (reasoning EXCLUDED). A nil cache-hit or cost stays nil (UNKNOWN), never
+// zero. Duplicate session ids are collapsed; ids are sorted for determinism.
+func applySessions(agg *DailyAggregate, sessions []SessionRecord) {
+	ids := make([]string, 0, len(sessions))
+	seen := make(map[string]struct{}, len(sessions))
+	usage := ZeroUsage()
+	total := workflow.KnownMeasurement(0)
+	unassociated := 0
+	costKnown := true
+	hasCost := false
+	var costSum float64
+	for i := range sessions {
+		s := sessions[i]
+		if _, ok := seen[s.SessionID]; ok {
+			continue
+		}
+		seen[s.SessionID] = struct{}{}
+		ids = append(ids, s.SessionID)
+		usage = usage.Add(s.Usage)
+		total = addMeasurement(total, s.TotalTokens)
+		if s.Association == AssociationUnknown {
+			unassociated++
+		}
+		if s.Cost == nil {
+			costKnown = false
+		} else {
+			costSum += *s.Cost
+			hasCost = true
+		}
+	}
+	sort.Strings(ids)
+	agg.SessionIDs = ids
+	agg.SessionCount = len(ids)
+	agg.SessionUsage = usage
+	agg.SessionTotalTokens = total
+	agg.UnassociatedSessions = unassociated
+	agg.SessionCacheHitPct = CacheHitPercent(usage)
+	if len(ids) > 0 && hasCost && costKnown {
+		c := costSum
+		agg.SessionCost = &c
+	} else {
+		agg.SessionCost = nil
+	}
+}
+
+// sessionsForDate selects the sessions counted into a day's session lane: ONLY
+// sessions whose LoggedDate is exactly date. There is deliberately NO fallback to
+// LocalDates. A day's totals must never include usage that could belong to another
+// day, so a session whose day could not be established (LoggedDate == "") is
+// excluded from EVERY day's lane instead of being folded into each day its
+// workflow-step calls touch — which double-counts a session straddling local
+// midnight. Such a session stays VISIBLE rather than silently dropped: it is
+// reported by unassociatedSessionsForDate (the UnassociatedSessions count) and
+// listed by `metrics sessions`.
+func sessionsForDate(sessions []SessionRecord, date string) []SessionRecord {
+	out := make([]SessionRecord, 0, len(sessions))
+	for i := range sessions {
+		if sessions[i].LoggedDate == date {
+			out = append(out, sessions[i])
+		}
+	}
+	return out
+}
+
+// unassociatedSessionsForDate counts the sessions whose day could not be
+// established (LoggedDate == "") that touch date through their workflow-step
+// LocalDates. They are NOT folded into the day's session lane; this count only
+// keeps them VISIBLE as UnassociatedSessions, so a session that could belong to
+// another day is surfaced on each day it actually touched, never dropped.
+// Duplicate session ids are collapsed.
+func unassociatedSessionsForDate(sessions []SessionRecord, date string) int {
+	seen := make(map[string]struct{})
+	n := 0
+	for i := range sessions {
+		s := sessions[i]
+		if s.LoggedDate != "" || !containsDate(s.LocalDates, date) {
+			continue
+		}
+		if _, ok := seen[s.SessionID]; ok {
+			continue
+		}
+		seen[s.SessionID] = struct{}{}
+		n++
+	}
+	return n
+}
+
+// containsDate reports whether dates contains date.
+func containsDate(dates []string, date string) bool {
+	for _, d := range dates {
+		if d == date {
+			return true
+		}
+	}
+	return false
+}
+
 // budgetState classifies the soft daily editorial budget. An unknown spent total
 // is BudgetUnknownState: it is NEVER treated as zero and NEVER assumed exhausted.
 func budgetState(spent workflow.Measurement, target int64) string {

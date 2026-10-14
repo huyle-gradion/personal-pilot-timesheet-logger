@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +27,7 @@ const metricsUsage = `timesheet metrics <action> [flags]
 
 Actions:
   import     import a transcript into the metrics store: metrics import --transcript FILE
+  sessions   list stored session records: metrics sessions [--date D | --session ID]
   aggregate  build and persist the daily aggregate: metrics aggregate --date D
   report     render the daily aggregate: metrics report [--date D | --from/--to]
   compare    compare two days base -> target: metrics compare --base D --target D
@@ -33,7 +36,13 @@ Actions:
 Flags:
   --transcript FILE        transcript path (import)
   --provider auto|pi|claude  transcript provider (import; default auto)
-  --date YYYY-MM-DD        target date (default: today)
+  --model-catalog FILE     runtime model catalog for session price lookup (import;
+                           default: $PI_MODEL_CATALOG, else ~/.pi/agent/models-store.json)
+  --timezone TZ            IANA zone for the session's local-date association (import;
+                           default: the process local zone)
+  --date YYYY-MM-DD        target date (default: today); on import it also records the
+                           session's logged day (association=import_flag)
+  --session ID             one session id (sessions)
   --from/--to YYYY-MM-DD   date range (report)
   --base/--target D        base and target dates (compare)
   --commit SHA             run annotation (import/run)
@@ -42,10 +51,11 @@ Flags:
   --optimization-change C  run annotation (import/run)
   --metrics-dir DIR        metrics store directory (default: ~/.timesheet/metrics)
   --storage-dir DIR        workflow record directory for editorial usage (default: ~/.timesheet/records)
-  --format table|json      report/compare format (default: table)
+  --format table|json      output format (report/compare/aggregate/sessions; default: table)
 
-The metrics store layout is <metrics-dir>/runs/<run-id>.json and
-<metrics-dir>/YYYY-MM-DD.json.
+The metrics store layout is <metrics-dir>/runs/<run-id>.json,
+<metrics-dir>/sessions/<session-id>.json, and <metrics-dir>/YYYY-MM-DD.json.
+An unknown price or model prints "unknown" and is never shown as 0.
 `
 
 // cmdMetrics dispatches the metrics subcommands.
@@ -57,6 +67,8 @@ func cmdMetrics(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	switch args[0] {
 	case "import":
 		return cmdMetricsImport(ctx, args[1:], stdout, stderr)
+	case "sessions":
+		return cmdMetricsSessions(ctx, args[1:], stdout, stderr)
 	case "aggregate":
 		return cmdMetricsAggregate(ctx, args[1:], stdout, stderr)
 	case "report":
@@ -81,6 +93,8 @@ func cmdMetricsImport(ctx context.Context, args []string, stdout, stderr io.Writ
 	transcript := fs.String("transcript", "", "transcript path")
 	provider := fs.String("provider", "auto", "transcript provider: auto|pi|claude")
 	date := fs.String("date", "", "override the transcript-derived date YYYY-MM-DD")
+	modelCatalog := fs.String("model-catalog", "", "runtime model catalog file")
+	timezone := fs.String("timezone", "", "IANA timezone for the session's local-date association")
 	metricsDir := fs.String("metrics-dir", "", "metrics store directory")
 	commit := fs.String("commit", "", "run commit annotation")
 	workflowVersion := fs.String("workflow-version", "", "run workflow-version annotation")
@@ -98,6 +112,11 @@ func cmdMetricsImport(ctx context.Context, args []string, stdout, stderr io.Writ
 			fmt.Fprintf(stderr, "timesheet metrics import: invalid --date %q\n", d)
 			return exitUsage
 		}
+	}
+	loc, err := resolveMetricsLocation(*timezone)
+	if err != nil {
+		fmt.Fprintf(stderr, "timesheet metrics import: %v\n", err)
+		return exitUsage
 	}
 
 	rec, err := metrics.Import(ctx, *transcript, metrics.ImportOptions{
@@ -129,7 +148,302 @@ func cmdMetricsImport(ctx context.Context, args []string, stdout, stderr io.Writ
 	} else {
 		fmt.Fprintf(stdout, "run %s unchanged (content hash match; no write)\n", rec.RunID)
 	}
+
+	// A missing or unparseable catalog WARNS and continues with an unknown-price
+	// session: a catalog problem must never change an exit code or fail a workflow.
+	cat := loadMetricsCatalog(*modelCatalog, stderr)
+	session := metrics.BuildSession(rec, cat, loc)
+	if d := strings.TrimSpace(*date); d != "" {
+		// The operator stated the day explicitly: record WHICH DAY this session
+		// logged. No transcript tool argument is decoded.
+		session.LoggedDate = d
+		session.Association = metrics.AssociationImportFlag
+	}
+	if _, err := store.WriteSession(session); err != nil {
+		fmt.Fprintln(stderr, "timesheet metrics import:", err)
+		return exitError
+	}
+	fmt.Fprintf(stdout, "session %s: logged_date=%s association=%s model=%s models=%d total_tokens=%s cache_hit=%s price=%s cost=%s\n",
+		session.SessionID, orUnknown(session.LoggedDate), session.Association, orUnknown(session.Model),
+		len(session.Models), formatMeas(session.TotalTokens),
+		formatOptionalPercent(session.CacheHitPct), session.PriceSource, formatOptionalCost(session.Cost))
 	return exitOK
+}
+
+// cmdMetricsSessions lists the stored session records. An unknown price, model,
+// logged day, cache-hit, or cost prints "unknown" and is NEVER shown as 0.
+func cmdMetricsSessions(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("timesheet metrics sessions", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	date := fs.String("date", "", "filter by logged date YYYY-MM-DD")
+	sessionID := fs.String("session", "", "one session id")
+	metricsDir := fs.String("metrics-dir", "", "metrics store directory")
+	format := fs.String("format", "table", "output format: table|json")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if d := strings.TrimSpace(*date); d != "" {
+		if err := workflow.ValidateDate(d); err != nil {
+			fmt.Fprintf(stderr, "timesheet metrics sessions: invalid --date %q\n", d)
+			return exitUsage
+		}
+	}
+	fmtMode := strings.ToLower(strings.TrimSpace(*format))
+	if fmtMode != "table" && fmtMode != "json" {
+		fmt.Fprintf(stderr, "timesheet metrics sessions: invalid --format %q\n", *format)
+		return exitUsage
+	}
+
+	store, err := metrics.NewStore(resolveMetricsDir(*metricsDir))
+	if err != nil {
+		fmt.Fprintln(stderr, "timesheet metrics sessions:", err)
+		return exitError
+	}
+	sessions, single, err := metricsSelectSessions(store, strings.TrimSpace(*date), strings.TrimSpace(*sessionID))
+	if err != nil {
+		fmt.Fprintln(stderr, "timesheet metrics sessions:", err)
+		return exitError
+	}
+
+	if fmtMode == "json" {
+		if err := metricsRenderSessionsJSON(stdout, sessions, single); err != nil {
+			fmt.Fprintln(stderr, "timesheet metrics sessions:", err)
+			return exitError
+		}
+		return exitOK
+	}
+	if err := metricsRenderSessionsTable(stdout, sessions, metricsSessionCallCounts(store)); err != nil {
+		fmt.Fprintln(stderr, "timesheet metrics sessions:", err)
+		return exitError
+	}
+	return exitOK
+}
+
+// metricsSelectSessions resolves the session set for `metrics sessions`: one
+// session by id (single=true) or every stored session, filtered by LoggedDate when
+// a date is given. A missing session id is an error, never an empty list.
+func metricsSelectSessions(store *metrics.Store, date, sessionID string) ([]metrics.SessionRecord, bool, error) {
+	if sessionID != "" {
+		rec, err := store.ReadSession(sessionID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, true, fmt.Errorf("session %q not found", sessionID)
+			}
+			return nil, true, err
+		}
+		return []metrics.SessionRecord{rec}, true, nil
+	}
+	all, err := store.ListSessions()
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]metrics.SessionRecord, 0, len(all))
+	for i := range all {
+		if date != "" && all[i].LoggedDate != date {
+			continue
+		}
+		out = append(out, all[i])
+	}
+	return out, false, nil
+}
+
+// metricsSessionCallCounts maps a session's ContentHash to the call count of the
+// matching run so the sessions table can show CALLS. A session record carries no
+// call count of its own. When a run cannot be found the count is unknown, never
+// zero.
+func metricsSessionCallCounts(store *metrics.Store) map[string]int {
+	runs, err := store.ListRuns("")
+	if err != nil {
+		return nil
+	}
+	counts := make(map[string]int, len(runs))
+	for i := range runs {
+		if runs[i].ContentHash == "" {
+			continue
+		}
+		if _, ok := counts[runs[i].ContentHash]; ok {
+			continue
+		}
+		counts[runs[i].ContentHash] = len(runs[i].Calls)
+	}
+	return counts
+}
+
+// sessionColumns is the fixed ASCII column layout for `metrics sessions`.
+var sessionColumns = []struct {
+	header string
+	width  int
+}{
+	{"SESSION-ID", 20},
+	{"PROVIDER", 14},
+	{"MODEL", 16},
+	{"DATE", 12},
+	{"ASSOCIATION", 16},
+	{"CALLS", 6},
+	{"INPUT", 10},
+	{"OUTPUT", 10},
+	{"CACHE-R", 10},
+	{"CACHE-W", 10},
+	{"CACHE-HIT", 10},
+	{"TOTAL", 10},
+	{"PRICE", 8},
+	{"COST", 0},
+}
+
+// metricsRenderSessionsTable writes the fixed ASCII table of session records.
+func metricsRenderSessionsTable(w io.Writer, sessions []metrics.SessionRecord, calls map[string]int) error {
+	header := make([]string, 0, len(sessionColumns))
+	for _, c := range sessionColumns {
+		header = append(header, c.header)
+	}
+	if err := writeSessionRow(w, header); err != nil {
+		return err
+	}
+	for i := range sessions {
+		s := sessions[i]
+		callCount := "unknown"
+		if calls != nil {
+			if n, ok := calls[s.ContentHash]; ok {
+				callCount = strconv.Itoa(n)
+			}
+		}
+		row := []string{
+			s.SessionID,
+			orUnknown(s.Provider),
+			orUnknown(s.Model),
+			orUnknown(s.LoggedDate),
+			string(s.Association),
+			callCount,
+			formatMeas(s.Usage.Input),
+			formatMeas(s.Usage.Output),
+			formatMeas(s.Usage.CacheRead),
+			formatMeas(s.Usage.CacheWrite),
+			formatOptionalPercent(s.CacheHitPct),
+			formatMeas(s.TotalTokens),
+			string(s.PriceSource),
+			formatOptionalCost(s.Cost),
+		}
+		if err := writeSessionRow(w, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeSessionRow(w io.Writer, cells []string) error {
+	var b strings.Builder
+	for i, c := range sessionColumns {
+		cell := ""
+		if i < len(cells) {
+			cell = cells[i]
+		}
+		if c.width > 0 {
+			if len(cell) < c.width {
+				cell += strings.Repeat(" ", c.width-len(cell))
+			}
+			b.WriteString(cell)
+			b.WriteByte(' ')
+		} else {
+			b.WriteString(cell)
+		}
+	}
+	b.WriteByte('\n')
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+// metricsRenderSessionsJSON writes ONE valid JSON document: one session object when
+// a single session was requested, else an array.
+func metricsRenderSessionsJSON(w io.Writer, sessions []metrics.SessionRecord, single bool) error {
+	var (
+		data []byte
+		err  error
+	)
+	if single {
+		data, err = json.MarshalIndent(sessions[0], "", "  ")
+	} else {
+		if sessions == nil {
+			sessions = []metrics.SessionRecord{}
+		}
+		data, err = json.MarshalIndent(sessions, "", "  ")
+	}
+	if err != nil {
+		return fmt.Errorf("metrics: marshal sessions: %w", err)
+	}
+	_, err = w.Write(append(data, '\n'))
+	return err
+}
+
+// resolveMetricsLocation resolves the session's local-date zone. An invalid IANA
+// zone is an error; an empty value is the process local zone.
+func resolveMetricsLocation(tz string) (*time.Location, error) {
+	if t := strings.TrimSpace(tz); t != "" {
+		loc, err := time.LoadLocation(t)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --timezone %q", tz)
+		}
+		return loc, nil
+	}
+	return time.Local, nil
+}
+
+// loadMetricsCatalog resolves and loads the model catalog. Resolution order is the
+// flag, then $PI_MODEL_CATALOG, then ~/.pi/agent/models-store.json. A missing or
+// unparseable file WARNS on stderr and returns a nil catalog (every price unknown):
+// it never changes an exit code.
+func loadMetricsCatalog(flagValue string, stderr io.Writer) *metrics.ModelCatalog {
+	path := resolveModelCatalogPath(flagValue)
+	if path == "" {
+		fmt.Fprintln(stderr, "timesheet metrics import: warning: no model catalog path; session prices are unknown")
+		return nil
+	}
+	cat, err := metrics.LoadModelCatalog(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "timesheet metrics import: warning: model catalog %s unavailable; session prices are unknown: %v\n", path, err)
+		return nil
+	}
+	return cat
+}
+
+// resolveModelCatalogPath is the catalog resolution order: the flag, else
+// $PI_MODEL_CATALOG, else ~/.pi/agent/models-store.json.
+func resolveModelCatalogPath(flagValue string) string {
+	if p := strings.TrimSpace(flagValue); p != "" {
+		return p
+	}
+	if p := strings.TrimSpace(os.Getenv("PI_MODEL_CATALOG")); p != "" {
+		return p
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".pi", "agent", "models-store.json")
+	}
+	return ""
+}
+
+// orUnknown renders an empty string as "unknown" (never as blank or 0).
+func orUnknown(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "unknown"
+	}
+	return s
+}
+
+// formatOptionalPercent renders a known cache-hit percentage, or "unknown" when it
+// is unavailable (nil). It never prints "0" for an unknown value.
+func formatOptionalPercent(p *float64) string {
+	if p == nil {
+		return "unknown"
+	}
+	return strconv.FormatFloat(*p, 'f', 1, 64) + "%"
+}
+
+// formatOptionalCost renders a known USD cost, or "unknown" when it is unavailable
+// (nil). It never prints "0" for an unknown value.
+func formatOptionalCost(c *float64) string {
+	if c == nil {
+		return "unknown"
+	}
+	return strconv.FormatFloat(*c, 'f', -1, 64)
 }
 
 func cmdMetricsAggregate(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -138,6 +452,7 @@ func cmdMetricsAggregate(ctx context.Context, args []string, stdout, stderr io.W
 	date := fs.String("date", "", "target date YYYY-MM-DD (default: today)")
 	metricsDir := fs.String("metrics-dir", "", "metrics store directory")
 	storageDir := fs.String("storage-dir", "", "workflow record directory for editorial usage")
+	format := fs.String("format", "table", "output format: table|json")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -148,6 +463,11 @@ func cmdMetricsAggregate(ctx context.Context, args []string, stdout, stderr io.W
 	}
 	if err := workflow.ValidateDate(d); err != nil {
 		fmt.Fprintf(stderr, "timesheet metrics aggregate: invalid --date %q\n", d)
+		return exitUsage
+	}
+	fmtMode := strings.ToLower(strings.TrimSpace(*format))
+	if fmtMode != "table" && fmtMode != "json" {
+		fmt.Fprintf(stderr, "timesheet metrics aggregate: invalid --format %q\n", *format)
 		return exitUsage
 	}
 
@@ -168,9 +488,17 @@ func cmdMetricsAggregate(ctx context.Context, args []string, stdout, stderr io.W
 		fmt.Fprintln(stderr, "timesheet metrics aggregate:", err)
 		return exitError
 	}
-	fmt.Fprintf(stdout, "%s: aggregated %d run(s); orchestration=%s unassigned=%d call(s) editorial=%s budget=%s\n",
+	if fmtMode == "json" {
+		if err := metrics.RenderJSON(stdout, agg); err != nil {
+			fmt.Fprintln(stderr, "timesheet metrics aggregate:", err)
+			return exitError
+		}
+		return exitOK
+	}
+	fmt.Fprintf(stdout, "%s: aggregated %d run(s); orchestration=%s unassigned=%d call(s) editorial=%s budget=%s sessions=%d session_cachehit=%s session_cost=%s unassociated=%d\n",
 		agg.Date, agg.RunCount,
-		metricsSummary(agg.Orchestration), agg.UnassignedCalls, metricsSummary(agg.Editorial), agg.Budget.State)
+		metricsSummary(agg.Orchestration), agg.UnassignedCalls, metricsSummary(agg.Editorial), agg.Budget.State,
+		agg.SessionCount, formatOptionalPercent(agg.SessionCacheHitPct), formatOptionalCost(agg.SessionCost), agg.UnassociatedSessions)
 	return exitOK
 }
 

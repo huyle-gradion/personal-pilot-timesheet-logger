@@ -55,6 +55,8 @@ func Compare(in CompareInput) Comparison {
 			compareMetric("end_to_end_ms", in.Base.EndToEnd.Value, in.Target.EndToEnd.Value),
 			compareMetric("active_ms", in.Base.Active.Value, in.Target.Active.Value),
 			compareMetric("human_wait_ms", in.Base.HumanWait.Value, in.Target.HumanWait.Value),
+			compareMetric("session_consumed", in.Base.SessionTotalTokens, in.Target.SessionTotalTokens),
+			compareMetric("sessions", workflow.KnownMeasurement(int64(in.Base.SessionCount)), workflow.KnownMeasurement(int64(in.Target.SessionCount))),
 		},
 		BaseAnnotations:   in.Base.Annotations,
 		TargetAnnotations: in.Target.Annotations,

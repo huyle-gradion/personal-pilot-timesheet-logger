@@ -471,12 +471,34 @@ $TS metrics import --transcript "$PI_SESSION" && $TS metrics report --date "$DAT
 ```
 
 - `import` reads the harness transcript and writes one run file; a reimport of an
-  unchanged transcript is a no-op (content hash match).
+  unchanged transcript is a no-op (content hash match). It also writes ONE session
+  record (the harness session's tokens) and prints a one-line session summary.
+- `import` takes `--model-catalog FILE` (the runtime `models-store.json`; default
+  `$PI_MODEL_CATALOG`, else `~/.pi/agent/models-store.json`) to price the session,
+  and `--timezone TZ` (an IANA zone; default the process local zone) for its
+  local-date association. A missing or unparseable catalog only **warns** and
+  continues with an unknown price — it never changes an exit code.
+- `import --date D` keeps its meaning (it overrides the run's date) AND records
+  **which day** the session logged: the session's logged date (the association key)
+  is set to `D` with association `import_flag`. Only this operator-stated value is
+  used; no transcript tool-argument value is decoded.
+- `sessions` lists the stored session records: per session its id, provider, model,
+  logged date, association, calls, input, output, cache read, cache write,
+  cache-hit %, total tokens, price source, and cost. `--session ID` shows one
+  session, `--date D` filters by logged date, and `--format json` emits the records.
 - `aggregate` is required before `report` if the day's runs changed:
-  `$TS metrics aggregate --date "$DATE"`.
+  `$TS metrics aggregate --date "$DATE"`. Its one-line summary and its
+  `--format json` output carry the session lane (session count, session cache-hit %,
+  session cost, unassociated sessions).
 - `report --format json` prints the `DailyAggregate` verbatim; the default table
-  prints fixed ASCII columns. Over `--from/--to`, `--format json` emits ONE JSON
-  array of aggregates.
+  prints fixed ASCII columns (including `SESSIONS`, `SESS-CACHEHIT`, `SESS-COST`,
+  and `UNASSOC`). Over `--from/--to`, `--format json` emits ONE JSON array of
+  aggregates.
+- **The honesty rule.** An unknown price or model prints `unknown` and is never
+  shown as `0` (a nil cache-hit or cost is `unknown`, never `0`). A session whose
+  day cannot be established is `unknown` (association `unknown`) and is NOT counted
+  into any day's totals: its day is never guessed, and it is reported separately as
+  an unassociated session, never folded into a day.
 - `compare --base D --target D` shows the base→target delta/percentage per metric
   (a percentage only when the base is Known and non-zero; otherwise `n/a`).
 - `run -- <command...>` records a live monotonic run for a command and derives its
