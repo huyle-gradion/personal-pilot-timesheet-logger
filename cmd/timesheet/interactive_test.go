@@ -621,6 +621,17 @@ func TestGuided_SplitGroupEditedThenRemoveRefused(t *testing.T) {
 	if !strings.Contains(out.String(), "unconfirm_group_edited:c1") {
 		t.Fatalf("the refused removal must print the stable reason naming the edited fragment c1:\n%s", out.String())
 	}
+	// F-2: the refusal must also be visible in the guided outcome summary, so the
+	// operator's removal intent does not vanish.
+	refusedShown := false
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.Contains(line, "refused:") && strings.Contains(line, "unconfirm_group_edited:c1") {
+			refusedShown = true
+		}
+	}
+	if !refusedShown {
+		t.Fatalf("the refused removal must be surfaced in the outcome summary:\n%s", out.String())
+	}
 	if strings.Contains(out.String()+"\n"+errb.String(), "confirmed block not found") {
 		t.Fatalf("the invalid set must never reach apply:\n%s\n%s", out.String(), errb.String())
 	}
@@ -711,6 +722,114 @@ func TestGuided_NoOpEditDoesNotBlockGroupRemoval(t *testing.T) {
 	}
 	if rec.Review == nil || !rec.Review.Reviewed || !rec.Review.Empty {
 		t.Fatalf("a day emptied by removals must be recorded reviewed-empty, got %+v", rec.Review)
+	}
+}
+
+// GAP-5-STAGING-GUARD F-1 (grouped): an existing confirmed interval staged for
+// removal must NOT be offered for classification. classificationStep runs AFTER
+// the removal loop, so classifying an interval the removal (and its whole split
+// group) deletes would reach apply as a set apply rejects with
+// "confirmed block not found". With NO ClassificationID the fragments are genuine
+// classification targets UNLESS the staged removal excludes them.
+func TestGuided_RemovedGroupFragmentNotClassified(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Proj", SplitGroupID: "g1", PartIndex: 0},
+			{ID: "c2", Date: testDate, StartTime: "10:00", EndTime: "11:00", Project: "Proj", SplitGroupID: "g1", PartIndex: 1},
+		}
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// no reset (false); remove c1 (2); c2 -> "Removed with the rest" (1, no-op);
+	// (pre-fix the two classification prompts consume 0,0); no bulk (0); no
+	// missing work (false); confirm (true).
+	p := &fakePrompter{choose: []int{2, 1, 0, 0, 0}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d (a classified removed fragment means apply was refused)\n%s\n%s", code, out.String(), errb.String())
+	}
+	for _, title := range p.chooseTitles {
+		if strings.Contains(title, "Classification for existing interval c1") || strings.Contains(title, "Classification for existing interval c2") {
+			t.Fatalf("a fragment staged for removal must not be offered for classification, got prompt %q", title)
+		}
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("the whole split group must be removed, got %+v", rec.Confirmed)
+	}
+}
+
+// GAP-5-STAGING-GUARD F-1 (group-less): the same guard for an interval with NO
+// split group that is staged for removal.
+func TestGuided_RemovedGroupLessIntervalNotClassified(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Proj"},
+		}
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// no reset (false); remove c1 (2); (pre-fix the classification prompt consumes
+	// 0); no bulk (0); no missing work (false); confirm (true).
+	p := &fakePrompter{choose: []int{2, 0, 0}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d (a classified removed interval means apply was refused)\n%s\n%s", code, out.String(), errb.String())
+	}
+	for _, title := range p.chooseTitles {
+		if strings.Contains(title, "Classification for existing interval c1") {
+			t.Fatalf("an interval staged for removal must not be offered for classification, got prompt %q", title)
+		}
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("the removed interval must be gone, got %+v", rec.Confirmed)
+	}
+}
+
+// GAP-5-STAGING-GUARD F-1 (scoping): a legitimately-REMAINING interval is still a
+// classification target while a DIFFERENT interval is staged for removal.
+func TestGuided_RemainingIntervalStillClassifiable(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Proj", SplitGroupID: "g1", PartIndex: 0},
+			{ID: "c2", Date: testDate, StartTime: "10:00", EndTime: "11:00", Project: "Proj"},
+		}
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// no reset (false); remove c1 (2); keep c2 (0); classify c2 (0); no bulk (0);
+	// no missing work (false); confirm (true). Pre-fix an extra classification
+	// prompt for c1 would consume a sixth choice that is not scripted.
+	p := &fakePrompter{choose: []int{2, 0, 0, 0}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || rec.Confirmed[0].ID != "c2" {
+		t.Fatalf("c1 must be removed and c2 kept, got %+v", rec.Confirmed)
+	}
+	if rec.Confirmed[0].ClassificationID != "cls-1" {
+		t.Fatalf("a legitimately-remaining interval must still be classifiable, got %+v", rec.Confirmed[0])
 	}
 }
 

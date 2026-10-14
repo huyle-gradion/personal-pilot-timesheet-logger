@@ -116,6 +116,10 @@ type guided struct {
 	// narrative can render its SOURCE provenance (git repo/branch, calendar,
 	// journal note/heading/lines) instead of only an opaque evidence id.
 	evByID map[string]evidence.Evidence
+	// refusedRemovals records guided removals the review REFUSED, each as a stable
+	// reason string. The outcome summary surfaces them so the operator's removal
+	// intent does not vanish from the result. Human-facing only; nothing staged.
+	refusedRemovals []string
 }
 
 // catalogMemoEntry is one in-run memoized catalog fetch: the catalog and the
@@ -356,11 +360,28 @@ func (g *guided) gatherReview(ctx context.Context, prop proposal.Proposal, rec *
 // staged, OR when any member of its non-empty split group is staged (a split
 // group is removed as a whole).
 func remainingConfirmedAfterRemovals(existing []workflow.ConfirmedInterval, unconfirm []run.UnconfirmDecision) int {
-	staged := map[string]bool{}
+	staged, stagedGroups := stagedRemovalSets(existing, unconfirm)
+	remaining := 0
+	for _, ci := range existing {
+		if coveredByRemoval(ci, staged, stagedGroups) {
+			continue
+		}
+		remaining++
+	}
+	return remaining
+}
+
+// stagedRemovalSets computes the ids and the non-empty split groups a staged set
+// of unconfirms would remove: the ids named directly, plus every non-empty split
+// group any named id belongs to (a split group is removed as a whole). It is the
+// SINGLE definition shared by remainingConfirmedAfterRemovals and classTargets, so
+// the day-empty computation and the classification-target filter cannot drift.
+func stagedRemovalSets(existing []workflow.ConfirmedInterval, unconfirm []run.UnconfirmDecision) (staged map[string]bool, stagedGroups map[string]bool) {
+	staged = map[string]bool{}
 	for _, u := range unconfirm {
 		staged[u.BlockID] = true
 	}
-	stagedGroups := map[string]bool{}
+	stagedGroups = map[string]bool{}
 	for _, ci := range existing {
 		if staged[ci.ID] {
 			if g := strings.TrimSpace(ci.SplitGroupID); g != "" {
@@ -368,17 +389,20 @@ func remainingConfirmedAfterRemovals(existing []workflow.ConfirmedInterval, unco
 			}
 		}
 	}
-	remaining := 0
-	for _, ci := range existing {
-		if staged[ci.ID] {
-			continue
-		}
-		if g := strings.TrimSpace(ci.SplitGroupID); g != "" && stagedGroups[g] {
-			continue
-		}
-		remaining++
+	return staged, stagedGroups
+}
+
+// coveredByRemoval reports whether a confirmed interval would be removed by the
+// staged sets: its own id is named, or its non-empty split group is (a split
+// group is removed as a whole).
+func coveredByRemoval(ci workflow.ConfirmedInterval, staged, stagedGroups map[string]bool) bool {
+	if staged[ci.ID] {
+		return true
 	}
-	return remaining
+	if g := strings.TrimSpace(ci.SplitGroupID); g != "" && stagedGroups[g] {
+		return true
+	}
+	return false
 }
 
 // mappedLocalIDs indexes the confirmed-interval ids that have a remote mapping,
@@ -537,6 +561,7 @@ func (g *guided) stageExistingRemoval(ci workflow.ConfirmedInterval, group strin
 	if offending := stagedEditInGroup(group, confirmedGroups, *dec); offending != "" {
 		fmt.Fprintf(g.stdout, "  %s:%s: split-group fragment %s already carries a staged edit; keep this fragment as is, or drop the staged edit if the whole group must be removed\n",
 			run.BlockUnconfirmGroupEdited, offending, offending)
+		g.refusedRemovals = append(g.refusedRemovals, fmt.Sprintf("%s:%s", run.BlockUnconfirmGroupEdited, offending))
 		return
 	}
 	dec.Unconfirm = append(dec.Unconfirm, run.UnconfirmDecision{BlockID: ci.ID, Reason: "user_retracted"})
@@ -1687,11 +1712,19 @@ type classTarget struct {
 func (g *guided) classTargets(prop proposal.Proposal, rec *workflow.Record, dec *run.ReviewDecisions) []classTarget {
 	var out []classTarget
 	blocks := proposalBlockIndex(prop)
-	// A staged reset removes every existing interval, so classifying one would
-	// stage a decision against a removed block. Existing intervals are therefore
-	// not classifiable when a reset is staged.
+	// A staged reset removes every existing interval, and a staged removal
+	// (unconfirm) removes the named interval together with its whole non-empty
+	// split group; classifying either would stage a decision against a block that
+	// apply then deletes, failing with "confirmed block not found". Existing
+	// intervals are therefore not classifiable when a reset is staged OR when the
+	// interval is covered by a staged removal.
 	if !dec.Reset {
-		for _, ci := range existingConfirmed(rec) {
+		existing := existingConfirmed(rec)
+		staged, stagedGroups := stagedRemovalSets(existing, dec.Unconfirm)
+		for _, ci := range existing {
+			if coveredByRemoval(ci, staged, stagedGroups) {
+				continue
+			}
 			out = append(out, classTarget{key: ci.ID, label: fmt.Sprintf("existing interval %s · %s-%s", shortID(ci.ID), ci.StartTime, ci.EndTime), project: ci.Project, current: ci.ClassificationID})
 		}
 	}
@@ -2014,6 +2047,12 @@ func (g *guided) confirmSummary(ctx context.Context, dec run.ReviewDecisions) (b
 	fmt.Fprintf(g.stdout, "  %-22s %d\n", "classification chosen:", len(dec.Classification)+manualClassified(dec))
 	if len(dec.Unconfirm) > 0 {
 		fmt.Fprintf(g.stdout, "  %-22s %d\n", "unconfirm:", len(dec.Unconfirm))
+	}
+	// Surface every removal the review REFUSED, so the operator's removal intent
+	// does not vanish from the outcome (the refusal is non-fatal and stages
+	// nothing).
+	for _, r := range g.refusedRemovals {
+		fmt.Fprintf(g.stdout, "  %-22s %s\n", "refused:", r)
 	}
 	if dec.Reset {
 		fmt.Fprintf(g.stdout, "  %-22s yes (clears the day's local review)\n", "reset review:")
