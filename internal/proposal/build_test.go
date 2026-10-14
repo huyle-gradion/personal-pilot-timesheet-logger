@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -595,5 +596,118 @@ func TestBuild_JointBlockForInterruptedGroup(t *testing.T) {
 	}
 	if !b.Duration.Known {
 		t.Error("joint duration should be the meeting's known duration")
+	}
+}
+
+// GAP-7 (#70): a meeting-derived worklog description is the meeting TITLE (the
+// ICS SUMMARY), even when the calendar entry carries a DESCRIPTION body.
+// Fail-before: the block described itself with the ICS body.
+func TestBuild_MeetingDescriptionUsesTitle(t *testing.T) {
+	meeting := calendarEvidence("m1", "Weekly Sync", at(6, 9, 0), at(6, 10, 0), evidence.InvitationAccepted)
+	meeting.Description = "Agenda: roadmap\nJoin: https://meet.example/x"
+	p, err := Build([]evidence.Evidence{meeting}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p.Meetings) != 1 {
+		t.Fatalf("meetings = %d, want 1", len(p.Meetings))
+	}
+	if got := p.Meetings[0].Description; got != "Weekly Sync" {
+		t.Errorf("meeting description = %q, want the title %q", got, "Weekly Sync")
+	}
+}
+
+// GAP-7 (#70): a title-less meeting still yields the calendar description text
+// rather than an empty description.
+func TestBuild_MeetingDescriptionFallsBackToBody(t *testing.T) {
+	meeting := calendarEvidence("m1", "", at(6, 9, 0), at(6, 10, 0), evidence.InvitationAccepted)
+	meeting.Description = "No title, body only"
+	p, err := Build([]evidence.Evidence{meeting}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p.Meetings) != 1 {
+		t.Fatalf("meetings = %d, want 1", len(p.Meetings))
+	}
+	if got := p.Meetings[0].Description; got != "No title, body only" {
+		t.Errorf("meeting description = %q, want the body fallback", got)
+	}
+}
+
+// GAP-7 (#70): a meeting carry fragment (later-day portion) also describes
+// itself by the meeting TITLE, not the ICS body.
+func TestBuild_MeetingCarryDescriptionUsesTitle(t *testing.T) {
+	meeting := calendarEvidence("m1", "Late Meeting", at(6, 23, 0), at(7, 1, 0), evidence.InvitationAccepted)
+	meeting.Description = "body of the late meeting"
+	p, err := Build([]evidence.Evidence{meeting}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p.Carries) != 1 {
+		t.Fatalf("carries = %d, want 1", len(p.Carries))
+	}
+	if got := p.Carries[0].Description; got != "Late Meeting" {
+		t.Errorf("meeting carry description = %q, want the title %q", got, "Late Meeting")
+	}
+}
+
+// GAP-7 (#70): the JOINT block (git activity overlapping a meeting) describes
+// itself with the git group title joined to the MEETING TITLE, never the ICS
+// body. Fail-before: it joined the git title with the calendar DESCRIPTION.
+func TestBuild_JointBlockDescriptionUsesMeetingTitle(t *testing.T) {
+	pr := prEvidence("pr7", "acme/app", 7, "feature/a", map[string]time.Time{
+		"a": at(6, 9, 0), "b": at(6, 9, 40),
+	})
+	meeting := calendarEvidence("m1", "Standup", at(6, 9, 0), at(6, 9, 40), evidence.InvitationAccepted)
+	meeting.Description = "Daily standup notes"
+	p, err := Build([]evidence.Evidence{pr, meeting}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p.Work) != 1 || p.Work[0].Kind != BlockJoint {
+		t.Fatalf("work blocks = %+v, want one joint block", p.Work)
+	}
+	got := p.Work[0].Description
+	if !strings.Contains(got, "Standup") {
+		t.Errorf("joint description = %q, want it to contain the meeting title %q", got, "Standup")
+	}
+	if strings.Contains(got, "Daily standup notes") {
+		t.Errorf("joint description = %q, must not carry the ICS body", got)
+	}
+}
+
+// GAP-7 (#70): the change is confined to the meeting path. blockDescription is
+// NOT flipped, so manual, journal, git and agent descriptions are unchanged. The
+// direct assertions pin the shared helper (journal/agent prefer Description; git
+// has none and falls back to Title), and the manual Build assertion pins the
+// user-entered description reaching the proposed block.
+func TestBuild_NonMeetingDescriptionsUnchanged(t *testing.T) {
+	manual := evidence.Evidence{Kind: evidence.SourceManual, Title: "work", Description: "did stuff"}
+	if got := blockDescription(manual); got != "did stuff" {
+		t.Errorf("blockDescription(manual) = %q, want the description", got)
+	}
+	journal := evidence.Evidence{Kind: evidence.SourceJournal, Title: "first line", Description: "full journal text"}
+	if got := blockDescription(journal); got != "full journal text" {
+		t.Errorf("blockDescription(journal) = %q, want the full text", got)
+	}
+	agent := evidence.Evidence{Kind: evidence.SourceAgentSession, Title: "session", Description: "topic"}
+	if got := blockDescription(agent); got != "topic" {
+		t.Errorf("blockDescription(agent) = %q, want the topic", got)
+	}
+	git := evidence.Evidence{Kind: evidence.SourceLocalGit, Title: "commit abc"}
+	if got := blockDescription(git); got != "commit abc" {
+		t.Errorf("blockDescription(git) = %q, want the title", got)
+	}
+
+	man := evidence.Evidence{
+		ID: "man1", Kind: evidence.SourceManual, Title: "work", Description: "did stuff",
+		Start: at(6, 9, 0), End: at(6, 10, 0), Duration: evidence.KnownDuration(60),
+	}
+	p, err := Build([]evidence.Evidence{man}, testOpts())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(p.Manual) != 1 || p.Manual[0].Description != "did stuff" {
+		t.Errorf("manual description = %+v, want %q unchanged", p.Manual, "did stuff")
 	}
 }

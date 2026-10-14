@@ -155,7 +155,7 @@ func ConfirmMeetingsBulk(r *workflow.Record, evIDs []string, attended bool) erro
 			StartTime:     start,
 			EndTime:       end,
 			Project:       firstHint(e.ProjectHints),
-			Description:   evidenceText(e),
+			Description:   proposal.MeetingDescription(e),
 			Attendance:    true,
 			Kind:          string(proposal.BlockMeeting),
 			EvidenceIDs:   []string{id},
@@ -469,7 +469,7 @@ func JoinCollision(r *workflow.Record, workBlockID, meetingEvID string) error {
 	joint.StartTime = start
 	joint.EndTime = end
 	joint.EvidenceIDs = unionStrings(work.EvidenceIDs, []string{meetingEvID})
-	joint.Description = joinTexts(work.Description, evidenceText(meeting))
+	joint.Description = joinTexts(work.Description, proposal.MeetingDescription(meeting))
 	joint.Attendance = true
 	joint.ConfirmedAt = nowFunc()
 
@@ -1000,13 +1000,6 @@ func markAttendance(r *workflow.Record, evID string, attended bool, now time.Tim
 		}
 	}
 	r.Review.Attendance = append(r.Review.Attendance, ad)
-}
-
-func evidenceText(e evidence.Evidence) string {
-	if d := strings.TrimSpace(e.Description); d != "" {
-		return d
-	}
-	return strings.TrimSpace(e.Title)
 }
 
 func firstHint(hints []string) string {

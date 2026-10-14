@@ -112,6 +112,75 @@ func TestJoinCollision_CountsOnce(t *testing.T) {
 	}
 }
 
+// GAP-7/#70 F1: an explicit JoinCollision must describe the joint interval by the
+// MEETING TITLE, never the ICS DESCRIPTION body. Fail-before: JoinCollision
+// re-derived the meeting text Description-first via evidenceText.
+func TestJoinCollision_MeetingTitleNotBody(t *testing.T) {
+	meeting := meetingEvidence("m1", at(9, 20), at(9, 40), evidence.InvitationAccepted)
+	meeting.Description = "ICS body: agenda and join link"
+
+	r := workflow.Record{Date: "2026-10-06", CollectedEvidence: []evidence.Evidence{
+		gitEvidence("g1", "acme/app", "sha1", at(9, 0)),
+		meeting,
+	}}
+	work := proposal.ProposedTimeBlock{
+		ID: "w1", Kind: proposal.BlockWork, Date: "2026-10-06",
+		Start: "09:00", End: "09:35", StartAt: at(9, 0), EndAt: at(9, 35),
+		Duration: evidence.UnknownDuration(), EvidenceIDs: []string{"g1"}, Description: "commit sha1",
+	}
+	if err := ConfirmProposed(&r, work, ConfirmOptions{Project: "P"}); err != nil {
+		t.Fatalf("ConfirmProposed: %v", err)
+	}
+	if len(r.Confirmed) != 1 {
+		t.Fatalf("confirmed = %d, want 1", len(r.Confirmed))
+	}
+	if err := JoinCollision(&r, r.Confirmed[0].ID, "m1"); err != nil {
+		t.Fatalf("JoinCollision: %v", err)
+	}
+	if len(r.Confirmed) != 1 {
+		t.Fatalf("joint must be ONE interval, got %d", len(r.Confirmed))
+	}
+	j := r.Confirmed[0]
+	if !strings.Contains(j.Description, "Meeting m1") {
+		t.Errorf("description = %q, want the meeting title %q", j.Description, "Meeting m1")
+	}
+	if strings.Contains(j.Description, "ICS body: agenda and join link") {
+		t.Errorf("description = %q, must not carry the ICS body", j.Description)
+	}
+}
+
+// GAP-7/#70 F1: ConfirmMeetingsBulk confirms a meeting by its TITLE (not the ICS
+// body), and a title-less meeting still falls back to the calendar description
+// text. Fail-before: it used the Description-first evidenceText.
+func TestConfirmMeetingsBulk_MeetingTitleNotBody(t *testing.T) {
+	titled := meetingEvidence("m1", at(9, 0), at(10, 0), evidence.InvitationAccepted)
+	titled.Description = "ICS body for the titled meeting"
+	r := workflow.Record{Date: "2026-10-06", CollectedEvidence: []evidence.Evidence{titled}}
+	if err := ConfirmMeetingsBulk(&r, []string{"m1"}, true); err != nil {
+		t.Fatalf("ConfirmMeetingsBulk: %v", err)
+	}
+	if len(r.Confirmed) != 1 {
+		t.Fatalf("confirmed = %d, want 1", len(r.Confirmed))
+	}
+	if got := r.Confirmed[0].Description; got != "Meeting m1" {
+		t.Errorf("description = %q, want the title %q", got, "Meeting m1")
+	}
+
+	untitled := meetingEvidence("m2", at(11, 0), at(12, 0), evidence.InvitationAccepted)
+	untitled.Title = ""
+	untitled.Description = "body only, no title"
+	r2 := workflow.Record{Date: "2026-10-06", CollectedEvidence: []evidence.Evidence{untitled}}
+	if err := ConfirmMeetingsBulk(&r2, []string{"m2"}, true); err != nil {
+		t.Fatalf("ConfirmMeetingsBulk: %v", err)
+	}
+	if len(r2.Confirmed) != 1 {
+		t.Fatalf("confirmed = %d, want 1", len(r2.Confirmed))
+	}
+	if got := r2.Confirmed[0].Description; got != "body only, no title" {
+		t.Errorf("description = %q, want the body fallback", got)
+	}
+}
+
 func TestManualInterval_RequiresExplicitConfirm(t *testing.T) {
 	r := workflow.Record{Date: "2026-10-06"}
 	if err := AddManualInterval(&r, ManualInterval{StartAt: at(9, 0), EndAt: at(10, 0), Project: "P", Description: "manual work"}); err != nil {

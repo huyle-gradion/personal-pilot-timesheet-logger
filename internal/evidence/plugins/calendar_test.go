@@ -167,6 +167,45 @@ func TestCalendarPlugin_ContractDeterminism(t *testing.T) {
 	}
 }
 
+// GAP-7 (#70): the calendar plugin still exposes the meeting TITLE as Title while
+// its Description keeps the ICS body plus a "Location:" line. The meeting
+// worklog description is chosen downstream by the proposal layer, so the
+// evidence record must retain the detail.
+func TestCalendarPlugin_ExposesTitleAndKeepsBodyOnDescription(t *testing.T) {
+	const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:with-desc@test
+DTSTART:20261006T020000Z
+DTEND:20261006T030000Z
+SUMMARY:Design Review
+DESCRIPTION:Agenda: finalise the spec
+LOCATION:Room 4
+END:VEVENT
+END:VCALENDAR`
+
+	p := &CalendarPlugin{Fetch: staticFetcher(ics)}
+	res, err := p.Collect(context.Background(), calendarConfig(),
+		evidence.CollectRequest{Date: "2026-10-06"})
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(res.Evidence) != 1 {
+		t.Fatalf("expected 1 evidence item, got %d", len(res.Evidence))
+	}
+	e := res.Evidence[0]
+	if e.Title != "Design Review" {
+		t.Errorf("Title = %q, want the ICS SUMMARY %q", e.Title, "Design Review")
+	}
+	if !strings.Contains(e.Description, "Agenda: finalise the spec") {
+		t.Errorf("Description = %q, want it to keep the ICS body", e.Description)
+	}
+	if !strings.Contains(e.Description, "Location: Room 4") {
+		t.Errorf("Description = %q, want it to keep the Location: line", e.Description)
+	}
+}
+
 // PREFLIGHT-RUNTIME-1: runtime validation of a calendar source passes WITHOUT a
 // fixture when url_ref is present, and fails when it is missing.
 func TestCalendarPlugin_RuntimeValidationNoFixture(t *testing.T) {

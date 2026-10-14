@@ -364,7 +364,7 @@ func buildMeetings(calendarEv []evidence.Evidence, loc *time.Location, dateStr s
 				EndAt:         f.EndAt,
 				Duration:      dur,
 				Project:       project,
-				Description:   blockDescription(e),
+				Description:   MeetingDescription(e),
 				EvidenceIDs:   []string{e.ID},
 				Attendance:    AttendanceUnresolved,
 				Preselected:   e.Invitation == evidence.InvitationAccepted,
@@ -378,7 +378,7 @@ func buildMeetings(calendarEv []evidence.Evidence, loc *time.Location, dateStr s
 			blocks = append(blocks, b)
 		}
 		for _, f := range carryFrags {
-			carries = append(carries, carryFromFragment(dateStr, BlockMeeting, f, loc, project.Project, blockDescription(e), []string{e.ID}))
+			carries = append(carries, carryFromFragment(dateStr, BlockMeeting, f, loc, project.Project, MeetingDescription(e), []string{e.ID}))
 		}
 	}
 	return blocks, carries
@@ -448,6 +448,30 @@ func blockDescription(e evidence.Evidence) string {
 		return d
 	}
 	return strings.TrimSpace(e.Title)
+}
+
+// MeetingDescription returns the worklog description for a MEETING-derived block
+// and its carry fragments, and for a review-layer confirmed meeting or join: the
+// meeting TITLE (the ICS SUMMARY). The calendar evidence still carries the ICS
+// DESCRIPTION body (with any "Location:" line) as its own Description, but a
+// meeting worklog describes itself by its title, so the title is preferred. Only
+// a title-less entry falls back to the calendar description text, so such an
+// entry still yields something rather than nothing.
+//
+// It is EXPORTED so internal/review shares this one rule (JoinCollision and
+// ConfirmMeetingsBulk) instead of re-deriving meeting text a second time that can
+// drift. It is deliberately a SEPARATE selector from blockDescription, which
+// stays used by buildManual (and keeps its Description-first preference). Journal
+// evidence sets Title=firstLine and Description=fullText where the longer text IS
+// the correct description (journal.go), and agent evidence pairs Title=event with
+// Description=topic (agent.go); flipping the shared helper's preference would
+// silently change those descriptions. The meeting preference therefore lives
+// here, at the meeting path only.
+func MeetingDescription(e evidence.Evidence) string {
+	if t := strings.TrimSpace(e.Title); t != "" {
+		return t
+	}
+	return strings.TrimSpace(e.Description)
 }
 
 // buildNarratives turns active journal evidence into UNTIMED narrative
