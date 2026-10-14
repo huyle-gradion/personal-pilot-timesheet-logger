@@ -1410,6 +1410,52 @@ func TestGuided_UnacceptedInvitationStillPromptsAttendance(t *testing.T) {
 	}
 }
 
+// TestGuided_UnacceptedMeetingEditStagesAttendance is F1 of the SKILL-1 review:
+// the EDIT option for a meeting whose invitation is NOT accepted must stage
+// attendance as attended when the operator answers "yes, attended". Before the
+// SKILL-1 change the edit path staged NO attendance at all, so review.go's
+// fallback (a meeting is attended only when Preselected) recorded an
+// operator-attended meeting as NOT attended. This asserts through to the persisted
+// record, which is where the old fallback was observable. The project is left
+// unset so the edit path asks for it in both the old and the new code (identical
+// input scripting), making any pre-change failure attributable to attendance.
+func TestGuided_UnacceptedMeetingEditStagesAttendance(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence,
+			unacceptedMeetingEvidenceAt("cal1", time.Date(2026, 10, 6, 9, 0, 0, 0, loc), time.Date(2026, 10, 6, 10, 0, 0, 0, loc)))
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// EDIT the meeting (2) -> attendance asked (true); times/project/description
+	// edits; no bulk (0); classification (0); no missing work; confirm the review.
+	p := &fakePrompter{
+		choose:   []int{2, 0, 0},
+		inputs:   []string{"09:00", "10:00", "Proj", "edited meeting"},
+		confirms: []bool{true, false, true},
+	}
+	code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb)
+	if code != exitOK && code != exitBlocked {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 {
+		t.Fatalf("want 1 confirmed meeting, got %+v", rec.Confirmed)
+	}
+	if !rec.Confirmed[0].Attendance {
+		t.Fatalf("a meeting attended via the EDIT option must be recorded as attended, got %+v", rec.Confirmed[0])
+	}
+}
+
 // TestGuided_MappedProjectIsNotPromptedInEdit: a block whose project is already
 // set (from the source mapping) keeps it as-is; choosing the edit option does NOT
 // prompt for the project, and the option label is honest about that.

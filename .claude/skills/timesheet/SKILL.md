@@ -68,7 +68,9 @@ Invoke this skill when the user issues any of the following triggers:
 - **The guided review states its defaults and asks only genuine unknowns.** An
   **accepted invitation** means attendance is treated as attended and staged as
   attended, with **no** attendance prompt; the attendance question is asked only
-  when the invitation was **not accepted**. A **project the mapping already
+  when the invitation was **not accepted**. An accepted invitation is stated as
+  attended by default, and a meeting the operator accepted but did **not** attend is
+  handled by choosing `Exclude from work`. A **project the mapping already
   supplies** is kept as-is and **not** prompted; the project prompt is asked only
   when the project is genuinely **unset**. An **empty exclusion set is the
   default** — the guided review never asks an "exclusions?" question (excluding is

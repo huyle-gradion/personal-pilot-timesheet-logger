@@ -46,11 +46,14 @@ set are all defaults, not questions:
   `attendance: attended (invitation accepted; stated default, not prompted)`. The
   attendance question (`Did you attend this meeting?`) is asked **only** when the
   invitation was **not accepted** — the one case where attendance is a genuine
-  unknown.
+  unknown. An accepted invitation is stated as attended by default; a meeting the
+  operator accepted but did **not** attend is handled by choosing `Exclude from work`.
 - **Project.** When a block's or interval's project is **already set** (from the
-  configured mapping), it is kept as-is and **not** prompted; the run prints
-  `project: <P> (already set; kept as-is, not prompted)`. The project prompt is asked
-  **only** when the project is genuinely **unset** (empty).
+  configured mapping), it is kept as-is and **not** prompted; when the edit option is
+  chosen the run prints `project: <P> (already set; kept as-is, not prompted)`. The
+  project prompt is asked **only** when the project is genuinely **unset** (empty).
+  A project already set from the mapping is overridden either by the guided bulk
+  `Bulk-assign a project` action or by the scripted `project` decision key.
 - **Exclusions.** An **empty exclusion set is the default**: the guided review never
   asks an "exclusions?" question. Excluding is always an explicit per-block choice or
   an explicit bulk action, never a question.

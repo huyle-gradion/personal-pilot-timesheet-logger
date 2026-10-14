@@ -83,8 +83,11 @@ work, approvals, and selections are preserved.
   are shown and offered for acknowledgment; without acknowledgment the preview
   blocks on `incomplete_collection`.
 - **Proposed blocks**: work, meetings, and manual blocks with their span (or an
-  explicit `duration unknown`), project, and description. Meetings ask attendance;
-  a not-attended meeting is excluded from work but kept as evidence.
+  explicit `duration unknown`), project, and description. Attendance is asked only
+  when a meeting's invitation was NOT accepted; an accepted invitation is stated as
+  attended by default and not asked. A meeting the operator did not attend is handled
+  by the "Exclude from work" option, which excludes it from work but keeps it as
+  evidence.
 - **Collisions**: an overlapping meeting can be joined with the interval it
   overlaps (counted once, both texts and evidence kept) or resolved by trim or
   exclude.
