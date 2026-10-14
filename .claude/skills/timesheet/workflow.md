@@ -35,6 +35,49 @@ every choice in one atomic step only after a deliberate final confirmation, and
 never approves or submits. Full modes, precedence, and cancellation:
 [guided workflow](../../../docs/agents/guided-workflow.md).
 
+### Guided review defaults (stated, not asked)
+
+The guided review **states its defaults and asks only genuine unknowns**. An
+accepted invitation, a project the mapping already supplies, and an empty exclusion
+set are all defaults, not questions:
+
+- **Attendance (meetings).** When the invitation was **ACCEPTED**, attendance is
+  treated as **attended** and staged as attended with **no prompt**; the run prints
+  `attendance: attended (invitation accepted; stated default, not prompted)`. The
+  attendance question (`Did you attend this meeting?`) is asked **only** when the
+  invitation was **not accepted** — the one case where attendance is a genuine
+  unknown.
+- **Project.** When a block's or interval's project is **already set** (from the
+  configured mapping), it is kept as-is and **not** prompted; the run prints
+  `project: <P> (already set; kept as-is, not prompted)`. The project prompt is asked
+  **only** when the project is genuinely **unset** (empty).
+- **Exclusions.** An **empty exclusion set is the default**: the guided review never
+  asks an "exclusions?" question. Excluding is always an explicit per-block choice or
+  an explicit bulk action, never a question.
+
+The per-block option labels are exactly:
+
+- A **proposed block**: `Confirm as reviewed work`, `Exclude from work`,
+  `Edit times / description` (the project is already set) or
+  `Edit times / project / description` (the project is unset), `Leave unconfirmed`;
+  a meeting that overlaps an already-confirmed interval additionally offers
+  `Attended, joined with the overlapping interval (counts once)`.
+- An **existing confirmed interval**: `Keep as is`,
+  `Edit times / description` (the project is already set) or
+  `Edit times / project / description` (the project is unset), plus exactly one of
+  `Submitted - edit the remote entry instead; it cannot be removed` (a mapped
+  interval), `Removed with the rest of this split group` (a sibling fragment is
+  already staged for removal), or `Remove from this day (unconfirm)`.
+
+The edit label names the project **only** while the project is still unset, so the
+option never promises an edit it will not offer; times and description stay editable
+in both cases.
+
+**No safety gate is a default.** The final `Apply this review and mark the day
+reviewed?` confirmation, the incomplete-source acknowledgment, the carry
+confirmation, and every bulk staging confirmation remain questions and are
+unchanged.
+
 ---
 
 ## Step 0: `[Script]` Configuration (when no config exists, or to change one)

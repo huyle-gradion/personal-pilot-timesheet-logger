@@ -65,6 +65,25 @@ Invoke this skill when the user issues any of the following triggers:
   Approval and submission stay separate, explicit commands. **Production
   submission is not performed or authorized here.** See
   [guided workflow](../../../docs/agents/guided-workflow.md).
+- **The guided review states its defaults and asks only genuine unknowns.** An
+  **accepted invitation** means attendance is treated as attended and staged as
+  attended, with **no** attendance prompt; the attendance question is asked only
+  when the invitation was **not accepted**. A **project the mapping already
+  supplies** is kept as-is and **not** prompted; the project prompt is asked only
+  when the project is genuinely **unset**. An **empty exclusion set is the
+  default** — the guided review never asks an "exclusions?" question (excluding is
+  always an explicit per-block choice or an explicit bulk action). The per-block
+  option labels are exactly: for a proposed block, `Confirm as reviewed work`,
+  `Exclude from work`, `Edit times / description` (project already set) or
+  `Edit times / project / description` (project unset), `Leave unconfirmed`, plus
+  `Attended, joined with the overlapping interval (counts once)` for a meeting that
+  overlaps an already-confirmed interval; for an existing confirmed interval,
+  `Keep as is`, `Edit times / description` or `Edit times / project / description`,
+  plus one of `Submitted - edit the remote entry instead; it cannot be removed`,
+  `Removed with the rest of this split group`, or `Remove from this day
+  (unconfirm)`. **No safety gate is a default**: the final review confirmation, the
+  incomplete-source acknowledgment, the carry confirmation, and every bulk staging
+  confirmation stay questions.
 - **AI is optional and TEXT ONLY.** It may propose titles and descriptions. It can
   never change intervals, attendance, projects, evidence links, or approvals. With
   `--no-editorial` (or no editor configured) the workflow still completes using
@@ -158,6 +177,12 @@ unfinished confirmation, approval, or submission** change, and prior reviewed
 state is preserved; collection and optional editorial synthesis may already have
 persisted their own durable state. The guided run stops at the exact preview and
 export and prints the `approve --plan` follow-up — it never approves or submits.
+In the guided review, defaults are **stated, not asked**: an accepted invitation is
+treated as attended, a project the mapping already supplies is kept as-is, and an
+empty exclusion set is the default; the attendance question is asked only for a
+non-accepted invitation and the project prompt only when the project is unset. The
+exact option labels and defaults are in
+[workflow.md](workflow.md#guided-review-defaults-stated-not-asked).
 Details: [guided workflow](../../../docs/agents/guided-workflow.md).
 
 For a guided/interactive run, prefer a **prebuilt binary**: build once

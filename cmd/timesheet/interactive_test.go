@@ -1289,7 +1289,9 @@ func TestGuided_ExistingConfirmedEditable(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	// edit the existing interval (1): keep times/project, set a new description.
-	p := &fakePrompter{choose: []int{1, 0}, inputs: []string{"", "", "", "edited description"}, confirms: []bool{false, false, true}}
+	// The interval's project ("Proj") is already set, so the project is NOT
+	// prompted; the inputs are start, end, description.
+	p := &fakePrompter{choose: []int{1, 0}, inputs: []string{"", "", "edited description"}, confirms: []bool{false, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -1299,6 +1301,185 @@ func TestGuided_ExistingConfirmedEditable(t *testing.T) {
 	}
 	if rec.Confirmed[0].Description != "edited description" {
 		t.Fatalf("an existing interval must be editable, got %q", rec.Confirmed[0].Description)
+	}
+}
+
+// --- SKILL-1: state the defaults, ask only genuine unknowns -----------------
+//
+// An ACCEPTED invitation is the stated default for attendance, a project already
+// set (from the source mapping) is kept as-is, and an empty exclusion set is the
+// default. These tests pin the two interactive levers: attendance and project.
+
+// unacceptedMeetingEvidenceAt is a meeting evidence whose invitation is NOT
+// accepted (kept as a proposal input, so it is still proposed), so attendance is a
+// genuine unknown and MUST be asked.
+func unacceptedMeetingEvidenceAt(id string, start, end time.Time) evidence.Evidence {
+	e := meetingEvidenceAt(id, start, end)
+	e.Invitation = evidence.InvitationNeedsAction
+	return e
+}
+
+// gitEvidenceWithProject is git evidence whose resolved project is set (as a
+// configured mapping would supply), so the project is NOT a genuine unknown.
+func gitEvidenceWithProject(project string) evidence.Evidence {
+	e := gitEvidence()
+	e.ProjectHints = []string{project}
+	return e
+}
+
+// TestGuided_AcceptedInvitationDoesNotPromptAttendance: an accepted invitation
+// (Preselected true) is the stated default, so attendance is treated as attended
+// WITHOUT a prompt and the review stages attendance as attended.
+func TestGuided_AcceptedInvitationDoesNotPromptAttendance(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		// meetingEvidenceAt sets Invitation=accepted -> Preselected true.
+		m := meetingEvidenceAt("cal1", time.Date(2026, 10, 6, 9, 0, 0, 0, loc), time.Date(2026, 10, 6, 10, 0, 0, 0, loc))
+		m.ProjectHints = []string{"Proj"} // a resolved project, so the preview is not blocked on it
+		rec.CollectedEvidence = append(rec.CollectedEvidence, m)
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// confirm the meeting (0); no bulk (0); classification (0); no missing work;
+	// confirm the review.
+	p := &fakePrompter{choose: []int{0, 0, 0}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	for _, title := range p.confirmTitles {
+		if strings.Contains(title, "Did you attend this meeting?") {
+			t.Fatalf("an accepted invitation must NOT prompt for attendance, got %v", p.confirmTitles)
+		}
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || !rec.Confirmed[0].Attendance {
+		t.Fatalf("an accepted invitation must stage attendance as attended, got %+v", rec.Confirmed)
+	}
+	if !strings.Contains(out.String(), "invitation accepted") {
+		t.Fatalf("the attendance default must be stated to the operator:\n%s", out.String())
+	}
+}
+
+// TestGuided_UnacceptedInvitationStillPromptsAttendance: a non-accepted invitation
+// is a genuine unknown, so the attendance prompt IS asked.
+func TestGuided_UnacceptedInvitationStillPromptsAttendance(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	loc, err := time.LoadLocation("Asia/Ho_Chi_Minh")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		m := unacceptedMeetingEvidenceAt("cal1", time.Date(2026, 10, 6, 9, 0, 0, 0, loc), time.Date(2026, 10, 6, 10, 0, 0, 0, loc))
+		m.ProjectHints = []string{"Proj"} // a resolved project, so the preview is not blocked on it
+		rec.CollectedEvidence = append(rec.CollectedEvidence, m)
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// confirm the meeting (0) -> attendance asked (true); no bulk (0); classification
+	// (0); no missing work; confirm the review.
+	p := &fakePrompter{choose: []int{0, 0, 0}, confirms: []bool{true, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	n := 0
+	for _, title := range p.confirmTitles {
+		if strings.Contains(title, "Did you attend this meeting?") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("a non-accepted invitation must ask attendance exactly once, got %d (%v)", n, p.confirmTitles)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || !rec.Confirmed[0].Attendance {
+		t.Fatalf("an attended meeting must stage attendance as attended, got %+v", rec.Confirmed)
+	}
+}
+
+// TestGuided_MappedProjectIsNotPromptedInEdit: a block whose project is already
+// set (from the source mapping) keeps it as-is; choosing the edit option does NOT
+// prompt for the project, and the option label is honest about that.
+func TestGuided_MappedProjectIsNotPromptedInEdit(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidenceWithProject("Proj"))
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// edit the block (2): the project ("Proj") is already set, so it is NOT
+	// prompted; inputs are start, end, description. No bulk (0); classification (0);
+	// no missing work; confirm the review.
+	p := &fakePrompter{choose: []int{2, 0, 0}, inputs: []string{"16:00", "17:00", "new desc"}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if len(p.chooseOptions) == 0 || len(p.chooseOptions[0]) < 3 {
+		t.Fatalf("want the block option list, got %v", p.chooseOptions)
+	}
+	if got := p.chooseOptions[0][2].Label; got != "Edit times / description" {
+		t.Fatalf("a set project must make the edit label honest, got %q", got)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || rec.Confirmed[0].Project != "Proj" {
+		t.Fatalf("a mapped project must be kept as-is, got %+v", rec.Confirmed)
+	}
+	if rec.Confirmed[0].Description != "new desc" {
+		t.Fatalf("the description must still be editable, got %q", rec.Confirmed[0].Description)
+	}
+	if !strings.Contains(out.String(), "already set") {
+		t.Fatalf("the kept project must be stated to the operator:\n%s", out.String())
+	}
+}
+
+// TestGuided_UnmappedProjectStillPrompts: an EMPTY project is a genuine unknown, so
+// the edit option still asks for it.
+func TestGuided_UnmappedProjectStillPrompts(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Name: "X", ActivityType: "internal project"})
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	cfg := guidedTestConfig()
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.CollectedEvidence = append(rec.CollectedEvidence, gitEvidence()) // no project
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// edit the block (2): the project is UNSET, so it IS prompted (start, end,
+	// project, description). No bulk (0); classification (0); no missing work;
+	// confirm the review.
+	p := &fakePrompter{choose: []int{2, 0, 0}, inputs: []string{"16:00", "17:00", "Proj", "work"}, confirms: []bool{false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if len(p.chooseOptions) == 0 || len(p.chooseOptions[0]) < 3 {
+		t.Fatalf("want the block option list, got %v", p.chooseOptions)
+	}
+	if got := p.chooseOptions[0][2].Label; got != "Edit times / project / description" {
+		t.Fatalf("an unset project must keep the project in the edit label, got %q", got)
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || rec.Confirmed[0].Project != "Proj" {
+		t.Fatalf("an unset project must still be prompted and applied, got %+v", rec.Confirmed)
 	}
 }
 
@@ -1511,11 +1692,12 @@ func TestGuided_ExistingEditInvalidTimeReprompts(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// edit existing (1); no reset; an invalid start, then a valid 09:30-10:30; keep project;
-	// new description; no missing work; confirm.
+	// edit existing (1); no reset; an invalid start, then a valid 09:30-10:30; the
+	// project is already set so it is NOT prompted; new description; no missing work;
+	// confirm.
 	p := &fakePrompter{
 		choose:   []int{1, 0},
-		inputs:   []string{"9am", "09:30", "10:30", "", "edited"},
+		inputs:   []string{"9am", "09:30", "10:30", "edited"},
 		confirms: []bool{false, false, true},
 	}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {

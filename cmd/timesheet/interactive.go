@@ -430,7 +430,7 @@ func (g *guided) reviewExisting(ctx context.Context, ci workflow.ConfirmedInterv
 	title := fmt.Sprintf("Existing %s  %s-%s  %s  %s", shortID(ci.ID), ci.StartTime, ci.EndTime, orDash(ci.Project), oneLine(ci.Description))
 	opts := []promptOption{
 		{Label: "Keep as is"},
-		{Label: "Edit times / project / description"},
+		{Label: editOptionLabel(ci.Project)},
 	}
 	group := strings.TrimSpace(ci.SplitGroupID)
 	alreadyStaged := group != "" && stagedGroups[group]
@@ -547,7 +547,7 @@ func (g *guided) reviewBlock(ctx context.Context, b proposal.ProposedTimeBlock, 
 	opts := []promptOption{
 		{Label: "Confirm as reviewed work"},
 		{Label: "Exclude from work"},
-		{Label: "Edit times / project / description"},
+		{Label: editOptionLabel(b.Project.Project)},
 		{Label: "Leave unconfirmed"},
 	}
 	var collides []proposal.ProposedTimeBlock
@@ -564,7 +564,7 @@ func (g *guided) reviewBlock(ctx context.Context, b proposal.ProposedTimeBlock, 
 	switch idx {
 	case 0:
 		if isMeeting {
-			attended, err := g.p.Confirm(ctx, "Did you attend this meeting?", b.Preselected)
+			attended, err := g.meetingAttendance(ctx, b)
 			if err != nil {
 				return err
 			}
@@ -581,7 +581,7 @@ func (g *guided) reviewBlock(ctx context.Context, b proposal.ProposedTimeBlock, 
 		dec.Exclude = append(dec.Exclude, run.ExcludeDecision{EvidenceID: firstEvidence(b)})
 	case 2:
 		if isMeeting {
-			attended, err := g.p.Confirm(ctx, "Did you attend this meeting?", b.Preselected)
+			attended, err := g.meetingAttendance(ctx, b)
 			if err != nil {
 				return err
 			}
@@ -589,8 +589,11 @@ func (g *guided) reviewBlock(ctx context.Context, b proposal.ProposedTimeBlock, 
 				dec.Exclude = append(dec.Exclude, run.ExcludeDecision{EvidenceID: firstEvidence(b), Reason: "not_attended"})
 				return nil
 			}
+			att := true
+			addConfirm(dec, run.ConfirmDecision{BlockID: b.ID, Attendance: &att})
+		} else {
+			addConfirm(dec, run.ConfirmDecision{BlockID: b.ID})
 		}
-		addConfirm(dec, run.ConfirmDecision{BlockID: b.ID})
 		if err := g.editProposed(ctx, b, dec); err != nil {
 			return err
 		}
@@ -603,6 +606,31 @@ func (g *guided) reviewBlock(ctx context.Context, b proposal.ProposedTimeBlock, 
 	return nil
 }
 
+// meetingAttendance resolves a meeting's attendance. When the invitation was
+// ACCEPTED (b.Preselected) attendance is treated as attended and the value is
+// STATED, with NO prompt: an accepted invitation is the documented default, not a
+// genuine unknown. Only an invitation that is NOT accepted is asked, because only
+// then is attendance genuinely unknown. It returns attended=false only when the
+// owner answers that they did not attend (never for an accepted invitation).
+func (g *guided) meetingAttendance(ctx context.Context, b proposal.ProposedTimeBlock) (bool, error) {
+	if b.Preselected {
+		fmt.Fprintf(g.stdout, "  attendance: attended (invitation accepted; stated default, not prompted)\n")
+		return true, nil
+	}
+	return g.p.Confirm(ctx, "Did you attend this meeting?", b.Preselected)
+}
+
+// editOptionLabel names the edit option HONESTLY: the project is editable only
+// while it is still UNSET (a set project comes from the configured mapping and is
+// kept as-is), so the label names the project only then. The interface stays
+// complete: the option still edits times and description in both cases.
+func editOptionLabel(project string) string {
+	if strings.TrimSpace(project) == "" {
+		return "Edit times / project / description"
+	}
+	return "Edit times / description"
+}
+
 // editProposed stages time/project/description edits for a proposed block that is
 // being confirmed. An invalid time is re-prompted with a clear error, never
 // silently dropped.
@@ -611,7 +639,7 @@ func (g *guided) editProposed(ctx context.Context, b proposal.ProposedTimeBlock,
 	if err != nil {
 		return err
 	}
-	project, err := g.p.Input(ctx, "Project", "blank keeps "+orDash(b.Project.Project), b.Project.Project)
+	project, err := g.promptProject(ctx, b.Project.Project)
 	if err != nil {
 		return err
 	}
@@ -638,7 +666,7 @@ func (g *guided) editConfirmed(ctx context.Context, id, curStart, curEnd, curPro
 	if err != nil {
 		return err
 	}
-	project, err := g.p.Input(ctx, "Project", "blank keeps "+orDash(curProject), curProject)
+	project, err := g.promptProject(ctx, curProject)
 	if err != nil {
 		return err
 	}
@@ -649,13 +677,29 @@ func (g *guided) editConfirmed(ctx context.Context, id, curStart, curEnd, curPro
 	if start != curStart || end != curEnd {
 		dec.Trim = append(dec.Trim, run.TrimDecision{BlockID: id, NewStart: start, NewEnd: end})
 	}
-	if strings.TrimSpace(project) != curProject {
-		dec.Project = append(dec.Project, run.ProjectDecision{BlockID: id, Project: strings.TrimSpace(project)})
+	if project != curProject {
+		dec.Project = append(dec.Project, run.ProjectDecision{BlockID: id, Project: project})
 	}
 	if desc != curDesc {
 		dec.Description = append(dec.Description, run.DescriptionDecision{BlockID: id, Text: desc})
 	}
 	return nil
+}
+
+// promptProject resolves a block's project. A project that is ALREADY SET (from
+// the configured mapping) is the stated default: it is kept as-is and NOT
+// prompted, because asking for a value the mapping already supplies is not a
+// genuine unknown. Only a genuinely UNSET (empty) project is asked.
+func (g *guided) promptProject(ctx context.Context, current string) (string, error) {
+	if p := strings.TrimSpace(current); p != "" {
+		fmt.Fprintf(g.stdout, "  project: %s (already set; kept as-is, not prompted)\n", p)
+		return p, nil
+	}
+	v, err := g.p.Input(ctx, "Project", "blank keeps (none)", "")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(v), nil
 }
 
 // promptInterval asks for a start/end pair, re-prompting with a clear error on an
