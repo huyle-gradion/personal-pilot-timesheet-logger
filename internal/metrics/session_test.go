@@ -307,6 +307,80 @@ func TestReport_SessionUnknownPriceRendersUnknown(t *testing.T) {
 	}
 }
 
+// TestSession_EmptyCatalogCostIsUnknownPrice (F1) asserts a catalog entry that
+// EXISTS but carries no cost block (all four rates nil) is treated as an unknown
+// price, never labelled `catalog`: the label is never stronger than the evidence.
+func TestSession_EmptyCatalogCostIsUnknownPrice(t *testing.T) {
+	ts := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	cat, err := ParseModelCatalog([]byte(`{"opencode":{"models":[{"id":"m"}]}}`))
+	if err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	sess := BuildSession(sessionCallRun("opencode", "m", KnownUsage(100, 10, 5, 1, 0), StepCollect, ts), cat, time.UTC)
+	for name, r := range map[string]*float64{
+		"input":      sess.Price.Input,
+		"output":     sess.Price.Output,
+		"cacheRead":  sess.Price.CacheRead,
+		"cacheWrite": sess.Price.CacheWrite,
+	} {
+		if r != nil {
+			t.Fatalf("empty-cost price %s = %v, want nil", name, *r)
+		}
+	}
+	if sess.PriceSource != PriceSourceUnknown {
+		t.Fatalf("empty-cost price source = %q, want unknown", sess.PriceSource)
+	}
+	if sess.Cost != nil {
+		t.Fatalf("empty-cost cost = %v, want nil", *sess.Cost)
+	}
+	if len(sess.Models) != 1 || sess.Models[0].PriceSource != PriceSourceUnknown {
+		t.Fatalf("empty-cost per-model source = %v, want one entry with unknown", sess.Models)
+	}
+}
+
+// TestStore_WriteSessionReassociationIsNotNoOp (F2) asserts a re-import of the
+// SAME transcript with a corrected logged date IS applied — the operator's stated
+// day is never silently dropped — while a byte-identical repeat stays a no-op.
+func TestStore_WriteSessionReassociationIsNotNoOp(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	ts := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	sess := BuildSession(sessionCallRun("p", "m", KnownUsage(10, 1, 0, 0, 0), StepCollect, ts), nil, time.UTC)
+	sess.ContentHash = "hash-a"
+	sess.LoggedDate = ""
+	sess.Association = AssociationLocalStepDate
+
+	if wrote, err := store.WriteSession(sess); err != nil || !wrote {
+		t.Fatalf("first write: wrote=%v err=%v", wrote, err)
+	}
+	// A byte-identical repeat is still a no-op.
+	if wrote, err := store.WriteSession(sess); err != nil || wrote {
+		t.Fatalf("identical repeat: wrote=%v err=%v (want no-op)", wrote, err)
+	}
+
+	// The SAME content, now carrying the operator's corrected day.
+	corrected := sess
+	corrected.LoggedDate = "2026-10-06"
+	corrected.Association = AssociationImportFlag
+	wrote, err := store.WriteSession(corrected)
+	if err != nil || !wrote {
+		t.Fatalf("reassociation write: wrote=%v err=%v (want applied)", wrote, err)
+	}
+	got, err := store.ReadSession(sess.SessionID)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if got.LoggedDate != "2026-10-06" || got.Association != AssociationImportFlag {
+		t.Fatalf("stored session = %q/%q, want 2026-10-06/import_flag", got.LoggedDate, got.Association)
+	}
+	if got.ContentHash != "hash-a" {
+		t.Fatalf("content hash = %q, want hash-a", got.ContentHash)
+	}
+}
+
 // sessionIDList renders session ids for test failure messages.
 func sessionIDList(sessions []SessionRecord) []string {
 	out := make([]string, 0, len(sessions))

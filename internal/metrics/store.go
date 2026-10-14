@@ -147,11 +147,14 @@ func (s *Store) ListRuns(date string) ([]RunRecord, error) {
 	return out, nil
 }
 
-// WriteSession persists a session file. It mirrors WriteRun: it writes ONLY when
-// the session file is absent or its ContentHash differs from rec.ContentHash, so
-// re-deriving an unchanged session is a no-op. It returns whether a write
-// occurred. LoggedDate and Association may be set by the caller before this call;
-// they are NOT part of the idempotency key.
+// WriteSession persists a session file. It mirrors WriteRun's content-hash
+// idempotence but ADDS the association fields to the decision: it writes when the
+// session file is absent, OR the ContentHash differs, OR LoggedDate differs, OR
+// Association differs. The extra terms make a re-import of the SAME transcript
+// with a corrected day (`--date D`, association `import_flag`) apply the
+// operator's explicit day instead of being silently dropped as a no-op. An
+// otherwise byte-identical repeat write is still a no-op. It returns whether a
+// write occurred.
 func (s *Store) WriteSession(rec SessionRecord) (bool, error) {
 	id, err := sanitizeRunID(rec.SessionID)
 	if err != nil {
@@ -162,7 +165,10 @@ func (s *Store) WriteSession(rec SessionRecord) (bool, error) {
 	existing, rerr := readSessionFile(path)
 	switch {
 	case rerr == nil:
-		if existing.ContentHash != "" && existing.ContentHash == rec.ContentHash {
+		if existing.ContentHash != "" &&
+			existing.ContentHash == rec.ContentHash &&
+			existing.LoggedDate == rec.LoggedDate &&
+			existing.Association == rec.Association {
 			return false, nil
 		}
 	case errors.Is(rerr, os.ErrNotExist):

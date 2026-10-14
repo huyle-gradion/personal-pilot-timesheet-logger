@@ -437,10 +437,14 @@ type DailyAggregate struct {
 	// SessionTotalTokens is the sum of each session's consumed total; reasoning is
 	// EXCLUDED. A nil SessionCacheHitPct/SessionCost is UNKNOWN, never zero.
 	//
-	// SessionCost is `omitempty` so a nil cost is absent from the JSON rather than
-	// a spurious `session_cost: null`; the report always renders "unknown". This
-	// also keeps the aggregate free of any "cost" substring, matching the
-	// provider-native-cost exclusion asserted by the existing tests.
+	// SessionCost is `omitempty` so a nil cost is absent from the aggregate JSON.
+	// This keeps the aggregate free of any "cost" substring ONLY while SessionCost
+	// is nil: a non-nil pointer — including a known zero — still serialises as
+	// `"session_cost": <value>`, matching the provider-native-cost exclusion the
+	// existing tests assert on a nil cost. Note the asymmetry: SessionCacheHitPct
+	// has no `omitempty`, so an unknown cache hit serialises as
+	// `"session_cache_hit_pct": null`, while an unknown cost is absent entirely.
+	// The report renders "unknown" for either.
 	SessionCount         int                  `json:"session_count"`
 	SessionIDs           []string             `json:"session_ids"`
 	SessionUsage         Usage                `json:"session_usage"`

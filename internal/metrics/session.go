@@ -124,7 +124,11 @@ func buildSessionModels(calls []CallRecord, cat *ModelCatalog) []SessionModel {
 			TotalTokens: a.usage.ConsumedTokens(),
 			PriceSource: PriceSourceUnknown,
 		}
-		if price, ok := cat.Lookup(a.provider, a.model); ok {
+		// A present-but-empty catalog cost (key exists, every rate nil) is UNKNOWN,
+		// not `catalog`: the label is never stronger than the evidence. Lookup's own
+		// contract is unchanged (key presence -> ok); this resolution is the single
+		// place that downgrades an all-nil price.
+		if price, ok := cat.Lookup(a.provider, a.model); ok && !priceIsUnknown(price) {
 			sm.Price = price
 			sm.PriceSource = PriceSourceCatalog
 		}
@@ -132,6 +136,13 @@ func buildSessionModels(calls []CallRecord, cat *ModelCatalog) []SessionModel {
 		out = append(out, sm)
 	}
 	return out
+}
+
+// priceIsUnknown reports whether a resolved TokenPrice carries NO evidence: every
+// one of its four rates is nil. Such a price is treated as unknown rather than
+// labelled `catalog` (see buildSessionModels).
+func priceIsUnknown(p TokenPrice) bool {
+	return p.Input == nil && p.Output == nil && p.CacheRead == nil && p.CacheWrite == nil
 }
 
 // singleModel returns the session's model only when exactly one distinct

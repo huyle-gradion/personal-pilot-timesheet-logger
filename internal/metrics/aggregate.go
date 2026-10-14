@@ -230,6 +230,14 @@ func applyEditorial(agg *DailyAggregate, rec *workflow.Record) {
 // are never merged with them. SessionTotalTokens sums each session's consumed
 // total (reasoning EXCLUDED). A nil cache-hit or cost stays nil (UNKNOWN), never
 // zero. Duplicate session ids are collapsed; ids are sorted for determinism.
+//
+// PRECONDITION: it folds EVERY session it is handed into the day's lane, so it
+// MUST be handed sessions ALREADY filtered to the exact day (see sessionsForDate).
+// Handing it an unfiltered slice would fold a session's tokens into a day it may
+// not belong to — the double-count the design forbids. It also does NOT own
+// UnassociatedSessions: the caller sets that field from the unassociated sessions
+// that touch the day (see Store.Aggregate), because those sessions are precisely
+// the ones excluded from the filtered slice passed here.
 func applySessions(agg *DailyAggregate, sessions []SessionRecord) {
 	ids := make([]string, 0, len(sessions))
 	seen := make(map[string]struct{}, len(sessions))

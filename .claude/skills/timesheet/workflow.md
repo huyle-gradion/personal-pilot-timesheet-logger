@@ -497,8 +497,13 @@ $TS metrics import --transcript "$PI_SESSION" && $TS metrics report --date "$DAT
 - **The honesty rule.** An unknown price or model prints `unknown` and is never
   shown as `0` (a nil cache-hit or cost is `unknown`, never `0`). A session whose
   day cannot be established is `unknown` (association `unknown`) and is NOT counted
-  into any day's totals: its day is never guessed, and it is reported separately as
-  an unassociated session, never folded into a day.
+  into any day's totals: its day is never guessed, and it is never folded into a
+  day. It is surfaced **per-day and touch-scoped**: a day's `unassociated_sessions`
+  counts it ONLY when the queried date is one of its workflow-step `LocalDates`, so
+  a session straddling local midnight is reported on each day it actually touched
+  while its tokens are folded into none of them. An unassociated session with NO
+  dated workflow-step calls is counted in no day's aggregate at all; it stays
+  visible only through `metrics sessions`.
 - `compare --base D --target D` shows the base→target delta/percentage per metric
   (a percentage only when the base is Known and non-zero; otherwise `n/a`).
 - `run -- <command...>` records a live monotonic run for a command and derives its
