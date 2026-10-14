@@ -61,6 +61,34 @@ not a replacement for those unrelated code paths.
   `CategoryUnassigned` and is never folded into a step. Calls are bucketed by
   category: `Orchestration` holds only `CategoryOrchestration` calls and every other
   call goes to a separate `Unassigned` lane.
+- **The attribution clause above is SUPERSEDED, 2026-10-14.** Its first-token
+  requirement is no longer the rule and the paragraph is retained only as history.
+  Measured on the owner's real transcripts, ZERO of 44 commands mentioning
+  `timesheet`/`ts` in one session were recognised under it, because real invocations
+  are compound shell commands (`cd <repo> && "$T/ts" review --config ...`,
+  `for ...; do "$TS" preview ...; done`), so every `CallRecord.Step` was
+  `StepUnknown` and the per-step lane carried no information. The rule now IN EFFECT:
+  a call is attributed when a token whose basename is `timesheet` or `ts` appears in
+  an INVOCATION POSITION (the first token, after `go run`, or immediately after a
+  shell separator) and is IMMEDIATELY followed by a recognised subcommand token. Both
+  guards of the superseded paragraph still hold: `grep -r timesheet submit` and
+  `echo timesheet review` are still NOT attributed (a mention in argument position is
+  not an invocation), a path that merely contains `timesheet`
+  (`cat .../timesheet/workflow.md`) is still not attributed, `ls cmd/timesheet` is
+  still not attributed because its binary token is not in an invocation position with
+  a following subcommand, a bare `timesheet`/`ts` with no following subcommand stays
+  `StepUnknown` + `CategoryUnassigned` and is never folded into a step, and category
+  bucketing is unchanged. The binary basename is matched case-insensitively while the
+  subcommand token is matched case-sensitively, which is the implemented behaviour and
+  the safe direction. THE SAFETY RULE ABOVE IS NOT AFFECTED BY THIS SUPERSESSION, and the two
+  clauses are deliberately separate: Safety governs WHAT MAY BE PERSISTED (only
+  counters, ids, timestamps, the subcommand TOKEN, and the provider-native numeric
+  cost; never message text, tool arguments or tool results), whereas attribution
+  governs HOW A STEP IS DERIVED from a command that is already being inspected. The
+  widened rule still RETURNS ONLY the subcommand token, so it persists no more than
+  before, and the change that WAS refused on Safety grounds is a different one that
+  remains refused: decoding a `--date` VALUE out of a tool argument to associate a
+  session with a day.
 - **Editorial usage is DAY-granular.** The [AI] editorial child call is NOT a
   harness turn, so it never appears as a transcript call: editorial usage is copied
   from the workflow record and reported separately from orchestration. There is no
