@@ -181,9 +181,13 @@ their **full ids**, which is how the `block_id` for an `unconfirm` decision (Ste
 is named.
 
 **Pre-existing remote entries for the date.** `review` performs the day's
-authoritative collection read and enumerates every **observed** remote entry for
-the date with its full id, span and description under `Remote entries (<date>):`.
-It also prints `remote observation failed: <error>` when that read failed (a
+authoritative collection read and enumerates the **observed** remote entries for
+the date with their full id, span and description under `Remote entries (<date>):`.
+When that read did **not** complete (a bound hit, duplicates, or a failed stability
+re-check) the header is marked
+`Remote entries (<date>) [PARTIAL - the read did not complete; this list may be
+incomplete]:`, so a partial set is never shown as a complete enumeration.
+`review` also prints `remote observation failed: <error>` when that read failed (a
 non-fatal warning: evidence collection still succeeds), and a non-blocking
 `remote collision: <id>[, <id>...]` warning for an observed entry whose span
 overlaps a confirmed interval — a duplicate-looking signal that never blocks.

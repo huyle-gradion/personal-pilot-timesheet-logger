@@ -13,6 +13,17 @@ import (
 // call time; the execution layer calls it again under the held day lock rather
 // than trusting a plan-time listing.
 //
+// ListEntries OBSERVED INVARIANT (required of every implementation): on a
+// SUCCESSFUL real read it MUST return a Listing with Observed=true, and a
+// zero-value/UNOBSERVED Listing (Observed=false) MUST mean the remote was never
+// contacted. Consumers rely on this asymmetry: submit.BuildPlan treats an
+// Observed=false listing as the supported offline mode (no remote contacted) and
+// only blocks an INCOMPLETE listing that is Observed; run.Collect persists
+// Observed/Complete and reports them to the CLI. An implementation that returned a
+// partial (Complete=false) listing WITHOUT setting Observed would silently skip
+// that block. The error returned by ListEntries MUST be secret-free: run and the
+// CLI print it verbatim as `remote observation failed: <error>`.
+//
 // EntryByID performs a BOUNDED stable-ID read-back of one entry's CONTENT within
 // [from, to]. It fails closed (found=false with a non-nil error) when absence
 // cannot be established (an incomplete listing), so a write is never confirmed

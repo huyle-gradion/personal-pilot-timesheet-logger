@@ -608,12 +608,28 @@ func printSourceStatus(w io.Writer, sum evidence.CollectionSummary) {
 // the scripted `review` and the guided run so both surfaces report the same three
 // things. Nothing is printed for a signal that is absent: a successful read with
 // no entries and no collisions adds no output.
+//
+// F6 (informational): the failure warning prints cr.RemoteObservationError
+// verbatim; it is secret-free only because every run.Remote implementation must
+// return a secret-free error (see the invariant on submit.RemoteObserver). No
+// redaction is attempted here.
 func printRemoteObservation(w io.Writer, date string, cr run.CollectResult) {
 	if cr.RemoteObservationError != "" {
 		fmt.Fprintf(w, "remote observation failed: %s\n", cr.RemoteObservationError)
 	}
 	if cr.RemoteObserved && len(cr.RemoteEntries) > 0 {
-		fmt.Fprintf(w, "Remote entries (%s):\n", date)
+		// A PARTIAL read is enumerated HONESTLY. The entries are real, but an
+		// incomplete scan (a bound hit, duplicates, or a failed stability re-check)
+		// means the set may be missing entries, so the header is LABELLED rather
+		// than shown as a bare, authoritative list. This is the chosen option over
+		// omitting the section: `preview` already blocks this same condition with
+		// `remote_listing_incomplete`, so `review` is the operator's only view of
+		// what WAS read, and showing it clearly marked is more useful than hiding it.
+		if cr.RemoteComplete {
+			fmt.Fprintf(w, "Remote entries (%s):\n", date)
+		} else {
+			fmt.Fprintf(w, "Remote entries (%s) [PARTIAL - the read did not complete; this list may be incomplete]:\n", date)
+		}
 		for _, e := range cr.RemoteEntries {
 			fmt.Fprintf(w, "  %s  %s-%s  %s\n", e.RemoteID, e.StartTime, e.EndTime, oneLine(e.Description))
 		}

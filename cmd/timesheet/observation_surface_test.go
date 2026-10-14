@@ -134,6 +134,25 @@ func TestReview_EnumeratesEntriesAndSurfacesCollision(t *testing.T) {
 	}
 }
 
+// F1: an OBSERVED but INCOMPLETE read must not read as a complete enumeration:
+// the header is labelled PARTIAL, never the bare complete header.
+func TestReview_PartialReadLabelsTheEnumeration(t *testing.T) {
+	entry := workflow.RemoteState{RemoteID: "r1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Description: "partial"}
+	remote := &submitFakeRemote{listing: &gradion.Listing{Observed: true, Complete: false, ObservedAt: obsFixed, Entries: []workflow.RemoteState{entry}}}
+	r, _ := obsRunner(t, remote)
+
+	var out, errb bytes.Buffer
+	if code := cmdReview(context.Background(), r, guidedTestConfig(), false, "", "", testDate, "", "", &out, &errb); code != exitOK {
+		t.Fatalf("review: %d (%s)", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "Remote entries ("+testDate+") [PARTIAL - the read did not complete; this list may be incomplete]:") {
+		t.Errorf("a partial read must label the enumeration PARTIAL:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "Remote entries ("+testDate+"):") {
+		t.Errorf("a partial read must not print the bare complete header:\n%s", out.String())
+	}
+}
+
 // #49(b): an UNOBSERVED (offline) review prints no entries section.
 func TestReview_UnobservedPrintsNoEntriesSection(t *testing.T) {
 	r, _ := obsRunner(t, nil) // nil remote => offline
@@ -155,6 +174,7 @@ func TestGuidedPrintCollection_SurfacesRemoteSignals(t *testing.T) {
 		Date:                   testDate,
 		RemoteObservationError: "boom: read failed",
 		RemoteObserved:         true,
+		RemoteComplete:         true,
 		RemoteEntries: []workflow.RemoteState{{
 			RemoteID: "r1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Description: "remote work",
 		}},

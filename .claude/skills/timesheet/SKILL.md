@@ -145,14 +145,18 @@ Invoke this skill when the user issues any of the following triggers:
   can link multiple supporting records; the links add no minutes and the
   interval's own span is authoritative.
 - **A date's remote entries are enumerated by `review`.** `review` performs the
-  day's authoritative collection read and prints every observed remote entry for
-  the date with its full id, span and description (`Remote entries (<date>):`),
-  plus `remote observation failed:` if that read failed and a non-blocking
-  `remote collision:` warning for a duplicate-looking overlap. `preview` separately
-  re-observes the remote **read-only** and reports it — `remote observed:`,
-  `remote complete:`, and `remote=<id>` on each operation it would edit. Offline
-  (`--offline`, or no configured endpoint) is reported honestly as
-  `remote observed: unobserved (offline; no remote was contacted)` with
+  day's authoritative collection read and prints the observed remote entries for
+  the date with their full id, span and description under
+  `Remote entries (<date>):`. When that read did **not** complete (a bound hit,
+  duplicates, or a failed stability re-check) the header is marked
+  `Remote entries (<date>) [PARTIAL - the read did not complete; this list may be
+  incomplete]:`, so a partial set is never presented as a complete enumeration.
+  `review` also prints `remote observation failed:` if that read failed and a
+  non-blocking `remote collision:` warning for a duplicate-looking overlap.
+  `preview` separately re-observes the remote **read-only** and reports it —
+  `remote observed:`, `remote complete:`, and `remote=<id>` on each operation it
+  would edit. Offline (`--offline`, or no configured endpoint) is reported honestly
+  as `remote observed: unobserved (offline; no remote was contacted)` with
   `remote complete: false`, because nothing about the remote is known. Never reach
   for `bin/list-entries`; that binary is built from an untracked `cmd/` directory
   and is not a supported surface (issue #28 records its disposition).

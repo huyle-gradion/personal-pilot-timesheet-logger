@@ -67,6 +67,13 @@ const keychainRefPrefix = "keychain:"
 
 // Remote is the live Gradion surface used by the runner. A nil Remote means the
 // run is OFFLINE (no remote reads or writes). *gradion.Client satisfies it.
+//
+// OBSERVED INVARIANT (see submit.RemoteObserver for the full contract): a
+// successful ListEntries MUST return a Listing with Observed=true, and
+// Observed=false MUST mean the remote was never contacted. run.observe's offline
+// branch returns exactly such an UNOBSERVED listing; the incomplete-listing plan
+// block keys on `Observed && !Complete` so a partial real read still blocks while
+// offline does not.
 type Remote interface {
 	submit.RemoteObserver
 	submit.RemoteWriter

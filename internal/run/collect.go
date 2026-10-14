@@ -31,11 +31,18 @@ type CollectResult struct {
 	// produced an OBSERVED listing. It is false offline (no remote was contacted)
 	// and on a failed read (RemoteObservationError set). It is ADDITIVE.
 	RemoteObserved bool `json:"remote_observed,omitempty"`
+	// RemoteComplete is true only when that OBSERVED listing was COMPLETE: the scan
+	// terminated with no bound hit, no duplicates, and a passed stability
+	// re-check. It is false offline, on a failed read, and for an OBSERVED but
+	// INCOMPLETE read — in which case RemoteEntries is a PARTIAL set and any
+	// enumeration must say so. It is ADDITIVE.
+	RemoteComplete bool `json:"remote_complete,omitempty"`
 	// RemoteEntries is the day's OBSERVED remote entries, set from the SAME
 	// listing the observation is persisted from, so a CLI surface can enumerate a
 	// date's remote entries with their ids (see issue #43). It is empty when the
 	// remote was not observed. It is ADDITIVE and shares the listing's backing
-	// array, which is read-only by contract.
+	// array, which is read-only by contract. It is a PARTIAL set when
+	// RemoteComplete is false.
 	RemoteEntries []workflow.RemoteState `json:"remote_entries,omitempty"`
 	// RemoteCollisions lists remote entry ids observed during collection whose
 	// span overlaps a confirmed interval on the same date. A duplicate-looking
@@ -104,11 +111,10 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 	hasEnabledSources := enabled > 0
 	// Read the remote listing EXACTLY ONCE for this run when a remote is
 	// configured, then hand that one object to the run's later observe
-	// (cacheListing). A read failure is a non-fatal warning returned for
-	// PROGRAMMATIC consumers: no CLI surface prints it yet (issue #49). No
-	// observation is fabricated and evidence collection still succeeds. Offline
-	// (nil Remote) makes NO remote call and leaves the observation nil — never
-	// fabricated.
+	// (cacheListing). A read failure is a non-fatal warning surfaced by `review`
+	// and the guided run (`remote observation failed: ...`). No observation is
+	// fabricated and evidence collection still succeeds. Offline (nil Remote)
+	// makes NO remote call and leaves the observation nil — never fabricated.
 	//
 	// The read goes through the DECLARED source seam, not an inline client:
 	// Deps.Remote is the injected, read-only remote source adapter
@@ -158,6 +164,7 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 			// the observation is serialized on write. It is also never mutated
 			// after this point, so a future consumer must treat it as read-only.
 			out.RemoteObserved = listing.Observed
+			out.RemoteComplete = listing.Complete
 			out.RemoteEntries = listing.Entries
 			rec.RemoteObservation = &workflow.RemoteObservation{
 				Date:       date,
@@ -177,9 +184,9 @@ func (r *Runner) Collect(ctx context.Context, date string) (CollectResult, error
 
 // remoteCollisions returns the observed remote entry ids whose span overlaps a
 // confirmed interval on the same date. It is a duplicate-looking signal ONLY:
-// it never creates a mapping, never proposes, and never blocks collection. The
-// result is returned for PROGRAMMATIC consumers; no CLI surface prints it yet
-// (issue #49).
+// it never creates a mapping, never proposes, and never blocks collection. It is
+// surfaced by `review` and the guided run as the non-blocking
+// `remote collision: ...` warning (see issue #49).
 func remoteCollisions(date string, confirmed []workflow.ConfirmedInterval, entries []workflow.RemoteState) []string {
 	var out []string
 	for _, e := range entries {

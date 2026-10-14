@@ -75,6 +75,9 @@ func TestCollect_PersistsRemoteObservationAndSurfacesCollision(t *testing.T) {
 	if !res.RemoteObserved {
 		t.Error("a successful remote read must report RemoteObserved=true")
 	}
+	if !res.RemoteComplete {
+		t.Error("a complete remote read must report RemoteComplete=true")
+	}
 	hasEntry := false
 	for _, e := range res.RemoteEntries {
 		if e.RemoteID == "r1" {
@@ -133,6 +136,9 @@ func TestCollect_OfflineLeavesNoRemoteObservation(t *testing.T) {
 	if res.RemoteObserved {
 		t.Error("an offline collection must report RemoteObserved=false")
 	}
+	if res.RemoteComplete {
+		t.Error("an offline collection must report RemoteComplete=false")
+	}
 	if len(res.RemoteEntries) != 0 {
 		t.Fatalf("an offline collection must surface no remote entries, got %+v", res.RemoteEntries)
 	}
@@ -142,6 +148,34 @@ func TestCollect_OfflineLeavesNoRemoteObservation(t *testing.T) {
 	}
 	if got.RemoteObservation != nil {
 		t.Fatalf("an offline collection must leave RemoteObservation nil, got %+v", got.RemoteObservation)
+	}
+}
+
+// F1: an OBSERVED but INCOMPLETE collection read reports RemoteObserved=true and
+// RemoteComplete=false, so a CLI surface can label the enumeration PARTIAL rather
+// than presenting a partial set as complete.
+func TestCollect_ReportsIncompleteObservedRead(t *testing.T) {
+	store := newStore(t)
+	date := "2026-10-06"
+	remote := newFakeRemote()
+	remote.complete = false
+	remote.entries["r1"] = workflow.RemoteState{
+		RemoteID: "r1", Date: date, StartTime: "09:00", EndTime: "10:00", ObservedAt: fixedNow(),
+	}
+	r := newRunner(t, Deps{Store: store, Registry: evidence.NewRegistry(), Remote: remote}, Config{})
+
+	res, err := r.Collect(ctx, date)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if !res.RemoteObserved {
+		t.Error("an incomplete but successful read must still report RemoteObserved=true")
+	}
+	if res.RemoteComplete {
+		t.Error("an incomplete read must report RemoteComplete=false")
+	}
+	if len(res.RemoteEntries) == 0 {
+		t.Error("the observed entries must still be surfaced for a labelled enumeration")
 	}
 }
 

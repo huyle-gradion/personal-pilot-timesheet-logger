@@ -2,7 +2,9 @@ package submit
 
 import (
 	"testing"
+	"time"
 
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -230,5 +232,29 @@ func TestApplyReconcile_NoAdoptionsAddsNoMapping(t *testing.T) {
 	}
 	if len(rec.RemoteMappings) != 0 {
 		t.Fatalf("a bare read/skip must not create a mapping, got %+v", rec.RemoteMappings)
+	}
+}
+
+// F4: Reconcile must not fabricate a local now for an UNOBSERVED listing — the
+// same class of fabrication submit.observedAt was fixed for. The now fallback is
+// for an OBSERVED listing with no timestamp only.
+func TestReconcile_UnobservedHasNoObservedAt(t *testing.T) {
+	rec := reviewedRecord()
+
+	unobserved := Reconcile(rec, gradion.Listing{}, nil, testNow)
+	if !unobserved.ObservedAt.IsZero() {
+		t.Errorf("an unobserved listing must yield a ZERO ObservedAt, got %v", unobserved.ObservedAt)
+	}
+
+	// An OBSERVED listing with a real timestamp uses it.
+	stamped := Reconcile(rec, gradion.Listing{Observed: true, ObservedAt: testNow.Add(-time.Hour)}, nil, testNow)
+	if !stamped.ObservedAt.Equal(testNow.Add(-time.Hour)) {
+		t.Errorf("an observed listing's own timestamp must win, got %v", stamped.ObservedAt)
+	}
+
+	// The defensive fallback survives only for an OBSERVED listing with no stamp.
+	fallback := Reconcile(rec, gradion.Listing{Observed: true}, nil, testNow)
+	if !fallback.ObservedAt.Equal(testNow) {
+		t.Errorf("an observed listing without a timestamp must fall back to now, got %v", fallback.ObservedAt)
 	}
 }

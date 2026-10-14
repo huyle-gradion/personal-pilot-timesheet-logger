@@ -81,8 +81,12 @@ type ReconcileResult struct {
 // unresolved conditions (conflicts, missing mapped remotes, orphaned mappings,
 // and adoptions that reference an unobserved remote).
 func Reconcile(rec workflow.Record, obs gradion.Listing, adoptions []Adoption, now time.Time) ReconcileResult {
+	// An UNOBSERVED listing (offline: no remote was contacted) has NO observation
+	// time: never fabricate a local "now" for it, exactly as submit.observedAt does
+	// not. The now fallback applies ONLY to an OBSERVED listing that carries no
+	// timestamp.
 	observedAt := obs.ObservedAt
-	if observedAt.IsZero() {
+	if obs.Observed && observedAt.IsZero() {
 		observedAt = now
 	}
 
