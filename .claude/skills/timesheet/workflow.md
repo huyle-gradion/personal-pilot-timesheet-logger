@@ -70,7 +70,10 @@ The per-block option labels are exactly:
   `Edit times / project / description` (the project is unset), plus exactly one of
   `Submitted - edit the remote entry instead; it cannot be removed` (a mapped
   interval), `Removed with the rest of this split group` (a sibling fragment is
-  already staged for removal), or `Remove from this day (unconfirm)`.
+  already staged for removal), or `Remove from this day (unconfirm)`. When a
+  sibling fragment is **already staged for removal**, the interval offers **only**
+  `Keep as is` and `Removed with the rest of this split group`, with **no edit**:
+  the whole group is removed as one, so this fragment is not editable.
 
 The edit label names the project **only** while the project is still unset, so the
 option never promises an edit it will not offer; times and description stay editable
