@@ -528,9 +528,10 @@ func TestGuided_SplitGroupRemoveBothFragmentsStagesOnce(t *testing.T) {
 	r, store := newGuidedRunner(t, storage, nil, cfg)
 
 	var out, errb bytes.Buffer
-	// no reset (false); remove c1 (2); c2 offers "Removed with the rest" (still
-	// index 2, stages nothing); no bulk (0); no missing work (false); confirm (true).
-	p := &fakePrompter{choose: []int{2, 2, 0}, confirms: []bool{false, false, true}}
+	// no reset (false); remove c1 (2); c2 offers ONLY "Keep as is" (0) and
+	// "Removed with the rest of this split group" (1, stages nothing); no bulk
+	// (0); no missing work (false); confirm (true).
+	p := &fakePrompter{choose: []int{2, 1, 0}, confirms: []bool{false, false, true}}
 	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
 		t.Fatalf("guided run: %d (an unconfirm_unknown_interval means two ids of one group were staged)\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -541,6 +542,185 @@ func TestGuided_SplitGroupRemoveBothFragmentsStagesOnce(t *testing.T) {
 	if rec.Review == nil || !rec.Review.Reviewed || !rec.Review.Empty {
 		t.Fatalf("a day emptied by removals must be recorded reviewed-empty, got %+v", rec.Review)
 	}
+}
+
+// GAP-5-STAGING-GUARD order 1 (remove, then edit): once one fragment of a split
+// group is staged for removal, the remaining fragments of THAT group may be kept
+// or noted as "removed with the rest", but the EDIT option must NOT be offered.
+// Offering it lets the guided run stage an edit on a fragment the group removal
+// deletes, which apply rejects with "confirmed block not found".
+func TestGuided_SplitGroupAlreadyStagedOffersNoEdit(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 0},
+			{ID: "c2", Date: testDate, StartTime: "10:00", EndTime: "11:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 1},
+		}
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// no reset (false); remove c1 (2); c2 -> "Removed with the rest" (1, no-op);
+	// no bulk (0); no missing work (false); confirm (true).
+	p := &fakePrompter{choose: []int{2, 1, 0}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d (a refused apply means an edit reached a removed fragment)\n%s\n%s", code, out.String(), errb.String())
+	}
+	if len(p.chooseOptions) < 2 {
+		t.Fatalf("want a Choose for each fragment, got %d", len(p.chooseOptions))
+	}
+	second := p.chooseOptions[1]
+	if len(second) != 2 {
+		t.Fatalf("a fragment whose group is already staged must offer exactly Keep + group-removal, got %v", promptLabels(second))
+	}
+	if second[0].Label != "Keep as is" || second[1].Label != "Removed with the rest of this split group" {
+		t.Fatalf("unexpected option labels: %v", promptLabels(second))
+	}
+	for _, o := range second {
+		if strings.Contains(o.Label, "Edit") {
+			t.Fatalf("no edit option may be offered for a fragment whose group is already staged: %v", promptLabels(second))
+		}
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("the whole split group must be removed, got %+v", rec.Confirmed)
+	}
+}
+
+// GAP-5-STAGING-GUARD order 2 (edit, then remove): staging a removal for a
+// fragment whose split group already carries a staged edit must be REFUSED with a
+// stable reason naming the edited fragment, must stage nothing, and must keep the
+// staged edit, so the resulting set is one apply accepts.
+func TestGuided_SplitGroupEditedThenRemoveRefused(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 0},
+			{ID: "c2", Date: testDate, StartTime: "10:00", EndTime: "11:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 1},
+		}
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// no reset (false); edit c1 (1) changing its DESCRIPTION (no span overlap);
+	// remove c2 (2, REFUSED); no bulk (0); no missing work (false); confirm (true).
+	p := &fakePrompter{choose: []int{1, 2, 0}, inputs: []string{"", "", "edited c1"}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d (want the refused removal kept out of apply)\n%s\n%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "unconfirm_group_edited:c1") {
+		t.Fatalf("the refused removal must print the stable reason naming the edited fragment c1:\n%s", out.String())
+	}
+	if strings.Contains(out.String()+"\n"+errb.String(), "confirmed block not found") {
+		t.Fatalf("the invalid set must never reach apply:\n%s\n%s", out.String(), errb.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 2 {
+		t.Fatalf("the group must survive a refused removal, got %+v", rec.Confirmed)
+	}
+	// The staged edit is NOT silently discarded.
+	found := false
+	for _, ci := range rec.Confirmed {
+		if ci.ID == "c1" && ci.Description == "edited c1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the staged edit on c1 must survive the refused removal, got %+v", rec.Confirmed)
+	}
+}
+
+// GAP-5-STAGING-GUARD: the new guard is scoped to the SAME split group. A removal
+// of an interval in a DIFFERENT group, or with NO group, is unaffected by an edit
+// staged on an unrelated fragment.
+func TestGuided_EditDoesNotBlockSeparateRemoval(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 0},
+			{ID: "c2", Date: testDate, StartTime: "10:00", EndTime: "11:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g2", PartIndex: 0},
+			{ID: "c3", Date: testDate, StartTime: "11:00", EndTime: "12:00", Project: "Proj", ClassificationID: "cls-1"},
+		}
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// no reset (false); edit c1 (1); remove c2 in a DIFFERENT group (2); remove c3
+	// with NO group (2); no bulk (0); no missing work (false); confirm (true).
+	p := &fakePrompter{choose: []int{1, 2, 2, 0}, inputs: []string{"09:30", "10:30", "edited c1"}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d (a separate-group/no-group removal must be unaffected)\n%s\n%s", code, out.String(), errb.String())
+	}
+	if strings.Contains(out.String(), "unconfirm_group_edited") {
+		t.Fatalf("the guard must not fire for a different group or a group-less interval:\n%s", out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 1 || rec.Confirmed[0].ID != "c1" {
+		t.Fatalf("c2 and c3 must be removed and c1 kept, got %+v", rec.Confirmed)
+	}
+	if rec.Confirmed[0].StartTime != "09:30" {
+		t.Fatalf("the staged edit on c1 must be applied, got %+v", rec.Confirmed[0])
+	}
+}
+
+// GAP-5-STAGING-GUARD: an edit that changed NOTHING stages no decision, so it must
+// NOT falsely block a legitimate removal of the whole split group.
+func TestGuided_NoOpEditDoesNotBlockGroupRemoval(t *testing.T) {
+	t.Setenv("TIMESHEET_HOME", t.TempDir())
+	stubCatalog(t, gradion.ClassificationOption{ID: "cls-1", Code: "INTGRADI2610", Name: "X", ActivityType: "internal project"})
+	cfg := guidedTestConfig()
+	dir := t.TempDir()
+	storage := filepath.Join(dir, "records")
+	seedRecord(t, storage, testDate, func(rec *workflow.Record) {
+		rec.Confirmed = []workflow.ConfirmedInterval{
+			{ID: "c1", Date: testDate, StartTime: "09:00", EndTime: "10:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 0},
+			{ID: "c2", Date: testDate, StartTime: "10:00", EndTime: "11:00", Project: "Proj", ClassificationID: "cls-1", SplitGroupID: "g1", PartIndex: 1},
+		}
+		rec.Review = &workflow.ReviewState{Reviewed: true}
+	})
+	r, store := newGuidedRunner(t, storage, nil, cfg)
+
+	var out, errb bytes.Buffer
+	// no reset (false); c1 -> edit (1) but blanks keep every value (no-op); remove
+	// c2 (2, allowed); no bulk (0); no missing work (false); confirm (true).
+	p := &fakePrompter{choose: []int{1, 2, 0}, inputs: []string{"", "", ""}, confirms: []bool{false, false, true}}
+	if code := cmdRunGuided(context.Background(), r, cfg, store, false, false, "", testDate, p, &out, &errb); code != exitOK {
+		t.Fatalf("guided run: %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if strings.Contains(out.String(), "unconfirm_group_edited") {
+		t.Fatalf("a no-op edit must not block a legitimate group removal:\n%s", out.String())
+	}
+	rec := loadRecord(t, storage, testDate)
+	if len(rec.Confirmed) != 0 {
+		t.Fatalf("the whole split group must be removed, got %+v", rec.Confirmed)
+	}
+	if rec.Review == nil || !rec.Review.Reviewed || !rec.Review.Empty {
+		t.Fatalf("a day emptied by removals must be recorded reviewed-empty, got %+v", rec.Review)
+	}
+}
+
+// promptLabels renders an option list's labels for test failures.
+func promptLabels(opts []promptOption) []string {
+	out := make([]string, 0, len(opts))
+	for _, o := range opts {
+		out = append(out, o.Label)
+	}
+	return out
 }
 
 // --- abort on a TUI error ---------------------------------------------------

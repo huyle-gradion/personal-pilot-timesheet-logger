@@ -283,8 +283,9 @@ func (g *guided) gatherReview(ctx context.Context, prop proposal.Proposal, rec *
 			// with unconfirm_unknown_interval.
 			nonRemovable := nonRemovableIntervals(rec)
 			stagedGroups := map[string]bool{}
+			confirmedGroups := confirmedIntervalGroups(existing)
 			for _, ci := range existing {
-				if err := g.reviewExisting(ctx, ci, nonRemovable[ci.ID], stagedGroups, &dec); err != nil {
+				if err := g.reviewExisting(ctx, ci, nonRemovable[ci.ID], stagedGroups, confirmedGroups, &dec); err != nil {
 					return dec, err
 				}
 			}
@@ -426,30 +427,93 @@ func nonRemovableIntervals(rec *workflow.Record) map[string]bool {
 	return out
 }
 
-func (g *guided) reviewExisting(ctx context.Context, ci workflow.ConfirmedInterval, nonRemovable bool, stagedGroups map[string]bool, dec *run.ReviewDecisions) error {
-	title := fmt.Sprintf("Existing %s  %s-%s  %s  %s", shortID(ci.ID), ci.StartTime, ci.EndTime, orDash(ci.Project), oneLine(ci.Description))
-	opts := []promptOption{
-		{Label: "Keep as is"},
-		{Label: editOptionLabel(ci.Project)},
+// confirmedIntervalGroups indexes each existing confirmed interval's id to its
+// trimmed split-group id (only for a non-empty group). It lets the guided removal
+// guard tell whether a staged edit targets a fragment of the SAME split group as
+// the fragment being removed.
+func confirmedIntervalGroups(existing []workflow.ConfirmedInterval) map[string]string {
+	out := make(map[string]string, len(existing))
+	for _, ci := range existing {
+		if g := strings.TrimSpace(ci.SplitGroupID); g != "" {
+			out[ci.ID] = g
+		}
 	}
+	return out
+}
+
+// stagedEditInGroup returns the id of a confirmed interval in the SAME non-empty
+// split group that already carries a staged edit (Trim, Project, or Description),
+// or "" when none does. It reads the ACTUAL staged decisions, not the fact that
+// the edit option was merely chosen, so an edit that changed NOTHING stages no
+// decision and never triggers the guard.
+func stagedEditInGroup(group string, confirmedGroups map[string]string, dec run.ReviewDecisions) string {
+	if group == "" {
+		return ""
+	}
+	inGroup := func(id string) bool { return confirmedGroups[id] == group }
+	for _, t := range dec.Trim {
+		if inGroup(t.BlockID) {
+			return t.BlockID
+		}
+	}
+	for _, p := range dec.Project {
+		if inGroup(p.BlockID) {
+			return p.BlockID
+		}
+	}
+	for _, d := range dec.Description {
+		if inGroup(d.BlockID) {
+			return d.BlockID
+		}
+	}
+	return ""
+}
+
+func (g *guided) reviewExisting(ctx context.Context, ci workflow.ConfirmedInterval, nonRemovable bool, stagedGroups map[string]bool, confirmedGroups map[string]string, dec *run.ReviewDecisions) error {
+	title := fmt.Sprintf("Existing %s  %s-%s  %s  %s", shortID(ci.ID), ci.StartTime, ci.EndTime, orDash(ci.Project), oneLine(ci.Description))
 	group := strings.TrimSpace(ci.SplitGroupID)
 	alreadyStaged := group != "" && stagedGroups[group]
+	var opts []promptOption
 	switch {
 	case nonRemovable:
 		// A submitted interval cannot be removed locally: the remote entry is
 		// edited, never deleted. This option stages NOTHING and teaches the rule.
-		opts = append(opts, promptOption{Label: "Submitted - edit the remote entry instead; it cannot be removed"})
+		opts = []promptOption{
+			{Label: "Keep as is"},
+			{Label: editOptionLabel(ci.Project)},
+			{Label: "Submitted - edit the remote entry instead; it cannot be removed"},
+		}
 	case alreadyStaged:
 		// Another fragment of the SAME split group is already staged for removal;
-		// the whole group is removed as one, so this fragment offers no second
-		// removal.
-		opts = append(opts, promptOption{Label: "Removed with the rest of this split group"})
+		// the whole group is removed as one, so this fragment offers NO edit (the
+		// group is going away) and NO second removal. The group option stages
+		// NOTHING.
+		opts = []promptOption{
+			{Label: "Keep as is"},
+			{Label: "Removed with the rest of this split group"},
+		}
 	default:
-		opts = append(opts, promptOption{Label: "Remove from this day (unconfirm)"})
+		opts = []promptOption{
+			{Label: "Keep as is"},
+			{Label: editOptionLabel(ci.Project)},
+			{Label: "Remove from this day (unconfirm)"},
+		}
 	}
 	idx, err := g.p.Choose(ctx, title, opts, 0)
 	if err != nil {
 		return err
+	}
+	switch {
+	case nonRemovable:
+		// Index 2 (the teach-the-rule option) stages nothing.
+		if idx == 1 {
+			return g.editConfirmed(ctx, ci.ID, ci.StartTime, ci.EndTime, ci.Project, ci.Description, dec)
+		}
+		return nil
+	case alreadyStaged:
+		// Index 1 ("Removed with the rest of this split group") stages NOTHING:
+		// the single group removal is already staged on an earlier fragment.
+		return nil
 	}
 	switch idx {
 	case 0:
@@ -457,14 +521,27 @@ func (g *guided) reviewExisting(ctx context.Context, ci workflow.ConfirmedInterv
 	case 1:
 		return g.editConfirmed(ctx, ci.ID, ci.StartTime, ci.EndTime, ci.Project, ci.Description, dec)
 	default:
-		if nonRemovable || alreadyStaged {
-			return nil
-		}
-		dec.Unconfirm = append(dec.Unconfirm, run.UnconfirmDecision{BlockID: ci.ID, Reason: "user_retracted"})
-		if group != "" {
-			stagedGroups[group] = true
-		}
+		g.stageExistingRemoval(ci, group, confirmedGroups, stagedGroups, dec)
 		return nil
+	}
+}
+
+// stageExistingRemoval stages the single removal for a confirmed fragment's split
+// group, and records the group so a later fragment offers no second removal. It
+// REFUSES a removal whose group ALREADY carries a staged edit on a member: the
+// group is removed as a whole, so the removal would silently discard that edit
+// and reach apply as a set apply rejects. On refusal it prints a STABLE REASON
+// naming the offending (edited) id and what to do about it, and stages NOTHING,
+// keeping the staged edit.
+func (g *guided) stageExistingRemoval(ci workflow.ConfirmedInterval, group string, confirmedGroups map[string]string, stagedGroups map[string]bool, dec *run.ReviewDecisions) {
+	if offending := stagedEditInGroup(group, confirmedGroups, *dec); offending != "" {
+		fmt.Fprintf(g.stdout, "  %s:%s: split-group fragment %s already carries a staged edit; keep this fragment as is, or drop the staged edit if the whole group must be removed\n",
+			run.BlockUnconfirmGroupEdited, offending, offending)
+		return
+	}
+	dec.Unconfirm = append(dec.Unconfirm, run.UnconfirmDecision{BlockID: ci.ID, Reason: "user_retracted"})
+	if group != "" {
+		stagedGroups[group] = true
 	}
 }
 

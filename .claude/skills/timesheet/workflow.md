@@ -294,11 +294,14 @@ Rules that are easy to get wrong, all stated here so they need not be looked up:
   ids**, so that listing is how the id is named. The interval is removed and its
   evidence returns to the proposal as an unconfirmed block, so it can be re-confirmed
   or excluded; a split interval's fragments are removed together.
-- **`unconfirm` never removes a submitted interval.** If the interval carries a remote
-  mapping the whole review is refused with the specific reason
-  `unconfirm_mapped_remote:<localID>`, because a Gradion entry can be edited but never
-  deleted. The correct action for a submitted interval is an `edit` via `trim`,
-  `project`, `description`, or `classification`.
+- **`unconfirm` never removes a submitted interval, nor a split group that contains
+  one.** A split group is removed as a whole, so if the requested interval **or any
+  member of its non-empty split group** carries a remote mapping, the whole review is
+  refused with the specific reason `unconfirm_mapped_remote:<localID>`. The id named
+  is the **mapped member's** id, which may differ from the one requested. This is
+  because a Gradion entry can be edited but never deleted. The correct action for a
+  submitted interval is an `edit` via `trim`, `project`, `description`, or
+  `classification`.
 - **`unconfirm` refuses an id that names no confirmed interval on the day.** If its
   `block_id` matches no confirmed interval, the whole review is refused with the
   specific reason `unconfirm_unknown_interval:<id>`, so a mistyped or already-removed

@@ -59,6 +59,11 @@ const (
 	// BlockResetUnresolved is the stable reason for a reset refused because an
 	// unresolved (in_flight) remote operation remains.
 	BlockResetUnresolved = "reset_unresolved_submission"
+	// BlockUnconfirmGroupEdited is the stable reason for a guided removal of a
+	// split group that ALREADY carries a staged edit on a member: removing the
+	// group would discard that edit, so the removal is refused (the id that
+	// follows names the edited member).
+	BlockUnconfirmGroupEdited = "unconfirm_group_edited"
 )
 
 // keychainRefPrefix marks a config value that references a Keychain secret rather
