@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Regenerate (or verify) the one generated file this repository mirrors into the
+# Regenerate (or verify) the generated set this repository mirrors into the
 # Obsidian vault:
 #
-#   ./scripts/sync-vault.sh --write                  regenerate the vault file
+#   ./scripts/sync-vault.sh --write                  regenerate the vault set
 #   ./scripts/sync-vault.sh --check                  verify it without writing
 #   ./scripts/sync-vault.sh --write --vault DIR      override the vault root
 #
-# The generator writes exactly one file:
+# The generator writes exactly three files:
 #   <vault>/01 - Projects/assignment-1 (generated).md
-# It never touches the authored "Project - assignment-1.md", the dashboard, or
-# any daily note, and it never writes a repository file.
+#   <vault>/06 - Knowledge & Wiki/assignment-1 lessons (generated).md
+#   <vault>/01 - Projects/assignment-1 (generated index).md
+# Each carries its own stamp and its own hand-edit refusal. It never touches the
+# authored "Project - assignment-1.md", the dashboard, or any daily note, and it
+# never writes a repository file.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

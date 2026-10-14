@@ -12,7 +12,7 @@ source: docs/orchestration/status.yaml
 source_commit: abc1234
 source_date: 2026-10-14
 generated_at: 2026-10-14T09:30:00Z
-body_sha256: 04791a688f3be2c68016c09d07b386e7b226e3ac76140d4dd62214d114d4476a
+body_sha256: b578368274ed5bd118b4a64cc9ef3a0810bcb0db9b16c5dce9152b6b7fe6b047
 ---
 
 # assignment-1 (generated)
@@ -40,8 +40,3 @@ Status: generated from `docs/orchestration/status.yaml` at commit `abc1234`; 4 t
 - ADR-0001 (accepted, 2026-01-02) — Example decision
 - ADR-0002 (proposed, 2026-03-04) — Other decision
 - ADR-0003 (superseded, 2025-12-31) — Legacy decision
-
-## Lessons
-
-- Unknown is never zero.
-- A blocked case must name a reason, and the reason must be specific.
