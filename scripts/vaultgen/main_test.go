@@ -317,6 +317,56 @@ func TestVaultRootInsideRepoRejected(t *testing.T) {
 	}
 }
 
+// TestVaultRootCaseVariantRejected pins F7: on a case-INSENSITIVE filesystem
+// (macOS's default APFS), a --vault that differs from the repository root only
+// by case resolves to the SAME directory, so it must still be refused. A string
+// prefix check misses it; the check must decide by filesystem identity. The test
+// first PROBES case-sensitivity and SKIPS on a case-sensitive volume, where the
+// case-variant is a genuinely different directory and writing there is legitimate.
+func TestVaultRootCaseVariantRejected(t *testing.T) {
+	const repoRoot = "testdata"
+	absRepo, err := filepath.Abs(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant := strings.ToUpper(absRepo)
+	if variant == absRepo {
+		t.Skip("repository path has no cased letters to vary")
+	}
+
+	// Probe: does the case-variant resolve to the SAME directory?
+	vInfo, vErr := os.Stat(variant)
+	rInfo, rErr := os.Stat(absRepo)
+	if vErr != nil || rErr != nil || !os.SameFile(vInfo, rInfo) {
+		t.Skipf("filesystem is case-sensitive here: %q does not resolve to the repository root", variant)
+	}
+
+	for _, v := range []string{variant, variant + "/nested/vault"} {
+		// Safety net: if a buggy build writes, clean the generated leaf dirs.
+		for _, a := range generatedSet {
+			defer os.RemoveAll(filepath.Dir(filepath.Join(v, a.rel)))
+		}
+
+		var sb strings.Builder
+		if code := runWrite(repoRoot, v, testNow, testCommit, &sb); code != 2 {
+			t.Fatalf("--write with the case-variant vault %q must exit 2, got %d, said: %q", v, code, sb.String())
+		}
+		if !strings.Contains(sb.String(), "vault") {
+			t.Errorf("refusal must name the vault usage error, said: %q", sb.String())
+		}
+		for _, a := range generatedSet {
+			if _, err := os.Stat(filepath.Join(v, a.rel)); !os.IsNotExist(err) {
+				t.Errorf("a refused --write must create no file, but %s exists", filepath.Join(v, a.rel))
+			}
+		}
+
+		var sb2 strings.Builder
+		if code := runCheck(repoRoot, v, testNow, testCommit, &sb2); code != 2 {
+			t.Fatalf("--check with the case-variant vault %q must exit 2, got %d, said: %q", v, code, sb2.String())
+		}
+	}
+}
+
 // TestStampInCommentIsIgnored pins that only the frontmatter BETWEEN the two
 // "---" delimiters supplies body_sha256, for EVERY file in the set. A hand-edited
 // file that hides a MATCHING stamp in the do-not-edit comment must be refused,

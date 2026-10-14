@@ -520,14 +520,25 @@ func normalizeForCompare(content string) string {
 	return strings.Join(lines, "\n") + body
 }
 
-// validateVaultRoot rejects a vault root that is empty, relative, or that
-// resolves to or under the repository root. An empty value would make
+// validateVaultRoot rejects a vault root that is empty, relative, or that is the
+// repository root or sits inside it. An empty value would make
 // filepath.Join(vaultRoot, rel) resolve against the process working directory —
-// inside the repository after the wrapper's cd — and an absolute path that IS
-// the repository root or sits inside it would write the generated files into the
+// inside the repository after the wrapper's cd — and an absolute path that is the
+// repository root or sits inside it would write the generated files into the
 // checkout. Both break the "never writes a repository file" invariant, so both
 // are refused. A relative path is refused for the same reason: its meaning
 // depends on the working directory.
+//
+// Containment is decided by FILESYSTEM IDENTITY, not by comparing path strings.
+// A string prefix is defeated by case: macOS's default APFS is case-insensitive
+// but case-preserving, and neither filepath.Abs nor filepath.EvalSymlinks
+// canonicalizes case, so a --vault differing from the repository root only by
+// case slips a prefix test and writes INTO the checkout. Instead this walks UP
+// from the vault path to the filesystem root; if any ancestor is the SAME file
+// as the repository root, the vault is the repository root or under it. os.Stat
+// follows symlinks, so a symlinked route into the repository is caught too, and
+// the walk naturally covers a deep non-existent leaf whose existing ancestor is
+// the repository.
 func validateVaultRoot(repoRoot, vaultRoot string) error {
 	if vaultRoot == "" {
 		return errors.New("--vault must not be empty")
@@ -535,31 +546,21 @@ func validateVaultRoot(repoRoot, vaultRoot string) error {
 	if !filepath.IsAbs(vaultRoot) {
 		return fmt.Errorf("--vault must be an absolute path, got %q", vaultRoot)
 	}
-	// Resolve both sides (absolute + cleaned, and symlink-resolved where that
-	// succeeds) so an absolute path carrying ".." segments — or one reached
-	// through a symlink — cannot slip inside the repository.
-	vaultResolved := resolvePath(vaultRoot)
-	repoResolved := resolvePath(repoRoot)
-	if vaultResolved == repoResolved ||
-		strings.HasPrefix(vaultResolved, repoResolved+string(filepath.Separator)) {
-		return fmt.Errorf("--vault must not be the repository root or a path inside it, got %q", vaultRoot)
-	}
-	return nil
-}
-
-// resolvePath returns the cleaned absolute form of p, and — where the path can
-// be resolved — its symlink-resolved form, so a vault root reached through a
-// symlink cannot bypass the containment check. Resolution is best-effort: a path
-// that does not exist yet is returned as its cleaned absolute form.
-func resolvePath(p string) string {
-	abs, err := filepath.Abs(p)
+	repoInfo, err := os.Stat(repoRoot)
 	if err != nil {
-		abs = filepath.Clean(p)
+		// No repository to contend with, so containment cannot be violated.
+		return nil
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
+	for dir := filepath.Clean(vaultRoot); ; {
+		if info, err := os.Stat(dir); err == nil && os.SameFile(info, repoInfo) {
+			return fmt.Errorf("--vault must not be the repository root or a path inside it, got %q", vaultRoot)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil // reached the filesystem root without meeting the repository
+		}
+		dir = parent
 	}
-	return abs
 }
 
 // runWrite regenerates the WHOLE set.
