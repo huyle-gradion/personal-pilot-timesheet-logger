@@ -23,7 +23,10 @@ func TestAttributeCommand_Table(t *testing.T) {
 		{"unrelated git", "git commit -m wip", StepUnknown, CategoryUnassigned},
 		{"grep mentions timesheet", "grep -r timesheet submit", StepUnknown, CategoryUnassigned},
 		{"echo mentions timesheet", "echo timesheet review", StepUnknown, CategoryUnassigned},
-		{"compound cd prefix", "cd /repo && timesheet review", StepUnknown, CategoryUnassigned},
+		// A compound invocation DOES resolve: the binary token after `&&` is an
+		// invocation, not an argument. This case is the direct analogue of the
+		// compound shapes covered by TestAttributeCommand_CompoundInvocation.
+		{"compound cd prefix", "cd /repo && timesheet review", StepCollect, CategoryOrchestration},
 		{"unknown subcommand", "timesheet frobnicate", StepUnknown, CategoryUnassigned},
 		{"empty", "", StepUnknown, CategoryUnassigned},
 	}
@@ -32,6 +35,88 @@ func TestAttributeCommand_Table(t *testing.T) {
 			step, cat := AttributeCommand(tc.cmd)
 			if step != tc.step || cat != tc.cat {
 				t.Fatalf("AttributeCommand(%q) = (%q,%q), want (%q,%q)", tc.cmd, step, cat, tc.step, tc.cat)
+			}
+		})
+	}
+}
+
+// TestAttributeCommand_CompoundInvocation covers the real agent shapes: the
+// timesheet binary invoked inside a compound shell command (`&&`, `for ...; do`,
+// `;`), including a quoted variable path. The subcommand token is found anywhere a
+// simple command starts, and only when the next token is a recognized subcommand.
+func TestAttributeCommand_CompoundInvocation(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		step StepID
+		cat  Category
+	}{
+		{
+			"cd && quoted var review (collect)",
+			`cd /Users/huy.leminh/Projects/assignment-1 && "$T/ts" review --config "$CFG" --date "$D"`,
+			StepCollect, CategoryOrchestration,
+		},
+		{
+			"cd && quoted var review --decisions",
+			`cd /Users/huy.leminh/Projects/assignment-1 && "$T/ts" review --config "$CFG" --date "$D" --decisions "$OUT"`,
+			StepReview, CategoryOrchestration,
+		},
+		{
+			"for loop do preview",
+			`for f in a b c; do "$TS" preview --date "$D"; done`,
+			StepPreview, CategoryOrchestration,
+		},
+		{
+			// `classify` is a recognized subcommand token but carries no step of
+			// its own (it is absent from subcommandSteps/stepOrder), so the code
+			// attributes it to StepUnknown + CategoryUnassigned. Asserted as-is.
+			"semicolon bare ts classify",
+			`cd "$DIR"; ts classify select --block-id X --classification Y`,
+			StepUnknown, CategoryUnassigned,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			step, cat := AttributeCommand(tc.cmd)
+			if step != tc.step || cat != tc.cat {
+				t.Fatalf("AttributeCommand(%q) = (%q,%q), want (%q,%q)", tc.cmd, step, cat, tc.step, tc.cat)
+			}
+		})
+	}
+}
+
+// TestAttributeCommand_PathContainingTimesheetIsNotAStep asserts that a path which
+// merely CONTAINS `timesheet` is never a step: its basename is not the binary, or
+// the token after it is not a subcommand.
+func TestAttributeCommand_PathContainingTimesheetIsNotAStep(t *testing.T) {
+	cases := []string{
+		"cat /x/.agents/skills/timesheet/workflow.md",
+		"ls cmd/timesheet",
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			step, cat := AttributeCommand(cmd)
+			if step != StepUnknown || cat != CategoryUnassigned {
+				t.Fatalf("AttributeCommand(%q) = (%q,%q), want (unknown,unassigned)", cmd, step, cat)
+			}
+		})
+	}
+}
+
+// TestAttributeCommand_NoFalsePositiveWithoutSubcommand asserts that the binary
+// token alone, followed by a non-subcommand, stays StepUnknown: a flag is never
+// guessed into a step.
+func TestAttributeCommand_NoFalsePositiveWithoutSubcommand(t *testing.T) {
+	cases := []string{
+		`"$T/ts" --help`,
+		`"$T/ts" -v`,
+		`cd /repo && "$T/ts" --help`,
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			step, cat := AttributeCommand(cmd)
+			if step != StepUnknown || cat != CategoryUnassigned {
+				t.Fatalf("AttributeCommand(%q) = (%q,%q), want (unknown,unassigned)", cmd, step, cat)
 			}
 		})
 	}

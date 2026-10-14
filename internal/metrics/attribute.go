@@ -9,6 +9,10 @@ import (
 
 // Attribution heuristic (LABELLED): a call is attributed to a workflow step by
 // the `timesheet` subcommand token carried in the assistant turn's tool call.
+// The subcommand is found whether the binary is invoked directly or inside a
+// compound shell command (`cd x && "$T/ts" review`, `for ...; do "$TS" preview;
+// done`), but ONLY when the token after the binary is a recognized subcommand: a
+// path or argument that merely mentions `timesheet` is never guessed into a step.
 // This is a HEURISTIC over the transcript shape, not a contract emitted by the
 // workflow core. It is documented here and surfaced in the report/docs. Only the
 // subcommand token is persisted (as StepID); the command text is never stored.
@@ -38,6 +42,26 @@ var executableBases = map[string]bool{
 	"ts":        true,
 }
 
+// subcommandTokens is the recognised subcommand vocabulary. A `timesheet`/`ts`
+// token is accepted as an invocation ONLY when the token immediately following it
+// is one of these; otherwise the scan keeps going and NEVER guesses. It is a
+// superset of the mapped steps (subcommandSteps): tokens such as `classify`,
+// `resolve`, `run`, `config` and `metrics` are real subcommands that carry no
+// step of their own and therefore attribute to StepUnknown.
+var subcommandTokens = map[string]bool{
+	"preflight": true,
+	"review":    true,
+	"preview":   true,
+	"approve":   true,
+	"submit":    true,
+	"export":    true,
+	"classify":  true,
+	"resolve":   true,
+	"run":       true,
+	"config":    true,
+	"metrics":   true,
+}
+
 // AttributeCommand maps a shell command string to a workflow step and accounting
 // category. It returns StepUnknown + CategoryUnassigned when no recognized
 // `timesheet` subcommand is present: an unrecognized command is never guessed
@@ -60,37 +84,83 @@ func AttributeCommand(command string) (StepID, Category) {
 	return StepUnknown, CategoryUnassigned
 }
 
-// subcommandAndArgs returns the subcommand token and its trailing arguments ONLY
-// when the command is a direct invocation of the timesheet binary:
+// subcommandAndArgs returns the subcommand token and its trailing arguments when
+// the command invokes the timesheet binary, whether directly or inside a compound
+// shell command:
 //
-//   - the FIRST token's basename is `timesheet` or `ts` (e.g. `timesheet`,
-//     `/tmp/rt/off/ts`, `./bin/timesheet`); or
-//   - the `go run ./cmd/timesheet` form: `go` `run` <path whose basename is
-//     `timesheet`|`ts`>.
+//   - a token whose BASENAME (after stripping surrounding quote characters and any
+//     `$`/`${...}` variable syntax) is `timesheet` or `ts` — e.g. `timesheet`,
+//     `/tmp/rt/off/ts`, `./bin/timesheet`, `"$T/ts"`, `$TS`, `${TS}`; and
+//   - that token sits at the start of a simple command (the first token, after a
+//     shell separator, or after the `go run` prefix), not as an argument; and
+//   - the token IMMEDIATELY FOLLOWING it is a recognized subcommand token
+//     (subcommandTokens).
 //
-// Any other command (including `grep -r timesheet submit`, `echo timesheet`, or a
-// compound `cd x && timesheet review`) yields no subcommand: it is never guessed
-// into a step.
+// Any other command yields no subcommand: a path that merely CONTAINS `timesheet`
+// (`cat ~/.agents/skills/timesheet/workflow.md`, `ls cmd/timesheet`), a mention in
+// an argument (`grep -r timesheet submit`, `echo timesheet review`), or a bare
+// binary with no subcommand (`"$T/ts" --help`) is never guessed into a step. Only
+// the subcommand TOKEN is returned; the command text is never retained.
 func subcommandAndArgs(command string) (string, []string) {
 	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return "", nil
+	for i := 0; i < len(fields); i++ {
+		if !isTimesheetToken(fields[i]) || !isInvocationPosition(fields, i) {
+			continue
+		}
+		if i+1 >= len(fields) || !subcommandTokens[fields[i+1]] {
+			// The next token is not a subcommand (a flag, a path segment, or
+			// nothing): keep scanning and never guess.
+			continue
+		}
+		return fields[i+1], fields[i+2:]
 	}
-	idx := -1
-	switch {
-	case executableBases[basename(fields[0])]:
-		idx = 0
-	case len(fields) >= 3 && fields[0] == "go" && fields[1] == "run" && executableBases[basename(fields[2])]:
-		idx = 2
+	return "", nil
+}
+
+// isTimesheetToken reports whether a shell token names the timesheet binary. The
+// basename is taken after stripping surrounding quote characters and any `$` or
+// `${...}` variable syntax, so a variable expansion such as `"$T/ts"`, `$TS` or
+// `${TS}` is recognized. The comparison is case-insensitive (`$TS` names `ts`).
+func isTimesheetToken(token string) bool {
+	t := strings.Trim(token, `"'`)
+	t = strings.TrimPrefix(t, "$")
+	if strings.HasPrefix(t, "{") && strings.HasSuffix(t, "}") {
+		t = t[1 : len(t)-1]
 	}
-	if idx < 0 || idx+1 >= len(fields) {
-		return "", nil
+	return executableBases[strings.ToLower(basename(t))]
+}
+
+// isInvocationPosition reports whether the token at idx begins a simple command
+// within the (possibly compound) command, so a timesheet token there is an
+// invocation rather than an argument. It accepts the start of the command, the
+// `go run` prefix, and any shell separator.
+func isInvocationPosition(fields []string, idx int) bool {
+	if idx == 0 {
+		return true
 	}
-	sub := fields[idx+1]
-	if strings.HasPrefix(sub, "-") {
-		return "", nil
+	if idx >= 2 && fields[idx-2] == "go" && fields[idx-1] == "run" {
+		return true
 	}
-	return sub, fields[idx+2:]
+	return isCommandSeparator(fields[idx-1])
+}
+
+// isCommandSeparator reports whether a token ends a simple command: a standalone
+// separator (`&&`, `;`, `|`, ...), a `do`/`then`/`else` keyword, or a token with a
+// separator glued to its end (e.g. the `"$DIR";` in `cd "$DIR"; ts classify`).
+func isCommandSeparator(token string) bool {
+	t := strings.Trim(token, `"'`)
+	switch t {
+	case "&&", "||", ";", "|", "&", "(", "{", "do", "then", "else", "!":
+		return true
+	}
+	if t == "" {
+		return false
+	}
+	switch t[len(t)-1] {
+	case ';', '&', '|':
+		return true
+	}
+	return false
 }
 
 func basename(token string) string {
