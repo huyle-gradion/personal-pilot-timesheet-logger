@@ -482,6 +482,12 @@ $TS metrics import --transcript "$PI_SESSION" && $TS metrics report --date "$DAT
   **which day** the session logged: the session's logged date (the association key)
   is set to `D` with association `import_flag`. Only this operator-stated value is
   used; no transcript tool-argument value is decoded.
+- Without `--date`, the association falls back to the **local date of the session's
+  own workflow-step calls** (association `local_step_date`). That is the date the
+  session RAN, which equals the logged day only when the run happens on the day it
+  logs: **when you log a past day, pass `--date`, or the session is associated with
+  the run date instead of the day you logged.** Zero such dates, or more than one,
+  is `unknown`, and an `unknown` session is never folded into a day's totals.
 - `sessions` lists the stored session records: per session its id, provider, model,
   logged date, association, calls, input, output, cache read, cache write,
   cache-hit %, total tokens, price source, and cost. `--session ID` shows one
