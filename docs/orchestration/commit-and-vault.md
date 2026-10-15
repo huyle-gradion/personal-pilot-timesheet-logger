@@ -12,6 +12,11 @@ Keep a dependent branch's ancestry explicit. Do not rewrite other agents' commit
 
 Completion: commit contents match accepted source, final checks are recorded, and publication status is unambiguous. If changes are intentionally uncommitted, say so.
 
+## Pull request bodies
+
+- **Never place a closing keyword before an issue reference**, because a negation does not prevent GitHub from linking it. `this does not close #41` still links `#41` as a closing reference, and a PR linked to an issue it must not close is silent and easy to miss. This class has now bitten this project THREE times (the MERGE-20 accuracy note, the LIST-ENTRIES-DROP body, and the GATE-HERMETICITY-1 body). State the opposite as a plain fact without the keyword, such as `leaves issue #41 open`, and after opening or editing a PR that mentions an issue, VERIFY `closingIssuesReferences` through the API rather than assuming it.
+- **State the batched-merge-record carry chain explicitly**, naming which prior merge's record the pull request carries, because each records pull request carries the PREVIOUS merge's record and that chain is easy to drop.
+
 ## Synchronize ai-database
 
 Vault root: `/Users/huy.leminh/ai-database`. Read `99 - Meta/Database Schema.md` before creating or changing structured notes. The orchestrator owns these updates; workers leave them alone unless explicitly delegated.
