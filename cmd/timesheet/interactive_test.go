@@ -132,6 +132,10 @@ func newGuidedRunner(t *testing.T, storage string, remote run.Remote, cfg cliCon
 		Store:    store,
 		Registry: evidence.NewRegistry(),
 		Remote:   remote,
+		// GATE-HERMETICITY-1: a hermetic git credential (the documented tests/CI
+		// seam) so git preflight never falls through to the live Keychain. These
+		// tests configure no git source, so the token is never otherwise used.
+		GitToken: "test-git-token",
 		Now:      func() time.Time { return time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC) },
 	}, cfg.Config)
 	if err != nil {
