@@ -51,6 +51,7 @@ const (
 	codeBoundExceeded = "KEYCHAIN_ERR_BOUND_EXCEEDED"
 	codeTimeout       = "KEYCHAIN_ERR_TIMEOUT"
 	codeNoAccount     = "KEYCHAIN_ERR_NO_ACCOUNT"
+	codeNoResolver    = "KEYCHAIN_ERR_NO_RESOLVER"
 )
 
 // Outcome classifies the lookup result.
@@ -309,10 +310,20 @@ func SetDefaultResolver(r Resolver) (restore func()) {
 }
 
 // Lookup resolves using the default resolver with account = $USER and a bounded timeout.
+//
+// It FAILS CLOSED when DefaultResolver is nil: it never builds a live resolver as a
+// silent default, so an unset default can never reach the live Keychain. The nil
+// state is unreachable in production (DefaultResolver initializes to NewResolver()
+// and is never set nil) and no test sets it nil; the returned error is a terminal,
+// secret-free *OperatingError with code codeNoResolver.
 func Lookup(ctx context.Context, service string) (string, error) {
 	r := DefaultResolver
 	if r == nil {
-		r = NewResolver()
+		return "", &OperatingError{
+			Outcome: OutcomeTerminal,
+			Code:    codeNoResolver,
+			Message: "no default Keychain resolver configured",
+		}
 	}
 	return r.Lookup(ctx, service, "")
 }

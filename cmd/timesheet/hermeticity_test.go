@@ -5,30 +5,44 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/run"
 )
 
 // GATE-HERMETICITY-1 tripwire.
 //
-// The standard battery (go test ./...) must never read the owner's live macOS
-// Keychain. TestMain installs a tripwire resolver as the package-level
-// keychain.DefaultResolver for the whole test binary. Any test that reaches
-// keychain.Lookup — directly, or through internal/git's ResolveAuthToken — without
-// first installing its own hermetic resolver hits this trap instead of the live
-// `security` binary. The trap:
+// Guarantee, stated at proven strength (calibrated; not a universal claim):
 //
-//	(a) fails the offending test AT THE POINT OF USE with a distinctive,
-//	    secret-free terminal error, so the failure names the test that leaked; and
-//	(b) counts invocations, so TestMain fails the whole package loudly afterwards
-//	    even if a leak happens to be swallowed by a tolerant code path.
+//	(a) The OBSERVED leak is closed. cmd/timesheet's guided/bulk tests used to make
+//	    51 live `security find-generic-password -s gh_auth_token` reads per run; with
+//	    the hermetic git token in newGuidedRunner that is now 0, measured with a
+//	    PATH-`security` detector over the full battery.
+//	(b) The two paths that resolve Keychain secrets in the battery are GUARDED: the
+//	    package-level keychain.Lookup (via keychain.DefaultResolver) and
+//	    internal/run's keychainResolver when deps.Keychain is nil (which now also
+//	    routes through keychain.DefaultResolver). Any test on either path that does
+//	    not install its own hermetic resolver hits this trap instead of the live
+//	    `security` binary.
 //
-// Tests that legitimately need a resolved credential install their own hermetic
-// fake via keychain.SetDefaultResolver (the existing seam); the guided/bulk tests
-// that merely run git preflight carry a hermetic token via run.Deps.GitToken
-// instead. Production is unaffected: nothing here runs outside `go test`.
+// This is NOT a claim that the battery is hermetic against ANY conceivable live
+// Keychain read; it is that no live read was observed and the resolving seam is
+// trapped. TestMain installs the trap as keychain.DefaultResolver for the whole
+// test binary. The trap:
+//
+//	(i) fails the offending test AT THE POINT OF USE with a distinctive, secret-free
+//	    terminal error, so the failure names the test that leaked; and
+//	(ii) counts invocations, so TestMain fails the whole package loudly afterwards
+//	     even if a leak happens to be swallowed by a tolerant code path.
+//
+// Tests that legitimately need a resolved credential install their own hermetic fake
+// via keychain.SetDefaultResolver (the existing seam); the guided/bulk tests that
+// merely run git preflight carry a hermetic token via run.Deps.GitToken instead.
+// Production is unaffected: nothing here runs outside `go test`.
 type gateHermeticityTrap struct{ calls *int64 }
 
 // TripwireCode is the stable, secret-free code the trap returns.
@@ -74,4 +88,51 @@ func TestHermeticityTripwire_FailsClosed(t *testing.T) {
 	if !errors.As(err, &opErr) || opErr.Code != TripwireCode {
 		t.Fatalf("want tripwire code %q, got %v", TripwireCode, err)
 	}
+}
+
+// TestPreflight_KeychainRefSourceTrapped proves internal/run's keychainResolver
+// (deps.Keychain unset) resolves a `keychain:`-ref source through the package-level
+// keychain.DefaultResolver — the same seam TestMain's tripwire occupies — so a live
+// read is impossible on that path (review F1). It installs the trap type with a
+// LOCAL counter so this deliberate probe does not trip the package-level guard, and
+// asserts the trap fired exactly once with its distinctive code. On the pre-F1 code
+// keychainResolver built a fresh keychain.NewResolver(), bypassing the seam: this
+// assertion would then see 0 trap calls (after a live read).
+func TestPreflight_KeychainRefSourceTrapped(t *testing.T) {
+	var calls int64
+	restore := keychain.SetDefaultResolver(gateHermeticityTrap{calls: &calls})
+	t.Cleanup(restore)
+
+	cfg := guidedTestConfig()
+	cfg.Evidence.Sources = []evidence.SourceConfig{{
+		ID: "cal-on", Type: evidence.SourceCalendar, Enabled: true,
+		Config: map[string]string{"feed_ref": "keychain:gh_auth_token"},
+	}}
+	// newGuidedRunner leaves deps.Keychain nil (the default-resolver path) and sets a
+	// hermetic GitToken, isolating the keychain-ref source as the only resolver call.
+	r, _ := newGuidedRunner(t, filepath.Join(t.TempDir(), "records"), nil, cfg)
+
+	res, err := r.Preflight(context.Background(), run.PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if n := atomic.LoadInt64(&calls); n != 1 {
+		t.Fatalf("the keychain-ref source must resolve through keychain.DefaultResolver "+
+			"(the trapped seam); got %d trap call(s)", n)
+	}
+	if res.OK {
+		t.Fatalf("the trap's terminal error must refuse preflight, got %+v", res.Checks)
+	}
+	if !hasCheck(res.Checks, "credential_cal-on_feed_ref", run.CodeKeychainTerminal, TripwireCode) {
+		t.Fatalf("want the trap reported as a terminal keychain failure, got %+v", res.Checks)
+	}
+}
+
+func hasCheck(checks []run.Check, name, code, detail string) bool {
+	for _, c := range checks {
+		if c.Name == name && c.Code == code && c.Detail == detail {
+			return true
+		}
+	}
+	return false
 }

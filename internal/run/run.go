@@ -168,7 +168,11 @@ func (r *Runner) keychainResolver() keychain.Resolver {
 	if r.deps.Keychain != nil {
 		return r.deps.Keychain
 	}
-	return keychain.NewResolver()
+	// Route through the package-level default resolver so the existing swap seam
+	// (keychain.SetDefaultResolver) governs this path too, instead of constructing a
+	// fresh live resolver that bypasses it. Production is behaviour-identical:
+	// DefaultResolver initializes to keychain.NewResolver() and nothing swaps it there.
+	return keychain.DefaultResolver
 }
 
 // dayTime parses a YYYY-MM-DD date in the configured location.

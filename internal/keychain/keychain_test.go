@@ -217,3 +217,32 @@ func TestSetDefaultResolver_Seam(t *testing.T) {
 		t.Fatal("restore did not put the original resolver back")
 	}
 }
+
+// F2 (GATE-HERMETICITY-1): an unset DefaultResolver must FAIL CLOSED, never build a
+// live resolver as a silent default. A PATH-visible fake `security` leaves a
+// sentinel if it ever runs; the test asserts the sentinel is absent, so no
+// `security` invocation occurred.
+func TestLookup_NilDefaultResolverFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "security-ran")
+	writeFakeSecurityIn(t, dir, fmt.Sprintf("touch %q\nprintf 'live-secret'\n", sentinel))
+	t.Setenv("PATH", dir)
+	t.Setenv("USER", "tester")
+
+	restore := SetDefaultResolver(nil)
+	defer restore()
+
+	_, err := Lookup(context.Background(), ServiceGitHubToken)
+	if err == nil {
+		t.Fatal("a nil default resolver must fail closed")
+	}
+	assertCode(t, err, codeNoResolver)
+	var opErr *OperatingError
+	if !errors.As(err, &opErr) || opErr.Outcome != OutcomeTerminal {
+		t.Fatalf("want a terminal *OperatingError, got %v", err)
+	}
+
+	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+		t.Fatalf("fail-closed must make NO security invocation, but the sentinel exists")
+	}
+}
