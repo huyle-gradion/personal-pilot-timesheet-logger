@@ -205,6 +205,12 @@ func resolveEditFromObservation(rec *workflow.Record, o workflow.OperationOutcom
 	postEdit.StartTime = o.StartTime
 	postEdit.EndTime = o.EndTime
 	postEdit.Description = o.Description
+	// Carry the classification identity of the dispatched edit ONLY when the
+	// outcome row records one. A legacy row (empty classification) leaves the
+	// pre-edit baseline classification untouched, preserving today's behaviour.
+	if cls := strings.TrimSpace(o.ClassificationID); cls != "" {
+		postEdit.ClassificationID = cls
+	}
 
 	switch {
 	case RemoteContentEqual(observed, postEdit):

@@ -236,6 +236,12 @@ type OperationOutcome struct {
 	// It is distinct from RecordedAt (last update time) and lets a restart
 	// report when an unresolved in_flight operation began.
 	IntentAt time.Time `json:"intent_at,omitempty"`
+	// ClassificationID is the ADDITIVE (omitempty) classification identity the
+	// dispatched operation targeted. It lets a classification-changing edit be
+	// resolved from its post-edit projection instead of the pre-edit baseline. An
+	// empty value (a legacy row) marshals byte-identically, and it is never part
+	// of the operation key.
+	ClassificationID string `json:"classification_id,omitempty"`
 }
 
 // PlanOpKind classifies a planned remote operation. There is deliberately no

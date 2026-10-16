@@ -166,12 +166,13 @@ func Execute(ctx context.Context, store workflow.Store, obs RemoteObserver, w Re
 				StartTime: op.StartTime, EndTime: op.EndTime,
 			}),
 			LocalID: op.LocalID, RemoteID: op.RemoteID, Action: action,
-			Status:      workflow.OutcomeInFlight,
-			Date:        op.Date,
-			StartTime:   op.StartTime,
-			EndTime:     op.EndTime,
-			Description: op.Description,
-			IntentAt:    now,
+			Status:           workflow.OutcomeInFlight,
+			Date:             op.Date,
+			StartTime:        op.StartTime,
+			EndTime:          op.EndTime,
+			ClassificationID: op.ClassificationID,
+			Description:      op.Description,
+			IntentAt:         now,
 		}
 		if _, err := session.Update(ctx, func(r *workflow.Record) error {
 			workflow.UpsertIntent(r, intent)

@@ -126,3 +126,56 @@ func TestContentObserved_DoesNotFeedFingerprintOrPlanHash(t *testing.T) {
 		t.Error("an observed expectation must be a distinct plan (the field is serialized when true)")
 	}
 }
+
+// TestOperationOutcome_ClassificationIDOmitemptyAndHashNeutral specifies the
+// ADDITIVE OperationOutcome.ClassificationID contract: a legacy row with an empty
+// value marshals with NO classification_id key and a non-empty value serialises
+// it, so a legacy record marshals byte-identically. It further asserts the field
+// does not feed LocalFingerprint.
+func TestOperationOutcome_ClassificationIDOmitemptyAndHashNeutral(t *testing.T) {
+	legacy := workflow.OperationOutcome{
+		OperationKey: "k1", LocalID: "c1", Action: "edit", Status: workflow.OutcomeUncertain,
+		Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", Description: "work",
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy outcome: %v", err)
+	}
+	if strings.Contains(string(data), "classification_id") {
+		t.Fatalf("an empty ClassificationID must be omitted, got %s", data)
+	}
+
+	stamped := legacy
+	stamped.ClassificationID = "cls-2"
+	data, err = json.Marshal(stamped)
+	if err != nil {
+		t.Fatalf("marshal stamped outcome: %v", err)
+	}
+	if !strings.Contains(string(data), `"classification_id":"cls-2"`) {
+		t.Fatalf("a non-empty ClassificationID must be serialized, got %s", data)
+	}
+
+	rec := workflow.Record{
+		SchemaVersion: workflow.SchemaVersion,
+		Date:          "2026-10-06",
+		Confirmed: []workflow.ConfirmedInterval{{
+			ID: "c1", Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", ClassificationID: "cls-1",
+		}},
+	}
+	f1 := workflow.LocalFingerprint(rec)
+
+	// LocalFingerprint hashes confirmed intervals, review decisions and the
+	// plan-relevant mapping fields; outcome rows participate in NONE of them, so
+	// adding outcome rows must not move it.
+	rec.Outcomes = []workflow.OperationOutcome{legacy, stamped}
+	if workflow.LocalFingerprint(rec) != f1 {
+		t.Error("OperationOutcome.ClassificationID must not feed LocalFingerprint")
+	}
+
+	// PlanHash is sha256 over the canonical JSON of
+	// SubmissionPlan{Date, LocalFingerprint, RemoteObservedAt, RemoteComplete,
+	// Operations}. No outcome input participates, so "an outcome field does not
+	// feed PlanHash" holds by construction and is recorded here as a statement of
+	// the contract rather than asserted (a comparison over the same plan value
+	// would be vacuous).
+}

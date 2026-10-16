@@ -149,6 +149,57 @@ func TestResolveUnresolved_EditInference(t *testing.T) {
 	if absent.Outcomes[0].Resolved {
 		t.Fatalf("an absent edit remote must stay unresolved, got %+v", absent.Outcomes[0])
 	}
+
+	// A CLASSIFICATION-CHANGING edit: the outcome row carries the NEW
+	// classification with every other field (Date/Start/End/Description)
+	// UNCHANGED from the baseline. The baseline and the observed remote share the
+	// description "old text", so the classification is the ONLY field that can
+	// distinguish post-edit from pre-edit content. The post-edit projection must
+	// carry the dispatched classification for either inference to be correct.
+	makeClassRec := func(outcomeClass string) workflow.Record {
+		rec := reviewedRecord()
+		rec.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", remoteState("r1", "09:00", "10:00", "cls-1", "old text"))}
+		rec.Outcomes = []workflow.OperationOutcome{{
+			OperationKey: key, LocalID: "c1", RemoteID: "r1", Action: string(workflow.PlanOpEdit),
+			Status: workflow.OutcomeUncertain, Date: testDate, StartTime: "09:00", EndTime: "10:00",
+			Description: "old text", ClassificationID: outcomeClass,
+		}}
+		return rec
+	}
+
+	// R1a (harm i): the edit DID apply. The listing shows the NEW classification
+	// cls-2 with the same description. It must resolve CONFIRMED. Before the fix
+	// the projection keeps the pre-edit cls-1, so neither comparison matches and
+	// the row stays unresolved.
+	t.Run("classification edit applied resolves confirmed", func(t *testing.T) {
+		rec := makeClassRec("cls-2")
+		if err := ResolveUnresolved(&rec, completeListing(remoteState("r1", "09:00", "10:00", "cls-2", "old text")), nil, testNow); err != nil {
+			t.Fatalf("ResolveUnresolved: %v", err)
+		}
+		if len(rec.Outcomes) != 1 {
+			t.Fatalf("want exactly one outcome row, got %d: %+v", len(rec.Outcomes), rec.Outcomes)
+		}
+		if rec.Outcomes[0].Status != workflow.OutcomeConfirmed || !rec.Outcomes[0].Resolved {
+			t.Fatalf("a classification-changing edit that applied must resolve confirmed, got %+v", rec.Outcomes[0])
+		}
+	})
+
+	// R1b (harm ii): the edit did NOT apply. The listing is UNCHANGED (still
+	// cls-1). It must resolve FAILED. Before the fix the classification-blind
+	// projection equals the unchanged baseline on every compared field, so
+	// RemoteContentEqual wrongly confirms the unapplied edit.
+	t.Run("classification-only edit not applied resolves failed", func(t *testing.T) {
+		rec := makeClassRec("cls-2")
+		if err := ResolveUnresolved(&rec, completeListing(remoteState("r1", "09:00", "10:00", "cls-1", "old text")), nil, testNow); err != nil {
+			t.Fatalf("ResolveUnresolved: %v", err)
+		}
+		if len(rec.Outcomes) != 1 {
+			t.Fatalf("want exactly one outcome row, got %d: %+v", len(rec.Outcomes), rec.Outcomes)
+		}
+		if rec.Outcomes[0].Status != workflow.OutcomeFailed || !rec.Outcomes[0].Resolved {
+			t.Fatalf("a classification-only edit that did NOT apply must resolve failed, got %+v", rec.Outcomes[0])
+		}
+	})
 }
 
 // A legacy plan-echo baseline (LastObserved.ContentObserved false) must NEVER be

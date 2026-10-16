@@ -108,13 +108,14 @@ func BuildMapping(localID string, planned PlannedEntry, entry workflow.RemoteSta
 // intent row.
 func BuildOutcome(action, localID string, planned PlannedEntry, res WriteResult, now time.Time) workflow.OperationOutcome {
 	out := workflow.OperationOutcome{
-		LocalID:     localID,
-		Action:      action,
-		Date:        planned.Date,
-		StartTime:   planned.StartTime,
-		EndTime:     planned.EndTime,
-		Description: planned.Description,
-		RecordedAt:  now,
+		LocalID:          localID,
+		Action:           action,
+		Date:             planned.Date,
+		StartTime:        planned.StartTime,
+		EndTime:          planned.EndTime,
+		ClassificationID: planned.ClassificationID,
+		Description:      planned.Description,
+		RecordedAt:       now,
 	}
 
 	switch res.Status {

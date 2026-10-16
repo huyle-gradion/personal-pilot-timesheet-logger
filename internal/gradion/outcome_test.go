@@ -48,7 +48,7 @@ func TestBuildMapping_UnobservedEntryFailsClosed(t *testing.T) {
 
 func TestBuildOutcome_StatusesAndResolution(t *testing.T) {
 	now := time.Now().UTC()
-	planned := PlannedEntry{Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", Description: "work"}
+	planned := PlannedEntry{Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", Description: "work", ClassificationID: "cls-2"}
 	cases := []struct {
 		name     string
 		res      WriteResult
@@ -71,6 +71,9 @@ func TestBuildOutcome_StatusesAndResolution(t *testing.T) {
 			}
 			if out.OperationKey == "" {
 				t.Error("operation key must be set")
+			}
+			if out.ClassificationID != "cls-2" {
+				t.Errorf("classification = %q, want cls-2 (carried from the plan)", out.ClassificationID)
 			}
 			if tc.status == workflow.OutcomeConfirmed && out.RemoteID != "uuid-1" {
 				t.Errorf("confirmed outcome missing remote id: %+v", out)

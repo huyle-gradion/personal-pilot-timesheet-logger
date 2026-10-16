@@ -106,6 +106,18 @@ func TestReconcile_ObservedBaselineChangeStillConflicts(t *testing.T) {
 	if res.Locals[0].Kind != MatchConflict || !hasReason(res.Unresolved, "remote_conflict:c1") {
 		t.Fatalf("an observed baseline with changed content must still conflict, got kind=%q unresolved=%v", res.Locals[0].Kind, res.Unresolved)
 	}
+
+	// PIN — this deliberately passes BEFORE AND AFTER the DEFECT-2 fix. Recent
+	// reconciliation compares an observed baseline against a fresh observation
+	// and MUST treat a classification-only change as a conflict. Its job is to
+	// stop a future "fix" that loosens RemoteContentEqual by dropping
+	// ClassificationID: that would silently make this case a match.
+	clsOnly := reviewedRecord()
+	clsOnly.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", observed)}
+	res = Reconcile(clsOnly, completeListing(remoteState("r1", "09:00", "10:00", "cls-2", "work")), nil, testNow)
+	if res.Locals[0].Kind != MatchConflict || !hasReason(res.Unresolved, "remote_conflict:c1") {
+		t.Fatalf("a classification-only observed change must still conflict, got kind=%q unresolved=%v", res.Locals[0].Kind, res.Unresolved)
+	}
 }
 
 func TestReconcile_OrphanedMappingUnresolved(t *testing.T) {

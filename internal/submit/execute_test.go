@@ -522,6 +522,59 @@ func TestExecute_IdentifiedWriteContentMismatchIsUnresolved(t *testing.T) {
 	}
 }
 
+// A CLASSIFICATION-ONLY edit that did NOT apply must NOT resolve as a false
+// confirm. The local choice is cls-2, the remote still carries cls-1, and the
+// description/times are identical, so the classification is the only content that
+// differs. The fake acknowledges (WriteIdentified) but the read-back shows the OLD
+// classification, so the write is unresolved with the content-mismatch code. A
+// resolution from a listing that still shows the OLD classification must resolve
+// the edit FAILED, never CONFIRMED.
+func TestExecute_ClassificationOnlyEditMismatchResolvesFailed(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	rec := reviewedRecord()
+	// The ONLY local change is the classification: the interval now chooses cls-2.
+	rec.Confirmed[0].ClassificationID = "cls-2"
+	fake := newFakeRemote()
+	existing := remoteState("r1", "09:00", "10:00", "cls-1", "work")
+	fake.setEntry(existing)
+	rec.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", existing)}
+	fake.onEdit = func(gradion.EditRequest) (gradion.WriteResult, error) {
+		return gradion.WriteResult{Status: gradion.WriteIdentified, RemoteID: "r1"}, nil
+	}
+	fake.entryByID = func(string) (workflow.RemoteState, bool, error) {
+		// The read-back shows the OLD classification: the edit did NOT apply.
+		return existing, true, nil
+	}
+	_, approval := seedApprovedDay(t, store, rec, completeListing(existing), alwaysResolver("cls-2"))
+
+	result, err := Execute(ctx, store, fake, fake, testDate, approval, alwaysResolver("cls-2"), testNow)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !result.Partial {
+		t.Fatalf("a content mismatch must mark the run partial")
+	}
+	if len(result.Outcomes) != 1 || result.Outcomes[0].Status != workflow.OutcomeUncertain {
+		t.Fatalf("want one uncertain outcome, got %+v", result.Outcomes)
+	}
+	if result.Outcomes[0].ErrorCode != gradion.CodeWriteContentMismatch {
+		t.Errorf("error code = %q, want %q", result.Outcomes[0].ErrorCode, gradion.CodeWriteContentMismatch)
+	}
+	if fake.editCount() != 1 {
+		t.Fatalf("a mismatch must never retry, got %d edits", fake.editCount())
+	}
+
+	// Resolve from an observation that still shows the UNCHANGED cls-1.
+	got := loadRecord(t, store, testDate)
+	if err := ResolveUnresolved(&got, completeListing(existing), nil, testNow); err != nil {
+		t.Fatalf("ResolveUnresolved: %v", err)
+	}
+	if got.Outcomes[0].Status != workflow.OutcomeFailed || !got.Outcomes[0].Resolved {
+		t.Fatalf("an unapplied classification-only edit must resolve failed, not confirmed: got %+v", got.Outcomes[0])
+	}
+}
+
 // An absent read-back (found=false) leaves the write unresolved with the
 // content-unverified code and preserves the acknowledged id.
 func TestExecute_IdentifiedWriteAbsentIsUnresolved(t *testing.T) {
