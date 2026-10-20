@@ -172,10 +172,11 @@ func TestOperationOutcome_ClassificationIDOmitemptyAndHashNeutral(t *testing.T) 
 		t.Error("OperationOutcome.ClassificationID must not feed LocalFingerprint")
 	}
 
-	// PlanHash is sha256 over the canonical JSON of
-	// SubmissionPlan{Date, LocalFingerprint, RemoteObservedAt, RemoteComplete,
-	// Operations}. No outcome input participates, so "an outcome field does not
-	// feed PlanHash" holds by construction and is recorded here as a statement of
-	// the contract rather than asserted (a comparison over the same plan value
-	// would be vacuous).
+	// PlanHash is sha256 over the canonical JSON of an anonymous five-field
+	// projection of SubmissionPlan — {Date, LocalFingerprint,
+	// RemoteObservedAt, RemoteComplete, Operations} excluding PlanID,
+	// CreatedAt and RecordRevision. No outcome input participates, so "an
+	// outcome field does not feed PlanHash" holds by construction and is
+	// recorded here as a statement of the contract rather than asserted (a
+	// comparison over the same plan value would be vacuous).
 }

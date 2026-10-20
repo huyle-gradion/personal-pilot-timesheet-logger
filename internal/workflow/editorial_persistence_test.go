@@ -67,27 +67,35 @@ func TestWorkflow_EditorialCapacityBound(t *testing.T) {
 	}
 }
 
+// TestWorkflow_EditorialDoesNotFeedFingerprintOrPlanHash proves the ADDITIVE
+// editorial fields do not move LocalFingerprint. The PlanHash half of the claim
+// is structural rather than observable from here, so it is recorded below as a
+// statement of the contract instead of asserted.
 func TestWorkflow_EditorialDoesNotFeedFingerprintOrPlanHash(t *testing.T) {
 	rec := Record{
 		Date:      "2026-10-06",
 		Confirmed: []ConfirmedInterval{{ID: "c1", Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", Project: "P"}},
 	}
 	fingerprint := LocalFingerprint(rec)
-	plan := SubmissionPlan{
-		Date: "2026-10-06", LocalFingerprint: fingerprint,
-		Operations: []PlanOperation{{LocalID: "c1", Kind: PlanOpCreate}},
-	}
-	planHash := PlanHash(plan)
 
+	// rec changes below, so recomputing LocalFingerprint over it genuinely can
+	// differ: editorial suggestions and their usage must be ignored by the
+	// fingerprint.
 	rec.Editorial = []EditorialSuggestion{{TargetID: "c1", RequestHash: "h", Text: EditorialText{Title: "t", Description: "d"}}}
 	rec.Usage = &EditorialUsage{Date: "2026-10-06", Editorial: KnownMeasurement(99)}
 
 	if LocalFingerprint(rec) != fingerprint {
 		t.Errorf("editorial suggestions must NOT feed LocalFingerprint")
 	}
-	if PlanHash(plan) != planHash {
-		t.Errorf("editorial state must NOT feed PlanHash")
-	}
+
+	// PlanHash is sha256 over the canonical JSON of an anonymous five-field
+	// projection of SubmissionPlan — {Date, LocalFingerprint,
+	// RemoteObservedAt, RemoteComplete, Operations} excluding PlanID,
+	// CreatedAt and RecordRevision. Editorial state reaches no projected
+	// member, so "editorial state does not feed PlanHash" holds by
+	// construction and is recorded here as a statement of the contract
+	// rather than asserted (a comparison over the same plan value would be
+	// vacuous).
 }
 
 func TestWorkflow_OldSchemaV1FileHasNilEditorial(t *testing.T) {
