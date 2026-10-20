@@ -872,7 +872,9 @@ func TestRunCLI_ReviewReportsNoEvidenceSources(t *testing.T) {
 }
 
 // CONFIG-COLLECT-1 visibility: printSourceStatus prints a line for every source
-// that is not complete/skipped, and nothing for the rest.
+// that is skipped-free but not clean — incomplete/failed sources, and complete
+// sources carrying warnings (one line per warning); clean complete and skipped
+// sources print nothing.
 func TestPrintSourceStatus_ShowsOnlyNonCompleteSources(t *testing.T) {
 	var buf bytes.Buffer
 	sum := evidence.CollectionSummary{
@@ -894,6 +896,29 @@ func TestPrintSourceStatus_ShowsOnlyNonCompleteSources(t *testing.T) {
 	}
 	if strings.Contains(out, "source ok:") || strings.Contains(out, "source off:") {
 		t.Errorf("complete/skipped sources must not be printed, got:\n%s", out)
+	}
+}
+
+// A COMPLETE source's warnings are printed, one line per warning, so a warning
+// such as JOURNAL_DATE_UNSTATED or JOURNAL_DATE_MISMATCH never disappears behind
+// "complete"; a clean complete source stays quiet.
+func TestPrintSourceStatus_ShowsCompleteWarnings(t *testing.T) {
+	var buf bytes.Buffer
+	sum := evidence.CollectionSummary{
+		Date: testDate,
+		Sources: []evidence.SourceResult{
+			{SourceID: "journal-work", Status: evidence.StatusComplete,
+				Warnings: []string{plugins.JournalWarnDateUnstated}},
+			{SourceID: "clean", Status: evidence.StatusComplete},
+		},
+	}
+	printSourceStatus(&buf, sum)
+	out := buf.String()
+	if !strings.Contains(out, "source journal-work: complete (JOURNAL_DATE_UNSTATED)") {
+		t.Errorf("want the complete-with-warning line, got:\n%s", out)
+	}
+	if strings.Contains(out, "source clean:") {
+		t.Errorf("a clean complete source must stay quiet, got:\n%s", out)
 	}
 }
 

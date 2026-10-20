@@ -519,8 +519,9 @@ func cmdReview(ctx context.Context, r *run.Runner, cfg cliConfig, editorActive b
 		if collectRes.NoSourcesConfigured {
 			fmt.Fprintf(stdout, "%s: No evidence sources configured.\n", d)
 		}
-		// Surface every enabled source that is not complete/skipped, so a remote
-		// failure or an incomplete collection is visible.
+		// Surface every enabled source that is skipped-free but not clean
+		// (incomplete/failed, and complete-with-warnings), so a remote failure or
+		// an uncertified date is visible.
 		printSourceStatus(stdout, collectRes.Summary)
 		printRemoteObservation(stdout, d, collectRes)
 		prop, err := r.Propose(ctx, d)
@@ -577,13 +578,22 @@ func cmdReview(ctx context.Context, r *run.Runner, cfg cliConfig, editorActive b
 	return exitOK
 }
 
-// printSourceStatus prints one concise line for every enabled source that is not
-// complete or skipped, so a partial or failed collection is visible. Details are
-// drawn from the stable error code, else the propagated registry warnings, else
-// the message; none of these ever contains a secret.
+// printSourceStatus prints one line for every enabled source that is skipped-free
+// but not clean: an incomplete/failed source gets one line with its detail, and a
+// complete source carrying warnings gets one line per warning, so a warning such as
+// JOURNAL_DATE_UNSTATED or JOURNAL_DATE_MISMATCH is never invisible merely because
+// the source itself completed. Clean complete and skipped sources print nothing.
+// Details are drawn from the stable error code, else the propagated registry
+// warnings, else the message; none of these ever contains a secret.
 func printSourceStatus(w io.Writer, sum evidence.CollectionSummary) {
 	for _, sr := range sum.Sources {
-		if sr.Status == evidence.StatusComplete || sr.Status == evidence.StatusSkipped {
+		if sr.Status == evidence.StatusSkipped {
+			continue
+		}
+		if sr.Status == evidence.StatusComplete {
+			for _, warning := range sr.Warnings {
+				fmt.Fprintf(w, "source %s: complete (%s)\n", sr.SourceID, warning)
+			}
 			continue
 		}
 		detail := sr.ErrorCode

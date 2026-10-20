@@ -144,5 +144,8 @@ A manual run needs a real journal note at `<vault>/<daily_dir>/<date>.md`. A
 missing note is a NON-FATAL incomplete source with the warning
 `JOURNAL_NOTE_MISSING` (distinct from a hard collection error): it is reported as
 incomplete, it blocks the preview until the source is acknowledged, and the run
-does not abort. Only explicitly recorded work is captured: a note never
+does not abort. A note the run's export creates carries the daily-note schema
+frontmatter (including `date`), and an existing note with no frontmatter `date` is
+COMPLETE with the warning `JOURNAL_DATE_UNSTATED`, so its date is never certified
+by silence. Only explicitly recorded work is captured: a note never
 establishes working time by itself.

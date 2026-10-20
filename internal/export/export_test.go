@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -115,6 +116,14 @@ func TestExport_IdempotentAndPreservesJournal(t *testing.T) {
 	if string(first) != string(second) {
 		t.Fatalf("a repeat export must be byte-identical:\n%s\n---\n%s", first, second)
 	}
+	// An EXISTING note is never re-seeded: its own frontmatter (which has no
+	// `date`) stays byte-for-byte, and nothing is prepended.
+	if !strings.HasPrefix(string(second), original) {
+		t.Fatalf("the existing note outside the markers must be preserved exactly:\n%s", second)
+	}
+	if strings.Contains(string(second), storage.DailyNoteFrontmatter("2026-10-06")) {
+		t.Fatalf("an existing note must not be re-seeded with the export template:\n%s", second)
+	}
 	if strings.Count(string(second), MarkerBegin) != 1 || strings.Count(string(second), MarkerEnd) != 1 {
 		t.Fatalf("want exactly one marker block, got %d begin / %d end",
 			strings.Count(string(second), MarkerBegin), strings.Count(string(second), MarkerEnd))
@@ -184,6 +193,36 @@ func TestRender_CarryoverMarkerOnConfirmedRow(t *testing.T) {
 	}
 }
 
+// TestExport_ExistingEmptyNoteNotSeeded pins the creation-only rule: a zero-byte
+// file EXISTS, so it is not "created" and must receive only the managed block, no
+// frontmatter seeding.
+func TestExport_ExistingEmptyNoteNotSeeded(t *testing.T) {
+	ctx := context.Background()
+	vault := t.TempDir()
+	dir := filepath.Join(vault, "Daily")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "2026-10-06.md")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write empty note: %v", err)
+	}
+	note := Note{Date: "2026-10-06", Status: StatusReviewedNotSubmitted}
+	if _, err := NewNoteExporter(vault, "Daily").Export(ctx, note); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	if strings.HasPrefix(string(blob), storage.DailyNoteFrontmatter(note.Date)) {
+		t.Fatalf("an existing (even empty) note must not be seeded:\n%s", blob)
+	}
+	if got, want := string(blob), Render(note)+"\n"; got != want {
+		t.Fatalf("an existing empty note must contain only the managed block:\n%q\nwant:\n%q", got, want)
+	}
+}
+
 func TestExport_AppendsWhenMarkersAbsentAndIsSecretFree(t *testing.T) {
 	ctx := context.Background()
 	vault := t.TempDir()
@@ -198,6 +237,18 @@ func TestExport_AppendsWhenMarkersAbsentAndIsSecretFree(t *testing.T) {
 	blob, err := os.ReadFile(filepath.Join(vault, "Daily", "2026-10-06.md"))
 	if err != nil {
 		t.Fatalf("read note: %v", err)
+	}
+	// A CREATED note is the shared daily-note frontmatter (the SAME source the
+	// Obsidian sink uses) followed by the managed block, and nothing else.
+	wantPrefix := storage.DailyNoteFrontmatter(note.Date) + "\n" + MarkerBegin
+	if !strings.HasPrefix(string(blob), wantPrefix) {
+		t.Fatalf("a created note must begin with the shared frontmatter then the managed block:\n%s", blob)
+	}
+	if strings.Count(string(blob), storage.DailyNoteFrontmatter(note.Date)) != 1 {
+		t.Errorf("want exactly one shared frontmatter block, got:\n%s", blob)
+	}
+	if strings.Contains(string(blob), "# Daily work log") {
+		t.Errorf("creation seeding writes the frontmatter and the managed block only, got:\n%s", blob)
 	}
 	if !strings.Contains(string(blob), MarkerBegin) || !strings.Contains(string(blob), MarkerEnd) {
 		t.Fatalf("want a marker block, got:\n%s", blob)

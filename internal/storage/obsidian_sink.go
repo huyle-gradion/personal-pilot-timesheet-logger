@@ -50,6 +50,26 @@ func (s *ObsidianSink) VaultPath() string {
 	return s.vaultPath
 }
 
+// dailyNoteFrontmatterTemplate is the ONE daily-note YAML frontmatter schema,
+// shared by the Obsidian sink and the managed export (internal/export). Format
+// verb: the plain, unquoted YYYY-MM-DD date. The journal collector reads the
+// `date` key to certify a note's date, so every created note must carry it.
+const dailyNoteFrontmatterTemplate = `---
+type: log
+date: %s
+log_type: daily
+tags:
+  - daily-log
+  - timesheet
+---
+`
+
+// DailyNoteFrontmatter returns the daily-note frontmatter for date. It is the
+// single source of the template: callers must never mirror it.
+func DailyNoteFrontmatter(date string) string {
+	return fmt.Sprintf(dailyNoteFrontmatterTemplate, date)
+}
+
 // FormatMarkdownTable converts a TimesheetRecord into a standardized markdown section.
 func FormatMarkdownTable(record TimesheetRecord) string {
 	var sb strings.Builder
@@ -100,18 +120,8 @@ func (s *ObsidianSink) Export(ctx context.Context, record TimesheetRecord) error
 	if err == nil {
 		fullContent = replaceOrAppendTimesheetSection(string(existingBytes), renderedSection)
 	} else if os.IsNotExist(err) {
-		fullContent = fmt.Sprintf(`---
-type: log
-date: %s
-log_type: daily
-tags:
-  - daily-log
-  - timesheet
----
-
-# Daily work log: %s
-
-%s`, record.Date, record.Date, renderedSection)
+		fullContent = fmt.Sprintf("%s\n# Daily work log: %s\n\n%s",
+			DailyNoteFrontmatter(record.Date), record.Date, renderedSection)
 	} else {
 		return fmt.Errorf("failed reading existing daily note: %w", err)
 	}

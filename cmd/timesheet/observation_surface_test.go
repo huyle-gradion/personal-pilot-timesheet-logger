@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence/plugins"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/run"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
@@ -191,6 +193,92 @@ func TestGuidedPrintCollection_SurfacesRemoteSignals(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("guided review section missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// A complete source carrying a warning must never read as a clean zero in the
+// guided Sources section, and on an ordinary day it must not swallow the evidence
+// count: both the warning line and "all enabled sources complete" are printed.
+func TestGuidedPrintCollection_CompleteWarningIsVisible(t *testing.T) {
+	var buf bytes.Buffer
+	g := &guided{stdout: &buf, date: testDate}
+	cr := run.CollectResult{
+		Date: testDate,
+		Summary: evidence.CollectionSummary{
+			Date: testDate,
+			Sources: []evidence.SourceResult{{
+				SourceID: "journal-work",
+				Status:   evidence.StatusComplete,
+				Warnings: []string{plugins.JournalWarnDateUnstated},
+			}},
+			Complete: true,
+		},
+		Evidence: []evidence.Evidence{{ID: "e1"}},
+	}
+	g.printCollection(cr, &workflow.Record{})
+	out := buf.String()
+	if !strings.Contains(out, "source journal-work: complete (JOURNAL_DATE_UNSTATED)") {
+		t.Errorf("a complete source warning must be printed:\n%s", out)
+	}
+	if !strings.Contains(out, "all enabled sources complete (1 evidence item(s))") {
+		t.Errorf("a warning day with evidence must keep the count line:\n%s", out)
+	}
+	if strings.Contains(out, "no evidence collected") {
+		t.Errorf("an uncertified note must not read as a clean zero:\n%s", out)
+	}
+}
+
+// The fresh export-only shape is a COMPLETE source with zero evidence and a
+// warning: it prints the warning, never "no evidence collected", and no count line
+// (there is no evidence to count).
+func TestGuidedPrintCollection_UncertifiedZeroIsNotACleanZero(t *testing.T) {
+	var buf bytes.Buffer
+	g := &guided{stdout: &buf, date: testDate}
+	cr := run.CollectResult{
+		Date: testDate,
+		Summary: evidence.CollectionSummary{
+			Date: testDate,
+			Sources: []evidence.SourceResult{{
+				SourceID: "journal-work",
+				Status:   evidence.StatusComplete,
+				Warnings: []string{plugins.JournalWarnDateUnstated},
+			}},
+			Complete: true,
+		},
+	}
+	g.printCollection(cr, &workflow.Record{})
+	out := buf.String()
+	if !strings.Contains(out, "source journal-work: complete (JOURNAL_DATE_UNSTATED)") {
+		t.Errorf("a complete source warning must be printed:\n%s", out)
+	}
+	if strings.Contains(out, "no evidence collected") || strings.Contains(out, "all enabled sources complete") {
+		t.Errorf("an uncertified zero must print only its warning:\n%s", out)
+	}
+}
+
+// A clean complete day prints exactly one count line (no duplication).
+func TestGuidedPrintCollection_CleanCompletePrintsCountOnce(t *testing.T) {
+	var buf bytes.Buffer
+	g := &guided{stdout: &buf, date: testDate}
+	cr := run.CollectResult{
+		Date: testDate,
+		Summary: evidence.CollectionSummary{
+			Date: testDate,
+			Sources: []evidence.SourceResult{{
+				SourceID: "journal-work",
+				Status:   evidence.StatusComplete,
+			}},
+			Complete: true,
+		},
+		Evidence: []evidence.Evidence{{ID: "e1"}, {ID: "e2"}},
+	}
+	g.printCollection(cr, &workflow.Record{})
+	out := buf.String()
+	if got := strings.Count(out, "all enabled sources complete (2 evidence item(s))"); got != 1 {
+		t.Fatalf("want exactly one count line, got %d:\n%s", got, out)
+	}
+	if strings.Contains(out, "JOURNAL_") {
+		t.Errorf("a clean day must print no source warning:\n%s", out)
 	}
 }
 

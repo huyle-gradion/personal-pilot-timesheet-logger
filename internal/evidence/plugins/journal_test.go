@@ -223,6 +223,83 @@ func TestJournal_ManagedMarkers(t *testing.T) {
 	}
 }
 
+// TestJournal_DateUnstatedIsReported proves an EXISTING note with no frontmatter
+// `date` cannot certify its date: the source stays complete, but it reports
+// JOURNAL_DATE_UNSTATED instead of attributing items (or a zero) in silence.
+func TestJournal_DateUnstatedIsReported(t *testing.T) {
+	// Narrative items with no frontmatter at all.
+	withItems := collectInline(t, writeJournalDoc(t, "## Work journal\n- Shipped the parser.\n"))
+	if withItems.Result.Status != evidence.StatusComplete || len(withItems.Evidence) != 1 {
+		t.Fatalf("unexpected result: %+v", withItems)
+	}
+	if !hasWarning(withItems.Result.Warnings, JournalWarnDateUnstated) {
+		t.Fatalf("an uncertified note date must be reported, got %v", withItems.Result.Warnings)
+	}
+
+	// The fresh export-only shape: a managed block, no frontmatter, no sections.
+	freshDoc := "<!-- timesheet:begin v1 -->\n## Timesheet — 2026-10-08\n\nStatus: `reviewed-not-submitted`\n\n<!-- timesheet:end -->\n"
+	fresh := collectInline(t, writeJournalDoc(t, freshDoc))
+	if fresh.Result.Status != evidence.StatusComplete {
+		t.Fatalf("a present note must be complete, got %+v", fresh.Result)
+	}
+	if len(fresh.Evidence) != 0 || fresh.Result.EvidenceCount != 0 {
+		t.Fatalf("the managed block is never evidence, got %+v", fresh)
+	}
+	if len(fresh.Result.Warnings) != 1 || fresh.Result.Warnings[0] != JournalWarnDateUnstated {
+		t.Fatalf("a complete note with no stated date must carry exactly %s, got %v",
+			JournalWarnDateUnstated, fresh.Result.Warnings)
+	}
+
+	// A stated date (plain or quoted) certifies the note.
+	for _, fm := range []string{"date: 2026-10-08", `date: "2026-10-08"`} {
+		res := collectInline(t, writeJournalDoc(t, "---\n"+fm+"\n---\n\n## Work journal\n- An item.\n"))
+		if res.Result.Status != evidence.StatusComplete || len(res.Evidence) != 1 {
+			t.Fatalf("unexpected result for %q: %+v", fm, res)
+		}
+		if hasWarning(res.Result.Warnings, JournalWarnDateUnstated) {
+			t.Errorf("a stated date must not raise %s, got %v", JournalWarnDateUnstated, res.Result.Warnings)
+		}
+	}
+
+	// A stated date that disagrees still raises ONLY the existing mismatch.
+	mismatch := collectInline(t, writeJournalDoc(t, "---\ndate: 2026-10-07\n---\n\n## Work journal\n- An item.\n"))
+	if !hasWarning(mismatch.Result.Warnings, JournalWarnDateMismatch) {
+		t.Errorf("expected %s, got %v", JournalWarnDateMismatch, mismatch.Result.Warnings)
+	}
+	if hasWarning(mismatch.Result.Warnings, JournalWarnDateUnstated) {
+		t.Errorf("a stated date must not raise %s, got %v", JournalWarnDateUnstated, mismatch.Result.Warnings)
+	}
+}
+
+// TestJournal_ExportCreatedNoteIsCertified proves the day-note lifecycle: a note
+// the export CREATES carries the shared frontmatter, so collecting that same day
+// afterwards is complete, yields no evidence from the managed block, and raises no
+// date warning. (Before the seeding, the created file was the file that failed the
+// collector's own precondition.)
+func TestJournal_ExportCreatedNoteIsCertified(t *testing.T) {
+	vault := t.TempDir()
+	dir := "02 - Daily & Logs"
+	if _, err := export.NewNoteExporter(vault, dir).Export(context.Background(), export.Note{
+		Date: "2026-10-08", Status: export.StatusReviewedNotSubmitted,
+	}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	res, err := NewJournalPlugin().Collect(context.Background(),
+		evidence.SourceConfig{ID: "j", Type: TypeJournal, Enabled: true,
+			Config: map[string]string{JournalConfigVault: vault, JournalConfigDailyDir: dir}},
+		evidence.CollectRequest{Date: "2026-10-08"})
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if res.Result.Status != evidence.StatusComplete || len(res.Evidence) != 0 {
+		t.Fatalf("an export-created note must be a complete empty source: %+v", res)
+	}
+	if hasWarning(res.Result.Warnings, JournalWarnDateUnstated) || hasWarning(res.Result.Warnings, JournalWarnDateMismatch) {
+		t.Fatalf("an export-created note must certify its date, got %v", res.Result.Warnings)
+	}
+}
+
 // TestJournal_CodeFenceSkipped proves bullets inside a fenced code block are not
 // evidence.
 func TestJournal_CodeFenceSkipped(t *testing.T) {

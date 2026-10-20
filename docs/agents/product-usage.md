@@ -146,8 +146,8 @@ persisted.
 
 ### Evidence count, no sources, and incomplete sources
 
-`review` prints one line per enabled source that is not complete/skipped, and
-distinguishes conditions:
+`review` prints one line per enabled source that is not complete/skipped, plus one
+line per warning on a complete source, and distinguishes conditions:
 
 - **No sources configured** → `No evidence sources configured.` (distinct from a
   configured day that legitimately returned nothing).
@@ -490,6 +490,7 @@ Exit codes: `0` success, `1` error, `2` usage error, `3` blocked.
 | --- | --- |
 | `No evidence sources configured.` | No enabled sources — add sources or accept an empty draft |
 | `JOURNAL_NOTE_MISSING` / `JOURNAL_VAULT_MISSING` | Journal note/vault absent — fix the path or `--ack <source-id>` |
+| `JOURNAL_DATE_UNSTATED` | The note exists but its frontmatter states no `date` — add `date: <YYYY-MM-DD>`; the source stays complete but its items are not date-certified |
 | `incomplete_collection` blocks preview | An incomplete source needs `--ack <source-id>` |
 | `unresolved_classification` | An interval has no classification — `classify select` |
 | `readiness:unconfirmed_duration` | Supply and explicitly confirm a valid working interval; do not infer duration from narrative evidence |

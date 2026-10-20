@@ -112,7 +112,10 @@ The stated date is retained unchanged; a mismatch with the target date raises
 `JOURNAL_DATE_MISMATCH:<target>` and preserves both. A quoted YAML date scalar
 (`date: "2026-10-08"`) is normalized (surrounding quotes stripped) before
 comparison, so it never raises a spurious mismatch; the raw value is never
-rewritten in the note. A stated clock is never a working duration.
+rewritten in the note. A note whose frontmatter states no `date` raises
+`JOURNAL_DATE_UNSTATED` ONCE for the whole note: the source stays `complete`, its
+items are still collected, and the target date is never certified by silence. A
+stated clock is never a working duration.
 
 ## Identity and history
 

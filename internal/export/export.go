@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/submit"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
@@ -221,9 +222,12 @@ func (e *noteExporter) path(date string) string {
 }
 
 // Export splices the rendered block into the daily note, preserving everything
-// outside the markers byte-for-byte, and writes atomically. It is idempotent: an
-// identical second export produces byte-identical content and never a second
-// block. It NEVER calls the remote.
+// outside the markers byte-for-byte, and writes atomically. A note it CREATES also
+// gets the shared daily-note frontmatter (the Obsidian sink's template) so the
+// journal collector can certify the date it already has; an EXISTING note — even
+// a zero-byte file — is never re-seeded or touched outside the markers. It is
+// idempotent: an identical second export produces byte-identical content and never
+// a second block. It NEVER calls the remote.
 func (e *noteExporter) Export(ctx context.Context, note Note) (Result, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -236,11 +240,21 @@ func (e *noteExporter) Export(ctx context.Context, note Note) (Result, error) {
 	path := e.path(note.Date)
 
 	existing, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	created := errors.Is(err, os.ErrNotExist)
+	if err != nil && !created {
 		return Result{}, err
 	}
 
-	updated := spliceBlock(string(existing), Render(note))
+	// Creation-only seeding: a note the export creates carries the daily-note
+	// schema frontmatter (the SAME template the Obsidian sink uses), so the journal
+	// collector can certify the date it already has. An EXISTING note is never
+	// touched outside the markers.
+	content := string(existing)
+	if created {
+		content = storage.DailyNoteFrontmatter(note.Date)
+	}
+
+	updated := spliceBlock(content, Render(note))
 	if err := atomicWrite(path, []byte(updated)); err != nil {
 		return Result{}, err
 	}

@@ -2093,6 +2093,14 @@ func (g *guided) printCollection(cr run.CollectResult, rec *workflow.Record) {
 		switch {
 		case b.Len() > 0:
 			fmt.Fprint(g.stdout, b.String())
+			// A warning on a COMPLETE source must not swallow the ordinary-day
+			// summary: when the day still has evidence and every source completed,
+			// keep the count line alongside the warning lines. A zero-evidence
+			// uncertified day deliberately keeps just its warning (never a clean
+			// zero).
+			if len(cr.Evidence) > 0 && collectionComplete(cr.Summary) {
+				fmt.Fprintf(g.stdout, "  all enabled sources complete (%d evidence item(s))\n", len(cr.Evidence))
+			}
 		case len(cr.Evidence) == 0 && collectionComplete(cr.Summary):
 			fmt.Fprintf(g.stdout, "%s: no evidence collected.\n", g.date)
 		default:

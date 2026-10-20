@@ -139,7 +139,9 @@ Invoke this skill when the user issues any of the following triggers:
   **UNTIMED** items (zero start/end, unknown duration, retained provenance); it
   never establishes working time. Only recorded work is captured, and a missing
   note is a visibly incomplete source that requires an explicit acknowledgment
-  (`--ack`). Raw note text is never sent to an external service. See
+  (`--ack`). If the day's note does not exist yet, skip reading it: the run's
+  export creates it, and `journal` collection reports `JOURNAL_NOTE_MISSING` (a
+  handled, non-fatal source). Raw note text is never sent to an external service. See
   [journal source](../../../docs/agents/journal-source.md).
 - **One manual interval may cite several evidence sources.** A user-timed interval
   can link multiple supporting records; the links add no minutes and the

@@ -64,6 +64,13 @@ func TestObsidianSink_Resolution(t *testing.T) {
 }
 
 func TestObsidianSink_ExportNewDailyNote(t *testing.T) {
+	// Pin the shared template's exact schema/order: the journal collector reads
+	// `date`, and the managed export seeds this same block on note creation.
+	wantFrontmatter := "---\ntype: log\ndate: 2026-10-08\nlog_type: daily\ntags:\n  - daily-log\n  - timesheet\n---\n"
+	if got := DailyNoteFrontmatter("2026-10-08"); got != wantFrontmatter {
+		t.Fatalf("shared frontmatter template drifted:\n%q\nwant:\n%q", got, wantFrontmatter)
+	}
+
 	tempVault := t.TempDir()
 	sink, err := NewObsidianSink(tempVault)
 	if err != nil {
@@ -108,6 +115,10 @@ func TestObsidianSink_ExportNewDailyNote(t *testing.T) {
 	}
 
 	content := string(contentBytes)
+	// The sink and the managed export share ONE frontmatter template.
+	if !strings.HasPrefix(content, DailyNoteFrontmatter(date)) {
+		t.Errorf("new note must begin with the shared frontmatter template: %s", content)
+	}
 	if !strings.Contains(content, "# Daily work log: 2026-10-08") {
 		t.Errorf("missing header in new note: %s", content)
 	}

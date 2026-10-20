@@ -50,6 +50,11 @@ const (
 	JournalWarnExplicitIDDuplicate = "JOURNAL_EXPLICIT_ID_DUPLICATE"
 	JournalWarnImplicitIDDuplicate = "JOURNAL_IMPLICIT_ID_DUPLICATE"
 	JournalWarnDateMismatch        = "JOURNAL_DATE_MISMATCH"
+	// JournalWarnDateUnstated reports an EXISTING note whose frontmatter states no
+	// date: the note cannot certify the target date its items are attributed to.
+	// The source stays complete (its items are still collected) but never reads as
+	// a clean, certified zero.
+	JournalWarnDateUnstated        = "JOURNAL_DATE_UNSTATED"
 	JournalWarnBoilerplateExcluded = "JOURNAL_BOILERPLATE_EXCLUDED"
 	JournalWarnMetricsExcluded     = "JOURNAL_METRICS_EXCLUDED"
 )
@@ -160,7 +165,8 @@ func (p *JournalPlugin) CheckContract(_ context.Context, cfg evidence.SourceConf
 // note, a malformed managed-marker region, or duplicate explicit IDs makes the
 // source visibly INCOMPLETE with a stable warning code (never a raw note dump).
 // A present note with no recognized narrative sections is a COMPLETE empty
-// source.
+// source; a present note whose frontmatter states no date is COMPLETE with
+// JOURNAL_DATE_UNSTATED, so it is never a silently certified zero.
 func (p *JournalPlugin) Collect(ctx context.Context, cfg evidence.SourceConfig, req evidence.CollectRequest) (evidence.CollectResult, error) {
 	read := p.Read
 	if read == nil {
@@ -213,6 +219,12 @@ func (p *JournalPlugin) Collect(ctx context.Context, cfg evidence.SourceConfig, 
 	}
 	if n := parsed.invalidExplicitIDs; n > 0 {
 		warnings = append(warnings, JournalWarnExplicitIDInvalid+":"+itoa(n))
+	}
+	if parsed.frontmatterDate == "" {
+		// A present note that states no date cannot certify which day its items
+		// belong to. Report that ONCE for the whole note instead of attributing the
+		// items to the target date in silence (a fresh export-only note included).
+		warnings = append(warnings, JournalWarnDateUnstated)
 	}
 
 	evs := make([]evidence.Evidence, 0, len(parsed.items))

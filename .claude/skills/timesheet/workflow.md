@@ -169,7 +169,9 @@ Journal items appear as **UNTIMED narrative candidates** with their provenance
 (relative note path, heading, line range, stated date) and an explicit unknown
 duration; a note never establishes working time. A missing or unreadable note is
 a **visibly incomplete** source (`JOURNAL_NOTE_MISSING` / `JOURNAL_VAULT_MISSING`)
-that blocks the preview until acknowledged with `--ack <source-id>`. Only
+that blocks the preview until acknowledged with `--ack <source-id>`. If the day's
+note does not exist yet, skip the read: the run's export creates it, and `journal`
+collection then reports `JOURNAL_NOTE_MISSING` (a handled, non-fatal source). Only
 recorded work is captured. See
 [journal source](../../../docs/agents/journal-source.md).
 
