@@ -53,7 +53,7 @@ var ErrTranscriptTooLarge = errors.New("metrics: transcript exceeds maximum size
 // token. It never unmarshals message text, tool arguments, or tool results into
 // any persisted field.
 type Adapter interface {
-	// Name is the stable provider name ("pi", "claude").
+	// Name is the stable provider name ("pi", "claude", "antigravity").
 	Name() string
 	// Provenance is the measurement provenance the adapter produces.
 	Provenance() Provenance
@@ -66,18 +66,22 @@ type Adapter interface {
 
 // adapters returns every REGISTERED adapter in auto-detection order. Adding a
 // provider is one entry here and one case in SelectAdapter: there is no dispatch
-// table.
-func adapters() []Adapter { return []Adapter{piAdapter{}, claudeAdapter{}} }
+// table. The three are MUTUALLY EXCLUSIVE by construction (pi requires a
+// type:"session" line; claude requires sessionId or summary+leafUuid; antigravity
+// requires sessionId ABSENT), so this order is immaterial.
+func adapters() []Adapter { return []Adapter{piAdapter{}, claudeAdapter{}, antigravityAdapter{}} }
 
 // SelectAdapter chooses an adapter for the requested provider. provider is
-// "auto", "pi", or "claude". For "auto" (or empty) it runs Detect over the
-// header in order and returns ErrUnknownProvider when nothing matches.
+// "auto", "pi", "claude", or "antigravity". For "auto" (or empty) it runs Detect
+// over the header in order and returns ErrUnknownProvider when nothing matches.
 func SelectAdapter(provider string, header []byte) (Adapter, error) {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "pi":
 		return piAdapter{}, nil
 	case "claude":
 		return claudeAdapter{}, nil
+	case "antigravity":
+		return antigravityAdapter{}, nil
 	case "", "auto":
 		for _, a := range adapters() {
 			if a.Detect(header) {
@@ -121,7 +125,7 @@ func detectAdapter(data []byte) Adapter {
 
 // ImportOptions tunes Import.
 type ImportOptions struct {
-	// Provider is "auto" (default), "pi", or "claude".
+	// Provider is "auto" (default), "pi", "claude", or "antigravity".
 	Provider string
 	// Date is the operator's explicit day (YYYY-MM-DD). It is REQUIRED: no day is
 	// inferred from the transcript or the clock.

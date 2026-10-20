@@ -531,11 +531,21 @@ $TS export --config "$CFG" --date "$DATE"
 This step is **optional and non-blocking**. It records token usage for the day so
 the 3.5 optimization can be measured (3.6). A failure here prints a warning and
 **does not** change any workflow exit code and **never** triggers a submission or a
-replay. Skip it entirely if `$PI_SESSION` is unset.
+replay. Skip it entirely if no harness transcript is available. `$PI_SESSION` is the
+pi location; use the same command with another harness's transcript path in its
+place.
 
 ```bash
 $TS metrics import --transcript "$PI_SESSION" --date "$DATE" && $TS metrics report --date "$DATE"
 ```
+
+Locate the transcript by harness: pi uses `$PI_SESSION`; Claude Code keeps sessions
+at `~/.claude/projects/<project-slug>/<session-id>.jsonl`; Antigravity keeps a
+conversation's log at
+`~/.gemini/antigravity/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`
+(the fuller `transcript_full.jsonl` sits beside it). `metrics import` reads any of
+these through `--provider auto`, or explicitly with `--provider pi`,
+`--provider claude`, or `--provider antigravity`.
 
 - `import` reads the harness transcript and writes one run file; a reimport of an
   unchanged transcript is a no-op (content hash match). It also writes ONE session

@@ -158,6 +158,7 @@ func TestSafety_SecretNeverPersisted(t *testing.T) {
 func TestSelectAdapter_AutoAndExplicit(t *testing.T) {
 	piHeader := firstNonEmptyLine(readTestdata(t, "pi_partial_offline.jsonl"))
 	claudeHeader := firstNonEmptyLine(readTestdata(t, "claude_declared.jsonl"))
+	antigravityHeader := firstNonEmptyLine(readTestdata(t, "antigravity_synthetic.jsonl"))
 
 	a, err := SelectAdapter("auto", piHeader)
 	if err != nil || a.Name() != "pi" {
@@ -167,9 +168,17 @@ func TestSelectAdapter_AutoAndExplicit(t *testing.T) {
 	if err != nil || a.Name() != "claude" {
 		t.Fatalf("auto/claude: %v %v", a, err)
 	}
+	a, err = SelectAdapter("auto", antigravityHeader)
+	if err != nil || a.Name() != "antigravity" {
+		t.Fatalf("auto/antigravity: %v %v", a, err)
+	}
 	a, err = SelectAdapter("claude", piHeader)
 	if err != nil || a.Name() != "claude" {
 		t.Fatalf("explicit claude: %v %v", a, err)
+	}
+	a, err = SelectAdapter("antigravity", piHeader)
+	if err != nil || a.Name() != "antigravity" {
+		t.Fatalf("explicit antigravity: %v %v", a, err)
 	}
 	if _, err := SelectAdapter("auto", []byte(`{"hello":"world"}`)); err == nil {
 		t.Fatal("auto on unknown header should fail closed")
@@ -276,12 +285,14 @@ func TestImport_ProviderMismatchRefused(t *testing.T) {
 	}
 }
 
-// TestImport_UnreadableTranscriptRefused (R6, antigravity-shaped arm) asserts a
-// transcript no REGISTERED adapter recognizes parses to nothing and is REFUSED
-// (OWNER-DECISION-6: refuse-all). The lines are INVENTED values carrying the real
-// field names; no real transcript is copied. When #73 registers the antigravity
-// adapter this assertion UPGRADES to ErrProviderMismatch naming antigravity.
-func TestImport_UnreadableTranscriptRefused(t *testing.T) {
+// TestImport_AntigravityShapedMismatchRefused (R6, antigravity-shaped arm,
+// UPGRADED by #73) asserts a transcript that ONLY the registered antigravity
+// adapter recognizes is refused by a forced wrong provider with
+// ErrProviderMismatch naming the detected antigravity. #69 asserted
+// ErrUnreadableTranscript here because no antigravity adapter existed; with the
+// adapter registered the diagnosis names it. The lines are INVENTED values
+// carrying the real field names; no real transcript is copied.
+func TestImport_AntigravityShapedMismatchRefused(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "antigravity-shaped.jsonl")
 	content := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","created_at":"2026-10-11T09:00:00Z","content":"<invented>"}` + "\n" +
@@ -292,14 +303,20 @@ func TestImport_UnreadableTranscriptRefused(t *testing.T) {
 	}
 	for _, provider := range []string{"pi", "claude"} {
 		_, err := Import(context.Background(), path, ImportOptions{Provider: provider, Date: "2026-10-11"})
-		if !errors.Is(err, ErrUnreadableTranscript) {
-			t.Fatalf("provider %q: error = %v, want ErrUnreadableTranscript", provider, err)
+		if !errors.Is(err, ErrProviderMismatch) {
+			t.Fatalf("provider %q: error = %v, want ErrProviderMismatch", provider, err)
+		}
+		if !strings.Contains(err.Error(), `requested "`+provider+`"`) || !strings.Contains(err.Error(), `detected "antigravity"`) {
+			t.Fatalf("provider %q: error = %q, want it to name requested %q and detected antigravity", provider, err, provider)
 		}
 	}
-	// `auto` on garbage keeps today's behaviour: no Detect match on the header is
-	// ErrUnknownProvider, and no day is guessed.
-	if _, err := Import(context.Background(), path, ImportOptions{Date: "2026-10-11"}); !errors.Is(err, ErrUnknownProvider) {
-		t.Fatalf("auto on garbage: error = %v, want ErrUnknownProvider", err)
+	// `auto` now detects antigravity and imports the two usage-bearing lines.
+	rec, err := Import(context.Background(), path, ImportOptions{Date: "2026-10-11"})
+	if err != nil {
+		t.Fatalf("auto on antigravity-shaped transcript: %v", err)
+	}
+	if rec.Provider != "antigravity" || len(rec.Calls) != 2 {
+		t.Fatalf("auto record = provider %q calls %d, want antigravity/2", rec.Provider, len(rec.Calls))
 	}
 }
 

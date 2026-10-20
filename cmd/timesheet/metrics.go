@@ -35,7 +35,7 @@ Actions:
 
 Flags:
   --transcript FILE        transcript path (import)
-  --provider auto|pi|claude  transcript provider (import; default auto)
+  --provider auto|pi|claude|antigravity  transcript provider (import; default auto)
   --model-catalog FILE     runtime model catalog for session price lookup (import;
                            default: $PI_MODEL_CATALOG, else ~/.pi/agent/models-store.json)
   --timezone TZ            IANA zone for the session's local-date association (import;
@@ -92,7 +92,7 @@ func cmdMetricsImport(ctx context.Context, args []string, stdout, stderr io.Writ
 	fs := flag.NewFlagSet("timesheet metrics import", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	transcript := fs.String("transcript", "", "transcript path")
-	provider := fs.String("provider", "auto", "transcript provider: auto|pi|claude")
+	provider := fs.String("provider", "auto", "transcript provider: auto|pi|claude|antigravity")
 	date := fs.String("date", "", "the day this import counts for (required) YYYY-MM-DD")
 	modelCatalog := fs.String("model-catalog", "", "runtime model catalog file")
 	timezone := fs.String("timezone", "", "IANA timezone for the session's local-date association")

@@ -523,3 +523,96 @@ func TestMetricsCLI_ProviderMismatchRefused(t *testing.T) {
 		t.Fatalf("a refused import must write no run file, found %d: %v", len(entries), entries)
 	}
 }
+
+// antigravityFixture is the SYNTHETIC antigravity transcript: invented values with
+// the real field names; the owner's real transcript is never copied or referenced.
+const antigravityFixture = "../../internal/metrics/testdata/antigravity_synthetic.jsonl"
+
+// TestCLI_MetricsImportAntigravityHonestUnknowns asserts `--provider antigravity`
+// imports the synthetic transcript and prints honest unknowns for the values the
+// shape cannot supply (total tokens, cache-hit, model, price, cost), and that the
+// report path prints no declared-schema marker (OBSERVED provenance).
+func TestCLI_MetricsImportAntigravityHonestUnknowns(t *testing.T) {
+	dir := t.TempDir()
+	metricsDir := filepath.Join(dir, "metrics")
+	storageDir := filepath.Join(dir, "records")
+
+	code, out, errOut := runArgs(t, "metrics", "import",
+		"--provider", "antigravity", "--transcript", antigravityFixture,
+		"--date", "2026-10-16", "--metrics-dir", metricsDir)
+	if code != exitOK {
+		t.Fatalf("import: code=%d out=%q err=%q", code, out, errOut)
+	}
+	for _, want := range []string{
+		"imported run", "(antigravity, 2026-10-16, 3 call(s)", "state=unknown",
+		"session sha256:", "model=unknown", "total_tokens=unknown",
+		"cache_hit=unknown", "price=unknown", "cost=unknown",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("import output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "state=cancelled") {
+		t.Fatalf("a complete antigravity transcript must not read cancelled:\n%s", out)
+	}
+
+	code, out, errOut = runArgs(t, "metrics", "aggregate",
+		"--date", "2026-10-16", "--metrics-dir", metricsDir, "--storage-dir", storageDir)
+	if code != exitOK {
+		t.Fatalf("aggregate: code=%d out=%q err=%q", code, out, errOut)
+	}
+	code, out, errOut = runArgs(t, "metrics", "report",
+		"--date", "2026-10-16", "--metrics-dir", metricsDir)
+	if code != exitOK {
+		t.Fatalf("report: code=%d out=%q err=%q", code, out, errOut)
+	}
+	if strings.Contains(out, "[declared schema]") {
+		t.Fatalf("observed antigravity report printed the declared-schema marker:\n%s", out)
+	}
+}
+
+// TestCLI_MetricsImportAntigravityZeroCallRefused asserts a detected but
+// usage-free antigravity transcript refuses instead of writing an empty record.
+func TestCLI_MetricsImportAntigravityZeroCallRefused(t *testing.T) {
+	dir := t.TempDir()
+	metricsDir := filepath.Join(dir, "metrics")
+	zero := filepath.Join(dir, "zero.jsonl")
+	content := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","created_at":"2026-10-16T09:00:00Z","content":"INVENTED-ONLY-TEXT"}` + "\n"
+	if err := os.WriteFile(zero, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	code, out, errOut := runArgs(t, "metrics", "import",
+		"--provider", "antigravity", "--transcript", zero,
+		"--date", "2026-10-16", "--metrics-dir", metricsDir)
+	if code != exitError {
+		t.Fatalf("zero-call antigravity: code=%d out=%q err=%q, want exit %d", code, out, errOut, exitError)
+	}
+	if !strings.Contains(errOut, "unreadable") {
+		t.Fatalf("error = %q, want the unreadable refusal", errOut)
+	}
+	if entries, err := os.ReadDir(filepath.Join(metricsDir, "runs")); err == nil && len(entries) != 0 {
+		t.Fatalf("a refused import must write no run file, found %d: %v", len(entries), entries)
+	}
+}
+
+// TestCLI_MetricsImportAntigravityAgainstClaudeRefused asserts a forced
+// antigravity provider against another provider's transcript refuses naming the
+// detected adapter.
+func TestCLI_MetricsImportAntigravityAgainstClaudeRefused(t *testing.T) {
+	dir := t.TempDir()
+	metricsDir := filepath.Join(dir, "m")
+	fixture := "../../internal/metrics/testdata/claude_declared.jsonl"
+
+	code, out, errOut := runArgs(t, "metrics", "import",
+		"--provider", "antigravity", "--transcript", fixture,
+		"--date", "2026-10-11", "--metrics-dir", metricsDir)
+	if code != exitError {
+		t.Fatalf("forced provider mismatch: code=%d out=%q err=%q, want exit %d", code, out, errOut, exitError)
+	}
+	if !strings.Contains(errOut, `requested "antigravity"`) || !strings.Contains(errOut, `detected "claude"`) {
+		t.Fatalf("error = %q, want requested antigravity and detected claude", errOut)
+	}
+	if entries, err := os.ReadDir(filepath.Join(metricsDir, "runs")); err == nil && len(entries) != 0 {
+		t.Fatalf("a refused import must write no run file, found %d: %v", len(entries), entries)
+	}
+}

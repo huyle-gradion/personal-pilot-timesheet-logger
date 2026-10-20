@@ -202,3 +202,62 @@ stands as written.
   `--provider auto` on an unrecognized transcript keeps `ErrUnknownProvider`. When
   #73 registers the antigravity adapter, its arm of this guard is upgraded from
   `ErrUnreadableTranscript` to `ErrProviderMismatch` naming antigravity.
+
+### 2026-10-20 — the antigravity adapter: observed shape, honest counter unknowns (#73)
+
+The registration anticipated by the previous subsection is now in place. This
+amendment records the adapter's shape and the two owner decisions taken on it; the
+rest of this ADR stands as written.
+
+- **Registration and provenance.** `antigravity` is a registered provider in
+  `internal/metrics`, reachable through `--provider antigravity` AND through
+  `--provider auto`. Adding it is one entry in `adapters()` and one case in
+  `SelectAdapter`; there is no dispatch table. Its provenance is **OBSERVED**: the
+  header shape and counters were verified first-hand on this host, unlike the
+  `claude` declared-only schema, so the report does **not** print the
+  `[declared schema]` marker. `Detect` is the five-scalar discriminator and nothing
+  more: `step_index` numeric, `created_at` non-empty, `source` in
+  {`MODEL`, `USER_EXPLICIT`}, `type` in {`GENERIC`, `PLANNER_RESPONSE`, `USER_INPUT`},
+  and `sessionId` absent. pi needs a `type:"session"` line and claude needs
+  `sessionId` (or `summary`+`leafUuid`), so the three adapters are mutually exclusive
+  by construction and auto-detection order is immaterial. The antigravity arm of the
+  refusal guard therefore now takes `ErrProviderMismatch` naming antigravity when
+  another provider is forced.
+- **Decoded fields.** Only `type`, `source`, `step_index`, `created_at`, the three
+  counters, and `truncated_fields` as a trust marker. `content`, `thinking`,
+  tool-call names/arguments/results, `status` and `error` are never decoded.
+  **`thinking` is thinking TEXT, never a counter**: no reasoning count is read from
+  it, and `Usage.Reasoning` stays UNKNOWN.
+- **Closing turn and state.** A transcript that ends on a MODEL-source turn is
+  complete; one that ends on USER_INPUT reads cancelled because the record stopped
+  after the user's turn. The closing turn is derived only from the already-decoded
+  `source`, so the state is never a claim stronger than the transcript supports.
+- **Counter semantics.** `input_tokens` → `Usage.Input`, `output_tokens` →
+  `Usage.Output`, `cache_read_tokens` → `Usage.CacheRead`. There is **no cache-write
+  counter**, so `Usage.CacheWrite` is UNKNOWN, and there is no model identifier, so
+  price and cost are UNKNOWN. The existing contracts do the rest with no new type:
+  `ConsumedTokens()` is UNKNOWN because one component is unknown;
+  `CacheHitPercent()` is nil because the denominator needs a cache-write count. The
+  three per-component counts remain individually meaningful and their table columns
+  still read. A total is **never** emitted from `input+output+cache_read`: an
+  unavailable value is UNKNOWN, never a lower bound presented as a total.
+- **`truncated_fields` is a trust marker.** The line is still COUNTED because its
+  counters are intact, and any counter the marker names is downgraded to UNKNOWN
+  rather than trusted. The recorded shape names only TEXT fields, so this is a guard
+  rather than an expected path.
+- **Recorded owner decisions.** (1) **REFUSE, not label**, for a forced mismatched
+  provider: an unreadable import is refused through the existing arms above, never
+  written as a phantom empty record. (2) **NO MODEL CHANGE** for the missing
+  cache-write counter: `total_tokens` and `cache_hit_pct` stay `unknown` for an
+  antigravity import, recorded as a limitation rather than patched by deriving a
+  total.
+- **Limited value on this harness, stated plainly.** Because the total and the
+  cache-hit rate stay unknown, the instrument is of LIMITED VALUE on antigravity.
+  The owner accepts this: benchmarking is done on `pi`, where the adapter is
+  complete.
+- **Reading guidance.** The Antigravity transcript lives at
+  `~/.gemini/antigravity/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`,
+  with the fuller `transcript_full.jsonl` beside it. The skill documents that path
+  and the equivalent pi and Claude Code locations; `metrics import --transcript
+  <path> --date "$DATE"` reads any of them through `--provider auto` or an explicit
+  provider name.
