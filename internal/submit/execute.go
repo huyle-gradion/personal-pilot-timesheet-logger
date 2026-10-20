@@ -160,11 +160,14 @@ func Execute(ctx context.Context, store workflow.Store, obs RemoteObserver, w Re
 		action := string(op.Kind)
 		planned := plannedFromOp(op)
 
+		// The BASE operation identity is derived from the PRE-WRITE plan exactly
+		// as gradion.BuildOutcome derives it, so a first attempt's intent and
+		// outcome land on ONE ledger row.
+		baseKey := workflow.DeriveOperationKey(workflow.OperationOutcome{
+			Date: op.Date, Action: action, RemoteID: op.RemoteID, LocalID: op.LocalID,
+			StartTime: op.StartTime, EndTime: op.EndTime,
+		})
 		intent := workflow.OperationOutcome{
-			OperationKey: workflow.DeriveOperationKey(workflow.OperationOutcome{
-				Date: op.Date, Action: action, RemoteID: op.RemoteID, LocalID: op.LocalID,
-				StartTime: op.StartTime, EndTime: op.EndTime,
-			}),
 			LocalID: op.LocalID, RemoteID: op.RemoteID, Action: action,
 			Status:           workflow.OutcomeInFlight,
 			Date:             op.Date,
@@ -174,7 +177,16 @@ func Execute(ctx context.Context, store workflow.Store, obs RemoteObserver, w Re
 			Description:      op.Description,
 			IntentAt:         now,
 		}
+		// ATTEMPT-SCOPED KEY: the key is chosen INSIDE the update closure, under
+		// the held day lock and against the LIVE record. A first dispatch at this
+		// identity keeps the unsuffixed base key (byte-identical to every existing
+		// row); a second-and-later dispatch at the SAME identity takes the next
+		// attempt suffix, so its intent is recorded instead of being swallowed by
+		// the earlier attempt's terminal row.
+		attemptKey := baseKey
 		if _, err := session.Update(ctx, func(r *workflow.Record) error {
+			attemptKey = workflow.NextAttemptOperationKey(r, baseKey)
+			intent.OperationKey = attemptKey
 			workflow.UpsertIntent(r, intent)
 			return nil
 		}); err != nil {
@@ -201,6 +213,13 @@ func Execute(ctx context.Context, store workflow.Store, obs RemoteObserver, w Re
 		}
 
 		outcome := gradion.BuildOutcome(action, op.LocalID, planned, res, now)
+		// The outcome row carries THIS attempt's key, captured with the intent:
+		// for a first attempt that is exactly the key BuildOutcome derived from
+		// the pre-write plan, so the two landings agree on one row; for a
+		// second-and-later attempt the stamp governs, so the outcome lands on the
+		// attempt's own row instead of returning early behind the earlier
+		// attempt's terminal row and leaving an in_flight row behind.
+		outcome.OperationKey = attemptKey
 		result.Outcomes = append(result.Outcomes, outcome)
 
 		if _, err := session.Update(ctx, func(r *workflow.Record) error {

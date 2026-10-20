@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -245,6 +246,147 @@ func DeriveOperationKey(o OperationOutcome) string {
 		o.StartTime,
 		o.EndTime,
 	}, operationKeySeparator)
+}
+
+// attemptKeyMarker joins a base operation key to an attempt index. The attempt
+// suffix is ADDITIVE: the FIRST dispatch at a base identity keeps the UNSUFFIXED
+// key, so every existing row, plan and fingerprint stays byte-identical and no
+// migration is required; only a SECOND-and-later dispatch at the SAME base
+// identity takes "<base>\x1f#<N>".
+//
+// The suffix space is unambiguous only because Date, Action, and the HH:MM times
+// are format-validated, so no base key can END with "\x1f#<N>" (a colliding base
+// would need, say, EndTime "10:00\x1f#2"). DeriveOperationKey already joins
+// UNESCAPED fields, so keying on the separator adds no new class of risk.
+const attemptKeyMarker = operationKeySeparator + "#"
+
+// NextAttemptOperationKey returns the operation key to stamp on the NEXT durable
+// ledger entry (intent and then outcome) for one dispatch at the operation
+// identity base (a DeriveOperationKey over the operation's stable fields).
+//
+// It returns base when NO row — intent or outcome — already carries base: the
+// first attempt stays UNSUFFIXED, exactly as it was before this helper existed.
+// When base is already taken, it returns base + "\x1f#" + N, where N is one more
+// than the highest attempt index recorded so far (the unsuffixed row counts as
+// attempt 1). A taken base is normally a TERMINAL row, which UpsertIntent and
+// UpsertOutcome deliberately refuse to overwrite or resurrect; without a distinct
+// attempt key the second dispatch would therefore be recorded on NO row at all
+// and a crash right after that write would leave no ledger trace.
+//
+// The counter is computed from the rows of the LIVE record, so a caller that
+// chooses the key while holding the day lock can never mint a suffix that is
+// already in use.
+func NextAttemptOperationKey(rec *Record, base string) string {
+	highest := 0
+	if rec != nil {
+		for _, o := range rec.Outcomes {
+			if o.OperationKey == base {
+				if highest < 1 {
+					highest = 1
+				}
+				continue
+			}
+			if n, ok := attemptIndexOf(o.OperationKey, base); ok && n > highest {
+				highest = n
+			}
+		}
+	}
+	if highest == 0 {
+		return base
+	}
+	return base + attemptKeyMarker + strconv.Itoa(highest+1)
+}
+
+// attemptIndexOf reports the attempt index encoded in key when key is EXACTLY
+// base plus an attempt suffix. A key that merely shares base as a prefix — the
+// suffixed key of a longer base, or a base with appended text — is not an attempt
+// of base, so two different operations can never inflate each other's counter.
+func attemptIndexOf(key, base string) (int, bool) {
+	if !strings.HasPrefix(key, base+attemptKeyMarker) {
+		return 0, false
+	}
+	digits := key[len(base)+len(attemptKeyMarker):]
+	return parseAttemptIndex(digits)
+}
+
+// parseAttemptIndex decodes a canonical base-10 attempt index (no sign, no
+// padding), so a stray "2x"/"+2"/"02" tail is never mistaken for an attempt.
+func parseAttemptIndex(digits string) (int, bool) {
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 1 || strconv.Itoa(n) != digits {
+		return 0, false
+	}
+	return n, true
+}
+
+// operationGroupKey returns the base operation identity a ledger row belongs to:
+// its OperationKey with any attempt suffix removed, so every attempt of one
+// operation groups together. A row with no key falls back to DeriveOperationKey.
+//
+// DeriveOperationKey(row) is deliberately NOT the group key for a keyed row: it
+// re-derives from the row's recorded RemoteID, which the row does not necessarily
+// still carry as the pre-write plan had it. The DECISIVE case is the PRIMARY
+// retried-edit path: a FAILED outcome row records NO RemoteID at all (only
+// Status/ErrorCode/Resolved are set), so a failed attempt 1 of an edit re-derives
+// with an EMPTY RemoteID field while its confirmed attempt-2 retry re-derives with
+// the entry id — two groups, hence a failed-plus-confirmed mix, exactly the
+// partial inflation this projection exists to remove. The second instance is a
+// CONFIRMED CREATE row, which records the OBSERVED entry id while the planned key
+// (correctly) used the empty pre-write id.
+func operationGroupKey(o OperationOutcome) string {
+	if o.OperationKey == "" {
+		return DeriveOperationKey(o)
+	}
+	if i := strings.LastIndex(o.OperationKey, attemptKeyMarker); i >= 0 {
+		if _, ok := parseAttemptIndex(o.OperationKey[i+len(attemptKeyMarker):]); ok {
+			return o.OperationKey[:i]
+		}
+	}
+	return o.OperationKey
+}
+
+// LatestOutcomePerOperation projects a record's outcome rows onto ONE row per
+// operation identity: the LATEST attempt of each group (by RecordedAt, then
+// IntentAt, then position in the ledger as the deterministic tie-break), in
+// first-appearance order. It is the projection for HUMAN surfaces that report a
+// slot's result: a slot retried after a definitive failure reports its second
+// attempt, not a failure-plus-success mix.
+//
+// It is NOT the right input for a reconciliation decision: the restart gate, the
+// resolver and the reset guard must see EVERY row (any unresolved attempt blocks
+// replay, whatever a later attempt says). A nil record yields no rows.
+func LatestOutcomePerOperation(rec *Record) []OperationOutcome {
+	if rec == nil {
+		return nil
+	}
+	latest := make(map[string]int, len(rec.Outcomes))
+	out := make([]OperationOutcome, 0, len(rec.Outcomes))
+	for _, o := range rec.Outcomes {
+		group := operationGroupKey(o)
+		i, seen := latest[group]
+		if !seen {
+			latest[group] = len(out)
+			out = append(out, o)
+			continue
+		}
+		if laterAttempt(o, out[i]) {
+			out[i] = o
+		}
+	}
+	return out
+}
+
+// laterAttempt reports whether candidate is the later of two rows of the same
+// operation. Equal timestamps resolve to the LATER ledger position, so the
+// projection never depends on map iteration order.
+func laterAttempt(candidate, current OperationOutcome) bool {
+	if !candidate.RecordedAt.Equal(current.RecordedAt) {
+		return candidate.RecordedAt.After(current.RecordedAt)
+	}
+	if !candidate.IntentAt.Equal(current.IntentAt) {
+		return candidate.IntentAt.After(current.IntentAt)
+	}
+	return true
 }
 
 // UpsertIntent records a durable pre-write operation intent as in_flight. It is a

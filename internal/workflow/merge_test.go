@@ -206,6 +206,186 @@ func TestUpsertMapping_PreservesCreatedAt(t *testing.T) {
 	}
 }
 
+// TestNextAttemptOperationKey pins the ATTEMPT-SCOPED key contract: the first
+// dispatch at an operation identity keeps the unsuffixed DeriveOperationKey, and
+// only a second-and-later dispatch at the SAME identity takes the additive
+// "\x1f#<N>" suffix. It also pins that the suffix can never be confused with a
+// real six-field base key, and that DeriveOperationKey itself is unchanged.
+func TestNextAttemptOperationKey(t *testing.T) {
+	base := DeriveOperationKey(OperationOutcome{
+		Date: "2026-10-06", Action: "edit", RemoteID: "r1", LocalID: "c1",
+		StartTime: "09:00", EndTime: "10:00",
+	})
+	// DeriveOperationKey is UNCHANGED: still the six stable fields joined by the
+	// unit separator, byte-for-byte.
+	if want := "2026-10-06\x1fedit\x1fr1\x1fc1\x1f09:00\x1f10:00"; base != want {
+		t.Fatalf("DeriveOperationKey changed: got %q want %q", base, want)
+	}
+
+	// No row at the identity: the FIRST attempt stays unsuffixed, so every
+	// existing row, plan and fingerprint is untouched (no migration).
+	for name, rec := range map[string]*Record{
+		"nil record": nil,
+		"empty":      {},
+		"other rows": {Outcomes: []OperationOutcome{{OperationKey: base + "-other"}, {OperationKey: "unrelated"}}},
+	} {
+		if got := NextAttemptOperationKey(rec, base); got != base {
+			t.Errorf("%s: want the bare base key, got %q", name, got)
+		}
+	}
+
+	terminal := &Record{Outcomes: []OperationOutcome{{
+		OperationKey: base, Status: OutcomeConfirmed, Resolved: true,
+	}}}
+	if got := NextAttemptOperationKey(terminal, base); got != base+"\x1f#2" {
+		t.Errorf("a taken base identity must take attempt 2, got %q", got)
+	}
+
+	// A SECOND attempt on the record advances to attempt 3, whatever the earlier
+	// attempt's status.
+	second := &Record{Outcomes: []OperationOutcome{
+		{OperationKey: base, Status: OutcomeConfirmed, Resolved: true},
+		{OperationKey: base + "\x1f#2", Status: OutcomeUncertain, Resolved: false},
+	}}
+	got := NextAttemptOperationKey(second, base)
+	if got != base+"\x1f#3" {
+		t.Errorf("a record holding attempts 1 and 2 must take attempt 3, got %q", got)
+	}
+
+	// The suffixed key is ADDITIVE (base keeps its prefix) and carries exactly one
+	// more separator than any base key, so it can never collide with a real
+	// six-field DeriveOperationKey output.
+	if !strings.HasPrefix(got, base) {
+		t.Errorf("an attempt key must keep the base as a prefix, got %q", got)
+	}
+	if strings.Count(got, operationKeySeparator) != strings.Count(base, operationKeySeparator)+1 {
+		t.Errorf("an attempt key must add exactly one separator, got %q", got)
+	}
+	rows := []OperationOutcome{
+		{Date: "2026-10-06", Action: "edit", RemoteID: "r1", LocalID: "c1", StartTime: "09:00", EndTime: "10:00"},
+		{Date: "2026-10-06", Action: "create", RemoteID: "", LocalID: "c1", StartTime: "09:00", EndTime: "10:00"},
+		{Date: "2026-10-07", Action: "edit", RemoteID: "r1", LocalID: "c1", StartTime: "09:00", EndTime: "10:00"},
+		{Date: "2026-10-06", Action: "edit", RemoteID: "r1", LocalID: "c2", StartTime: "09:00", EndTime: "10:00"},
+		{Date: "2026-10-06", Action: "edit", RemoteID: "r1", LocalID: "c1", StartTime: "09:00", EndTime: "11:00"},
+	}
+	for _, row := range rows {
+		if DeriveOperationKey(row) == base+"\x1f#2" {
+			t.Fatalf("a suffixed attempt key collided with a real base key: %q", base+"\x1f#2")
+		}
+		if strings.Contains(DeriveOperationKey(row), attemptKeyMarker) {
+			t.Errorf("DeriveOperationKey must never emit the attempt marker: %q", DeriveOperationKey(row))
+		}
+	}
+
+	// A key that merely SHARES the base prefix is not an attempt of the base, so a
+	// suffixed or extended key of a longer operation can never inflate this
+	// counter: with no row AT the base identity the first attempt is still
+	// unsuffixed.
+	longer := &Record{Outcomes: []OperationOutcome{
+		{OperationKey: base + "\x1f#9x"},
+		{OperationKey: base + "-other"},
+		{OperationKey: base + "\x1f#02"},
+	}}
+	if got := NextAttemptOperationKey(longer, base); got != base {
+		t.Errorf("a non-canonical suffix must not count as an attempt, got %q", got)
+	}
+}
+
+// TestLatestOutcomePerOperation pins the human-surface projection: one row per
+// operation identity, the LATEST attempt of each, deterministic (RecordedAt, then
+// IntentAt, then ledger position), and never collapsing two different operations.
+func TestLatestOutcomePerOperation(t *testing.T) {
+	first := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	later := first.Add(time.Minute)
+	base := DeriveOperationKey(OperationOutcome{
+		Date: "2026-10-06", Action: "edit", RemoteID: "r1", LocalID: "c1",
+		StartTime: "09:00", EndTime: "10:00",
+	})
+	other := DeriveOperationKey(OperationOutcome{
+		Date: "2026-10-06", Action: "create", RemoteID: "", LocalID: "c2",
+		StartTime: "11:00", EndTime: "12:00",
+	})
+
+	rec := &Record{Outcomes: []OperationOutcome{
+		{OperationKey: base, LocalID: "c1", Status: OutcomeFailed, Resolved: true, RecordedAt: first},
+		{OperationKey: other, LocalID: "c2", Status: OutcomeConfirmed, Resolved: true, RecordedAt: first},
+		{OperationKey: base + "\x1f#2", LocalID: "c1", Status: OutcomeConfirmed, Resolved: true, RecordedAt: later},
+	}}
+	got := LatestOutcomePerOperation(rec)
+	if len(got) != 2 {
+		t.Fatalf("want one row per operation, got %d: %+v", len(got), got)
+	}
+	if got[0].OperationKey != base+"\x1f#2" || got[0].Status != OutcomeConfirmed {
+		t.Errorf("want the latest attempt of the first operation, got %+v", got[0])
+	}
+	if got[1].OperationKey != other {
+		t.Errorf("want the untouched second operation, got %+v", got[1])
+	}
+
+	// DECISIVE case for the grouping rule: a retried EDIT whose first attempt
+	// FAILED. A failed row records NO RemoteID, so DeriveOperationKey(row) would
+	// re-derive it with an EMPTY remote id ("...\x1f\x1fc1\x1f...") while the
+	// confirmed retry re-derives WITH the entry id — two groups, and therefore a
+	// failed-plus-confirmed mix. Grouping follows the row's own key: ONE
+	// operation, the retry. This case FAILS if operationGroupKey is replaced by
+	// DeriveOperationKey(row), which is why it exists.
+	failedEdit := &Record{Outcomes: []OperationOutcome{
+		{
+			OperationKey: base, LocalID: "c1", RemoteID: "", Action: "edit",
+			Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00",
+			Status: OutcomeFailed, Resolved: true, RecordedAt: first,
+		},
+		{
+			OperationKey: base + "\x1f#2", LocalID: "c1", RemoteID: "r1", Action: "edit",
+			Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00",
+			Status: OutcomeConfirmed, Resolved: true, RecordedAt: later,
+		},
+	}}
+	retried := LatestOutcomePerOperation(failedEdit)
+	if len(retried) != 1 {
+		t.Fatalf("a failed attempt and its confirmed retry are ONE operation, got %d: %+v", len(retried), retried)
+	}
+	if retried[0].OperationKey != base+"\x1f#2" || retried[0].Status != OutcomeConfirmed || retried[0].RemoteID != "r1" {
+		t.Errorf("want the confirmed retry projected, got %+v", retried[0])
+	}
+
+	// The same hazard on the CREATE path (the second instance): the CONFIRMED
+	// retry records the OBSERVED entry id while the planned key used the empty
+	// pre-write id, so the two attempts are ONE operation, not two.
+	createKey := DeriveOperationKey(OperationOutcome{
+		Date: "2026-10-06", Action: "create", RemoteID: "", LocalID: "c3",
+		StartTime: "13:00", EndTime: "14:00",
+	})
+	create := &Record{Outcomes: []OperationOutcome{
+		{
+			OperationKey: createKey, LocalID: "c3", RemoteID: "", Action: "create",
+			Date: "2026-10-06", StartTime: "13:00", EndTime: "14:00",
+			Status: OutcomeFailed, Resolved: true, RecordedAt: first,
+		},
+		{
+			OperationKey: createKey + "\x1f#2", LocalID: "c3", RemoteID: "new-2", Action: "create",
+			Date: "2026-10-06", StartTime: "13:00", EndTime: "14:00",
+			Status: OutcomeConfirmed, Resolved: true, RecordedAt: later,
+		},
+	}}
+	if rows := LatestOutcomePerOperation(create); len(rows) != 1 || rows[0].Status != OutcomeConfirmed {
+		t.Fatalf("two attempts of ONE create must project to one row, got %+v", rows)
+	}
+
+	// Equal timestamps resolve to the later ledger position, deterministically.
+	tied := &Record{Outcomes: []OperationOutcome{
+		{OperationKey: base, LocalID: "c1", Status: OutcomeFailed, Resolved: true, RecordedAt: first},
+		{OperationKey: base + "\x1f#2", LocalID: "c1", Status: OutcomeConfirmed, Resolved: true, RecordedAt: first},
+	}}
+	if rows := LatestOutcomePerOperation(tied); len(rows) != 1 || rows[0].Status != OutcomeConfirmed {
+		t.Fatalf("a timestamp tie must resolve to the later attempt, got %+v", rows)
+	}
+
+	if rows := LatestOutcomePerOperation(nil); rows != nil {
+		t.Errorf("a nil record must project to nothing, got %+v", rows)
+	}
+}
+
 // TestNoTimeSlotInferenceFunction proves no function in this package derives a
 // remote mapping identity from time-slot equality.
 func TestNoTimeSlotInferenceFunction(t *testing.T) {

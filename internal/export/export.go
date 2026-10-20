@@ -83,12 +83,19 @@ type Exporter interface {
 // terminal outcomes failed (none confirmed) → failed; all terminal outcomes
 // confirmed → submitted; a reviewed empty day → reviewed-empty; otherwise
 // reviewed-not-submitted.
+//
+// The outcome counts are PER OPERATION, not per ledger row: a slot retried after
+// a definitive failure reports the result of its LATEST attempt
+// (workflow.LatestOutcomePerOperation), so a retried-then-confirmed slot reads
+// submitted instead of a failure-plus-success mix. Only an operation with no
+// attempt at all is uncounted. The restart gate above is deliberately evaluated
+// over EVERY row, so an unresolved attempt is never hidden by a later one.
 func DeriveStatus(rec workflow.Record) Status {
 	if blocked, _ := submit.RestartGate(rec); blocked {
 		return StatusUnresolved
 	}
 	confirmed, failed := 0, 0
-	for _, o := range rec.Outcomes {
+	for _, o := range workflow.LatestOutcomePerOperation(&rec) {
 		switch o.Status {
 		case workflow.OutcomeConfirmed:
 			confirmed++
@@ -136,7 +143,9 @@ func BuildNote(rec workflow.Record) Note {
 		})
 		note.Warnings = append(note.Warnings, "carry:"+c.Date+" "+c.Start+"-"+c.End+" (group "+c.SplitGroupID+")")
 	}
-	for _, o := range rec.Outcomes {
+	// One row per OPERATION: the latest attempt of each operation identity, so a
+	// retried slot is not listed twice (see DeriveStatus).
+	for _, o := range workflow.LatestOutcomePerOperation(&rec) {
 		note.Outcomes = append(note.Outcomes, Row{
 			LocalID: o.LocalID, Status: string(o.Status), Code: o.ErrorCode,
 		})

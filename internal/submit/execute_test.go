@@ -195,6 +195,164 @@ func TestExecute_PreservesOperationIdentity(t *testing.T) {
 	}
 }
 
+// TestExecute_SecondSameSlotEditIsRecorded pins the ATTEMPT-SCOPED key for a
+// SECOND dispatch at an operation identity that already carries a TERMINAL row.
+// The only local change is the Description, which is deliberately NOT part of the
+// operation key, so before the attempt suffix the second dispatch was recorded on
+// NO row at all (neither intent nor outcome). The uncertain second attempt must
+// be recorded on its own "\x1f#2" row and must block the restart gate with that
+// attempt's own key.
+func TestExecute_SecondSameSlotEditIsRecorded(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	fake := newFakeRemote()
+	existing := remoteState("r1", "09:00", "10:00", "cls-1", "old text")
+	fake.setEntry(existing)
+	rec := reviewedRecord()
+	rec.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", existing)}
+	_, approval1 := seedApprovedDay(t, store, rec, completeListing(existing), alwaysResolver("cls-1"))
+
+	if _, err := Execute(ctx, store, fake, fake, testDate, approval1, alwaysResolver("cls-1"), testNow); err != nil {
+		t.Fatalf("Execute run 1: %v", err)
+	}
+	if fake.editCount() != 1 {
+		t.Fatalf("want one edit on the first run, got %d", fake.editCount())
+	}
+	afterFirst := loadRecord(t, store, testDate)
+	if len(afterFirst.Outcomes) != 1 || afterFirst.Outcomes[0].Status != workflow.OutcomeConfirmed {
+		t.Fatalf("want exactly one confirmed row after run 1, got %+v", afterFirst.Outcomes)
+	}
+	base := afterFirst.Outcomes[0].OperationKey
+
+	// The ONLY local change is the description: the operation identity is
+	// unchanged. The remote holds exactly what run 1 wrote, so the plan is a
+	// description-only edit of the same remote entry.
+	second := afterFirst
+	second.Confirmed[0].Description = "work, restated"
+	written := remoteState("r1", "09:00", "10:00", "cls-1", "work")
+	_, approval2 := seedApprovedDay(t, store, second, completeListing(written), alwaysResolver("cls-1"))
+
+	fake.onEdit = func(gradion.EditRequest) (gradion.WriteResult, error) {
+		return gradion.WriteResult{Status: gradion.WriteUncertain, ErrorCode: gradion.CodeWriteUncertain}, nil
+	}
+	result, err := Execute(ctx, store, fake, fake, testDate, approval2, alwaysResolver("cls-1"), testNow)
+	if err != nil {
+		t.Fatalf("Execute run 2: %v", err)
+	}
+	if !result.Partial {
+		t.Fatalf("an uncertain second attempt must mark the run partial")
+	}
+	if fake.editCount() != 2 {
+		t.Fatalf("the second dispatch must happen exactly once, got %d edits", fake.editCount())
+	}
+
+	attempt2 := base + "\x1f#2"
+	got := loadRecord(t, store, testDate)
+	if len(got.Outcomes) != 2 {
+		t.Fatalf("the second attempt must be recorded as its OWN row, got %+v", got.Outcomes)
+	}
+	if got.Outcomes[0].OperationKey != base || got.Outcomes[0].Status != workflow.OutcomeConfirmed {
+		t.Errorf("the first attempt's terminal row must be untouched, got %+v", got.Outcomes[0])
+	}
+	if got.Outcomes[1].OperationKey != attempt2 {
+		t.Errorf("the second attempt's row must carry the additive suffix: got %q want %q", got.Outcomes[1].OperationKey, attempt2)
+	}
+	if got.Outcomes[1].Status != workflow.OutcomeUncertain || got.Outcomes[1].Resolved {
+		t.Errorf("want the second attempt recorded unresolved, got %+v", got.Outcomes[1])
+	}
+
+	blocked, reasons := RestartGate(got)
+	if !blocked || !hasReason(reasons, "uncertain:"+attempt2) {
+		t.Fatalf("the restart gate must block with the SECOND attempt's key: blocked=%v reasons=%v", blocked, reasons)
+	}
+
+	// The key the gate names is exactly the key a decision must carry: the
+	// resolver's exact match still resolves the suffixed row, and only that row.
+	resolved := got
+	if err := ResolveUnresolved(&resolved, completeListing(written), []Resolution{{
+		OperationKey: attempt2, Kind: ResolutionNotApplied,
+	}}, testNow); err != nil {
+		t.Fatalf("ResolveUnresolved: %v", err)
+	}
+	if resolved.Outcomes[0].Status != workflow.OutcomeConfirmed || !resolved.Outcomes[0].Resolved {
+		t.Errorf("resolving the second attempt must not touch the first: %+v", resolved.Outcomes[0])
+	}
+	if resolved.Outcomes[1].Status != workflow.OutcomeFailed || !resolved.Outcomes[1].Resolved {
+		t.Errorf("want the second attempt resolved as not applied, got %+v", resolved.Outcomes[1])
+	}
+	if resolved.Outcomes[1].OriginErrorCode != gradion.CodeWriteUncertain {
+		t.Errorf("the resolution must preserve the originating code, got %q", resolved.Outcomes[1].OriginErrorCode)
+	}
+	if blocked, reasons := RestartGate(resolved); blocked {
+		t.Fatalf("the gate must clear once the suffixed key is resolved, got %v", reasons)
+	}
+}
+
+// TestExecute_SecondAttemptOutcomeLandsOnAttemptRow pins that a CONFIRMED second
+// attempt lands on its OWN row: the attempt key is chosen for the intent and must
+// also be stamped on the outcome, or the outcome would return early behind the
+// first attempt's confirmed row and leave the attempt's in_flight row behind.
+func TestExecute_SecondAttemptOutcomeLandsOnAttemptRow(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	fake := newFakeRemote()
+	existing := remoteState("r1", "09:00", "10:00", "cls-1", "old text")
+	fake.setEntry(existing)
+	rec := reviewedRecord()
+	rec.RemoteMappings = []workflow.RemoteMapping{mappingFor("c1", existing)}
+	_, approval1 := seedApprovedDay(t, store, rec, completeListing(existing), alwaysResolver("cls-1"))
+
+	if _, err := Execute(ctx, store, fake, fake, testDate, approval1, alwaysResolver("cls-1"), testNow); err != nil {
+		t.Fatalf("Execute run 1: %v", err)
+	}
+	afterFirst := loadRecord(t, store, testDate)
+	if len(afterFirst.Outcomes) != 1 || afterFirst.Outcomes[0].Status != workflow.OutcomeConfirmed {
+		t.Fatalf("want exactly one confirmed row after run 1, got %+v", afterFirst.Outcomes)
+	}
+	firstRow := afterFirst.Outcomes[0]
+	base := firstRow.OperationKey
+
+	second := afterFirst
+	second.Confirmed[0].Description = "work, restated"
+	written := remoteState("r1", "09:00", "10:00", "cls-1", "work")
+	_, approval2 := seedApprovedDay(t, store, second, completeListing(written), alwaysResolver("cls-1"))
+
+	result, err := Execute(ctx, store, fake, fake, testDate, approval2, alwaysResolver("cls-1"), testNow)
+	if err != nil {
+		t.Fatalf("Execute run 2: %v", err)
+	}
+	if fake.editCount() != 2 {
+		t.Fatalf("want two dispatches in total, got %d edits", fake.editCount())
+	}
+	if result.Blocked || result.Partial {
+		t.Fatalf("want a clean second run, got blocked=%v partial=%v reasons=%v", result.Blocked, result.Partial, result.BlockReasons)
+	}
+
+	got := loadRecord(t, store, testDate)
+	if len(got.Outcomes) != 2 {
+		t.Fatalf("want one row per attempt, got %d: %+v", len(got.Outcomes), got.Outcomes)
+	}
+	for i, o := range got.Outcomes {
+		if o.Status != workflow.OutcomeConfirmed || !o.Resolved {
+			t.Errorf("row %d must be confirmed and resolved, got %+v", i, o)
+		}
+	}
+	if got.Outcomes[0] != firstRow {
+		t.Errorf("the first attempt's row must be untouched:\n got %+v\nwant %+v", got.Outcomes[0], firstRow)
+	}
+	if got.Outcomes[1].OperationKey != base+"\x1f#2" {
+		t.Errorf("the second attempt's row must carry the additive suffix, got %q", got.Outcomes[1].OperationKey)
+	}
+	if pending := workflow.UnresolvedOperations(&got); len(pending) != 0 {
+		t.Fatalf("the attempt's in_flight row must be resolved by its outcome, got %+v", pending)
+	}
+	if blocked, reasons := RestartGate(got); blocked {
+		t.Fatalf("a fully confirmed record must not block a restart, got %v", reasons)
+	}
+}
+
 func TestExecute_ConcurrentSessionBusy(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
@@ -81,6 +82,85 @@ func TestDeriveStatus_Precedence(t *testing.T) {
 	failedEmpty.Review = &workflow.ReviewState{Reviewed: true, Empty: true}
 	if got := DeriveStatus(failedEmpty); got != StatusFailed {
 		t.Fatalf("failed must beat reviewed-empty, got %s", got)
+	}
+}
+
+// TestDeriveStatus_SlotRetriedToSuccess pins the per-operation projection: a slot
+// whose FIRST attempt definitively failed and whose SECOND attempt was confirmed
+// reports submitted — its latest attempt — and the note lists the slot ONCE
+// (before the projection the failed row inflated the day into "partial").
+func TestDeriveStatus_SlotRetriedToSuccess(t *testing.T) {
+	base := workflow.DeriveOperationKey(workflow.OperationOutcome{
+		Date: "2026-10-06", Action: "edit", RemoteID: "r1", LocalID: "c1",
+		StartTime: "09:00", EndTime: "10:00",
+	})
+	first := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	second := first.Add(time.Minute)
+
+	rec := workflow.Record{Date: "2026-10-06", Review: &workflow.ReviewState{Reviewed: true}}
+	rec.Outcomes = []workflow.OperationOutcome{
+		{OperationKey: base, LocalID: "c1", Action: "edit", Status: workflow.OutcomeFailed, Resolved: true, RecordedAt: first},
+		{OperationKey: base + "\x1f#2", LocalID: "c1", Action: "edit", Status: workflow.OutcomeConfirmed, Resolved: true, RecordedAt: second},
+	}
+	if got := DeriveStatus(rec); got != StatusSubmitted {
+		t.Fatalf("a slot retried to success must report submitted, got %s", got)
+	}
+	note := BuildNote(rec)
+	if len(note.Outcomes) != 1 {
+		t.Fatalf("want one outcome row per operation, got %+v", note.Outcomes)
+	}
+	if note.Outcomes[0].Status != string(workflow.OutcomeConfirmed) {
+		t.Errorf("want the latest attempt reported, got %+v", note.Outcomes[0])
+	}
+}
+
+// TestDeriveStatus_SlotRetriedToFailed pins the other latest-attempt outcome: when
+// the SECOND attempt is the one that failed, the slot reports failed — the mix of
+// attempts is never reported as partial.
+func TestDeriveStatus_SlotRetriedToFailed(t *testing.T) {
+	base := workflow.DeriveOperationKey(workflow.OperationOutcome{
+		Date: "2026-10-06", Action: "edit", RemoteID: "r1", LocalID: "c1",
+		StartTime: "09:00", EndTime: "10:00",
+	})
+	first := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	second := first.Add(time.Minute)
+
+	rec := workflow.Record{Date: "2026-10-06", Review: &workflow.ReviewState{Reviewed: true}}
+	rec.Outcomes = []workflow.OperationOutcome{
+		{OperationKey: base, LocalID: "c1", Action: "edit", Status: workflow.OutcomeConfirmed, Resolved: true, RecordedAt: first},
+		{OperationKey: base + "\x1f#2", LocalID: "c1", Action: "edit", Status: workflow.OutcomeFailed, Resolved: true, RecordedAt: second},
+	}
+	if got := DeriveStatus(rec); got != StatusFailed {
+		t.Fatalf("a slot whose latest attempt failed must report failed, got %s", got)
+	}
+}
+
+// TestDeriveStatus_SlotRetriedThenUncertain pins that an unresolved second attempt
+// keeps the day unresolved, and that once the operator's decision resolves THAT
+// attempt as not applied the day reports failed (its latest attempt), never the
+// failed-plus-confirmed mix a per-row count would produce.
+func TestDeriveStatus_SlotRetriedThenUncertain(t *testing.T) {
+	base := workflow.DeriveOperationKey(workflow.OperationOutcome{
+		Date: "2026-10-06", Action: "edit", RemoteID: "r1", LocalID: "c1",
+		StartTime: "09:00", EndTime: "10:00",
+	})
+	first := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	second := first.Add(time.Minute)
+
+	rec := workflow.Record{Date: "2026-10-06", Review: &workflow.ReviewState{Reviewed: true}}
+	rec.Outcomes = []workflow.OperationOutcome{
+		{OperationKey: base, LocalID: "c1", Action: "edit", Status: workflow.OutcomeConfirmed, Resolved: true, RecordedAt: first},
+		{OperationKey: base + "\x1f#2", LocalID: "c1", Action: "edit", Status: workflow.OutcomeUncertain, Resolved: false, RecordedAt: second},
+	}
+	if got := DeriveStatus(rec); got != StatusUnresolved {
+		t.Fatalf("a retried-then-uncertain slot must report unresolved, got %s", got)
+	}
+
+	resolved := rec
+	resolved.Outcomes[1].Status = workflow.OutcomeFailed
+	resolved.Outcomes[1].Resolved = true
+	if got := DeriveStatus(resolved); got != StatusFailed {
+		t.Fatalf("the resolved attempt's failure must report failed, not a mix, got %s", got)
 	}
 }
 

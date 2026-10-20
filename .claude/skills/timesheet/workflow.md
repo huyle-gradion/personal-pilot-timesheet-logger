@@ -513,6 +513,10 @@ Rules, stated here so they need not be looked up:
   post-edit remote content proves the edit applied, pre-edit content proves it did
   not, and absent or ambiguous content leaves it unresolved. That needs no decision
   from the agent, and nothing is ever resent.
+- **A retried operation's key carries an attempt suffix.** An unresolved second or
+  later attempt's key ends in `#N` after the unit-separator control character (the
+  part after `uncertain:` in the gate reason); copy it EXACTLY as the gate shows it
+  — never strip the suffix.
 - **A decision whose `operation_key` matches no unresolved operation is an error**,
   as is an unknown `kind` and an `adopt` with no remote id. The command reports how
   many decisions it applied.
