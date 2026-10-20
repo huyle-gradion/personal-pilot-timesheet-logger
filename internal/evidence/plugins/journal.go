@@ -671,12 +671,12 @@ func newJournalItem(body, text, headingPath, family, canonicalAncestry string, l
 }
 
 // classifyJournalHeadings inspects the heading stack for the current bullet: a
-// skip section (priorities/standup/todo, or an exact legacy/generated timesheet
-// heading) wins, otherwise the deepest recognized narrative heading supplies the
-// section FAMILY. The returned canonicalAncestry is the NORMALIZED FULL heading
-// ancestry (joined by " / "), used as the implicit-identity disambiguator so two
-// different headings that merely share a recognized phrase, and nested sections,
-// never collapse to the same identity.
+// skip section (priorities/standup/todo/agent session, or an exact
+// legacy/generated timesheet heading) wins, otherwise the deepest recognized
+// narrative heading supplies the section FAMILY. The returned canonicalAncestry is
+// the NORMALIZED FULL heading ancestry (joined by " / "), used as the
+// implicit-identity disambiguator so two different headings that merely share a
+// recognized phrase, and nested sections, never collapse to the same identity.
 func classifyJournalHeadings(stack []journalHeading) (family, headingPath, canonicalAncestry string, recognized, skip bool) {
 	for _, h := range stack {
 		// Skip phrases apply to SECTION headings (level >= 2), never to a level-1
@@ -714,6 +714,12 @@ var journalNarrativePhrases = []string{"work journal", "quick capture", "daily i
 // skip matches ONLY precise shapes: the exact "clustered timesheet" heading or the
 // exact generated "Timesheet — <date>" heading. An arbitrary heading that merely
 // CONTAINS "timesheet" (e.g. an H1 note title) is never skipped.
+//
+// The token skips are CONTAINS matches on the NORMALIZED (lowercased, undecorated)
+// heading text, which is what makes them case-insensitive and decoration-proof.
+// `agent session` is one of them so an agent's activity can never be read as the
+// owner's working time, including when the heading is nested inside a collected
+// section: see docs/journal-collection.md.
 func classifyHeading(raw, norm string) (canonical string, recognized, skip bool) {
 	if norm == "" {
 		return "", false, false
@@ -721,7 +727,7 @@ func classifyHeading(raw, norm string) (canonical string, recognized, skip bool)
 	if norm == "clustered timesheet" || journalGeneratedTimesheetPattern.MatchString(strings.TrimSpace(raw)) {
 		return "", false, true
 	}
-	for _, p := range []string{"priorities", "standup", "todo"} {
+	for _, p := range []string{"priorities", "standup", "todo", "agent session"} {
 		if norm == p || strings.Contains(norm, p) {
 			return "", false, true
 		}

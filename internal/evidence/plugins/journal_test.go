@@ -490,6 +490,73 @@ func TestJournal_ArbitraryTimesheetTitleNotSkipped(t *testing.T) {
 	}
 }
 
+// TestJournal_AgentSessionHeadingSkipped proves the collector skips a SECTION
+// heading containing the `agent session` token, and states WHERE the discrimination
+// actually lives, because the obvious shape cannot fail.
+//
+// THE NESTING DISCOVERY, measured on the unmodified collector rather than assumed:
+// a TOP-LEVEL `## Agent session log` heading ALREADY collects nothing, because an
+// unrecognized heading yields no narrative family, so a test on that shape passes
+// before and after and defends nothing. The real exposure is NESTING. Inside a
+// collected section, `## Work journal` then `### Agent session log`, the deepest
+// recognized heading is `Work journal`, so the leg is collected as the owner's WORK
+// TIME. That nested pair is the discriminator. The control case shows nesting alone
+// suppresses nothing, so a later "not collected" result can only come from the
+// token.
+func TestJournal_AgentSessionHeadingSkipped(t *testing.T) {
+	const bullet = "- 09:00-10:00: session leg recorded as an activity bound"
+
+	// CONTROL, holds on both builds: an ordinary nested heading inside a collected
+	// section still collects, so the nesting position is not what suppresses.
+	control := collectInline(t, writeJournalDoc(t, "## Work journal\n### Detail\n"+bullet+"\n"))
+	if len(control.Evidence) != 1 {
+		t.Fatalf("a plain nested heading must still collect (control), got %d item(s): %+v", len(control.Evidence), control.Evidence)
+	}
+
+	// DISCRIMINATOR: the SAME bullet, in the SAME nested position, under an `agent
+	// session` heading. Collected as work time BEFORE the token, nothing AFTER.
+	nested := collectInline(t, writeJournalDoc(t, "## Work journal\n### Agent session log\n"+bullet+"\n"))
+	if len(nested.Evidence) != 0 {
+		t.Fatalf("a leg under a nested `agent session` heading must NOT be collected as work time, got %d item(s): %+v", len(nested.Evidence), nested.Evidence)
+	}
+
+	// PIN with respect to the BASELINE, and labelled so: this heading is
+	// unrecognized, so it collects nothing on the UNFIXED build too and cannot
+	// discriminate the nesting defect. Its job is a different mutant: it kills a
+	// case-SENSITIVE token match, which normalization already makes impossible.
+	upper := collectInline(t, writeJournalDoc(t, "## Work journal\n### AGENT SESSION LOG\n"+bullet+"\n"))
+	if len(upper.Evidence) != 0 {
+		t.Fatalf("the token must match case-insensitively on a nested heading, got %d item(s): %+v", len(upper.Evidence), upper.Evidence)
+	}
+
+	// DISCRIMINATOR: a token heading ABOVE recognized-looking content skips the
+	// whole subtree, including deeper headings and bullets that would otherwise
+	// narrate. Three items before the token, none after.
+	ancestor := collectInline(t, writeJournalDoc(t, "## Agent session log\n### Work journal\n- first leg\n#### Daily impact\n- second leg\n"+bullet+"\n"))
+	if len(ancestor.Evidence) != 0 {
+		t.Fatalf("an `agent session` ANCESTOR must skip the whole subtree, got %d item(s): %+v", len(ancestor.Evidence), ancestor.Evidence)
+	}
+
+	// PIN, NOT a discriminator: the plain TOP-LEVEL token heading already yields
+	// nothing on the unmodified collector. It is asserted so `agent session` can
+	// never quietly become a recognized narrative family, and it is not claimed as
+	// evidence of the skipped-heading rule.
+	plain := collectInline(t, writeJournalDoc(t, "## Agent session log\n"+bullet+"\n"))
+	if len(plain.Evidence) != 0 {
+		t.Fatalf("a bullet under a top-level `agent session` heading must NOT be collected, got %d item(s): %+v", len(plain.Evidence), plain.Evidence)
+	}
+
+	// PIN, the other direction: the SAME bullet under `Work journal` alone IS
+	// collected, so the rule is heading-based and not content-based.
+	underWork := collectInline(t, writeJournalDoc(t, "## Work journal\n"+bullet+"\n"))
+	if len(underWork.Evidence) != 1 {
+		t.Fatalf("the SAME bullet under `Work journal` must be collected, got %d item(s)", len(underWork.Evidence))
+	}
+	if !strings.Contains(underWork.Evidence[0].Description, "session leg recorded") {
+		t.Errorf("wrong item collected under Work journal: %q", underWork.Evidence[0].Description)
+	}
+}
+
 // TestJournal_MetricsUnitVocabulary proves bounded unit-bearing metrics are
 // excluded while substantive prose (benchmark/research) is retained.
 func TestJournal_MetricsUnitVocabulary(t *testing.T) {
