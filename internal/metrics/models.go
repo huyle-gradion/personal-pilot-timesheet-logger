@@ -31,10 +31,11 @@ const (
 	MaxRunFilesCount int = 5000
 	// MaxRunIDLen caps a sanitized run id (also a filename stem).
 	MaxRunIDLen int = 128
-	// BudgetTargetTokens is the soft daily editorial token target (owner override
-	// of the specification's 600; mirrors editorial.SoftDailyTokenTarget without
-	// importing internal/editorial).
-	BudgetTargetTokens int64 = 1000
+	// BudgetTargetTokens is the soft daily editorial token target: a NAMED ALIAS
+	// of workflow.EditorialTokenCeiling, the one definition of the owner's
+	// override of the specification's 600. It is not a mirror and is not a second
+	// number. It never governs harness-session tokens.
+	BudgetTargetTokens int64 = workflow.EditorialTokenCeiling
 )
 
 // Provenance records how a record's measurements were obtained. It is distinct

@@ -33,8 +33,10 @@ const (
 
 // SoftDailyTokenTarget is the owner-confirmed soft daily editorial budget in
 // tokens. It counts editorial input+output+cache tokens across retries and
-// reruns. It is an explicit owner override of the specification's 600.
-const SoftDailyTokenTarget int64 = 1000
+// reruns. It is an explicit owner override of the specification's 600. It is a
+// NAMED ALIAS of workflow.EditorialTokenCeiling, the one definition of the
+// number.
+const SoftDailyTokenTarget int64 = workflow.EditorialTokenCeiling
 
 // DefaultCommandTimeout bounds a single command-adapter invocation.
 const DefaultCommandTimeout = 60 // seconds

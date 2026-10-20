@@ -3,7 +3,6 @@ package editorial
 import (
 	"testing"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/benchmark"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -59,15 +58,5 @@ func TestReport_EditorialAndOrchestrationNotSummed(t *testing.T) {
 	report.Editorial = KnownUsage(999, 0, 0)
 	if report.Orchestration.Total().Value != 350 {
 		t.Errorf("editorial and orchestration must never be summed")
-	}
-}
-
-func TestOrchestrationUsageFromBenchmark(t *testing.T) {
-	u := OrchestrationUsageFromBenchmark(benchmark.TokenUsage{InputTokens: 7, OutputTokens: 8, CacheTokens: 9})
-	if u.Input.Value != 7 || u.Output.Value != 8 || u.Cache.Value != 9 {
-		t.Errorf("unexpected orchestration usage: %+v", u)
-	}
-	if !u.Total().Known {
-		t.Errorf("a benchmark usage must be known")
 	}
 }

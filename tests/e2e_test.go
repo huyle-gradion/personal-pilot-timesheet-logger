@@ -450,20 +450,35 @@ END:VCALENDAR`)
 		t.Fatalf("expected a fail-closed remote_unavailable message, got: %s", subOut)
 	}
 
-	// Step 7: Empirical benchmark logging
-	transcriptPath := filepath.Join(cacheDir, "transcript.jsonl")
-	transcriptContent := `{"usage": {"input_tokens": 190, "output_tokens": 75, "cache_read_input_tokens": 30, "total_tokens": 295}}` + "\n"
-	if err := os.WriteFile(transcriptPath, []byte(transcriptContent), 0644); err != nil {
-		t.Fatalf("writing transcript: %v", err)
+	// Step 7: Empirical benchmark logging. The token columns are RECORD-FED: the
+	// benchmark lane copies the day's editorial-child usage from the workflow
+	// record and parses no transcript at all.
+	benchRecords := filepath.Join(baseTemp, "benchmark-records")
+	benchStore, err := workflow.NewJSONFileStore(benchRecords)
+	if err != nil {
+		t.Fatalf("benchmark workflow store: %v", err)
+	}
+	if _, err := benchStore.UpdateDay(ctx, testDate, func(rec *workflow.Record) error {
+		rec.Usage = &workflow.EditorialUsage{
+			Date:            testDate,
+			Editorial:       workflow.KnownMeasurement(295),
+			EditorialInput:  workflow.KnownMeasurement(190),
+			EditorialOutput: workflow.KnownMeasurement(75),
+			EditorialCache:  workflow.KnownMeasurement(30),
+			EditorialRuns:   1,
+			Invoked:         true,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding benchmark record: %v", err)
 	}
 
 	csvPath := filepath.Join(benchmarksDir, "metrics.csv")
 	benchOut, benchErrOut, code, err := runCmd(ctx, "", binBenchmark, nil,
 		"-record",
 		"-date", testDate,
-		"-transcript", transcriptPath,
 		"-csv", csvPath,
-		"-storage-dir", storageDir,
+		"-storage-dir", benchRecords,
 		"-wall-clock-ms", "420",
 		"-chart",
 	)
@@ -481,8 +496,12 @@ END:VCALENDAR`)
 	if len(metrics) != 1 {
 		t.Fatalf("expected 1 metric row, got %d", len(metrics))
 	}
-	if metrics[0].TotalTokens != 295 || metrics[0].Date != testDate {
-		t.Fatalf("metric mismatch: %+v", metrics[0])
+	if metrics[0].Date != testDate ||
+		metrics[0].TotalTokens == nil || *metrics[0].TotalTokens != 295 ||
+		metrics[0].InputTokens == nil || *metrics[0].InputTokens != 190 ||
+		metrics[0].OutputTokens == nil || *metrics[0].OutputTokens != 75 ||
+		metrics[0].CacheTokens == nil || *metrics[0].CacheTokens != 30 {
+		t.Fatalf("record-fed metric mismatch: %+v", metrics[0])
 	}
 }
 
@@ -588,32 +607,50 @@ func TestE2E_BenchmarkMetrics(t *testing.T) {
 	benchDir := filepath.Join(baseTemp, "benchmarks")
 	csvPath := filepath.Join(benchDir, "metrics.csv")
 
-	dates := []string{"2026-10-06", "2026-10-07", "2026-10-08"}
-	tokens := [][]int64{
-		{120, 45, 165},
-		{210, 80, 290},
-		{310, 110, 420},
+	// The token columns are the day's EDITORIAL-CHILD lane, copied from the real
+	// workflow store; no transcript is written or parsed anywhere in this test.
+	days := []struct {
+		date                  string
+		in, out, cache, total int64
+	}{
+		{"2026-10-06", 120, 45, 15, 180},
+		{"2026-10-07", 210, 80, 5, 295},
+		{"2026-10-08", 310, 110, 0, 420},
 	}
 
-	for i, d := range dates {
-		transcriptPath := filepath.Join(baseTemp, fmt.Sprintf("transcript-%s.jsonl", d))
-		jsonLine := fmt.Sprintf(`{"usage":{"input_tokens":%d,"output_tokens":%d,"total_tokens":%d}}`+"\n",
-			tokens[i][0], tokens[i][1], tokens[i][2])
-		if err := os.WriteFile(transcriptPath, []byte(jsonLine), 0644); err != nil {
-			t.Fatalf("writing transcript for %s: %v", d, err)
+	recordsRoot := filepath.Join(baseTemp, "records")
+	store, err := workflow.NewJSONFileStore(recordsRoot)
+	if err != nil {
+		t.Fatalf("workflow store: %v", err)
+	}
+	for _, d := range days {
+		d := d
+		if _, err := store.UpdateDay(ctx, d.date, func(rec *workflow.Record) error {
+			rec.Usage = &workflow.EditorialUsage{
+				Date:            d.date,
+				Editorial:       workflow.KnownMeasurement(d.total),
+				EditorialInput:  workflow.KnownMeasurement(d.in),
+				EditorialOutput: workflow.KnownMeasurement(d.out),
+				EditorialCache:  workflow.KnownMeasurement(d.cache),
+				EditorialRuns:   1,
+				Invoked:         true,
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("seeding record for %s: %v", d.date, err)
 		}
 
 		_, stderr, code, err := runCmd(ctx, "", binBenchmark, nil,
 			"-record",
-			"-date", d,
-			"-transcript", transcriptPath,
+			"-date", d.date,
 			"-csv", csvPath,
+			"-storage-dir", recordsRoot,
 			"-wall-clock-ms", "350",
 			"-peak-rss-mb", "14.5",
 			"-entries", "3",
 		)
 		if err != nil || code != 0 {
-			t.Fatalf("recording benchmark for %s failed: %v\nstderr: %s", d, err, stderr)
+			t.Fatalf("recording benchmark for %s failed: %v\nstderr: %s", d.date, err, stderr)
 		}
 	}
 
@@ -644,8 +681,11 @@ func TestE2E_BenchmarkMetrics(t *testing.T) {
 	for idx := 1; idx <= 3; idx++ {
 		row := records[idx]
 		totalToks, _ := strconv.ParseInt(row[6], 10, 64)
-		if totalToks >= benchmark.DefaultTokenCeiling {
-			t.Errorf("row %d exceeded token ceiling %d: got %d", idx, benchmark.DefaultTokenCeiling, totalToks)
+		if totalToks != days[idx-1].total {
+			t.Errorf("row %d total tokens = %d, want the record's %d", idx, totalToks, days[idx-1].total)
+		}
+		if totalToks >= workflow.EditorialTokenCeiling {
+			t.Errorf("row %d exceeded the editorial ceiling %d: got %d", idx, workflow.EditorialTokenCeiling, totalToks)
 		}
 	}
 

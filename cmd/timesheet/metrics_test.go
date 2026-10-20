@@ -81,7 +81,7 @@ func TestMetricsCLI_UnknownProvider(t *testing.T) {
 	if err := os.WriteFile(bad, []byte(`{"not":"a transcript"}`+"\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	code, _, errOut := runArgs(t, "metrics", "import", "--transcript", bad, "--metrics-dir", filepath.Join(dir, "m"))
+	code, _, errOut := runArgs(t, "metrics", "import", "--transcript", bad, "--date", "2026-10-11", "--metrics-dir", filepath.Join(dir, "m"))
 	if code != exitError {
 		t.Fatalf("unknown provider: code=%d err=%q", code, errOut)
 	}
@@ -498,5 +498,28 @@ func TestCLI_MetricsSessionsJSON(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("json missing %s:\n%s", want, out)
 		}
+	}
+}
+
+// TestMetricsCLI_ProviderMismatchRefused (R6, fail-before) asserts a forced wrong
+// provider against another REGISTERED provider's transcript refuses with
+// ErrProviderMismatch and writes NOTHING: before the guard it wrote a cancelled
+// phantom run.
+func TestMetricsCLI_ProviderMismatchRefused(t *testing.T) {
+	dir := t.TempDir()
+	metricsDir := filepath.Join(dir, "m")
+	fixture := "../../internal/metrics/testdata/claude_declared.jsonl"
+
+	code, out, errOut := runArgs(t, "metrics", "import",
+		"--provider", "pi", "--transcript", fixture,
+		"--date", "2026-10-11", "--metrics-dir", metricsDir)
+	if code != exitError {
+		t.Fatalf("forced provider mismatch: code=%d out=%q err=%q, want exit %d", code, out, errOut, exitError)
+	}
+	if !strings.Contains(errOut, `detected "claude"`) {
+		t.Fatalf("error = %q, want it to name the detected provider claude", errOut)
+	}
+	if entries, err := os.ReadDir(filepath.Join(metricsDir, "runs")); err == nil && len(entries) != 0 {
+		t.Fatalf("a refused import must write no run file, found %d: %v", len(entries), entries)
 	}
 }

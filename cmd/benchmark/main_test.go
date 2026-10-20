@@ -8,22 +8,81 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/benchmark"
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
-func TestCLI_InvalidDate_ExitUsage(t *testing.T) {
+// TestCLI_Record_InvalidDate_ExitUsage distinguishes the flag's shape check from a
+// REAL calendar date: 2026/10/08 is not YYYY-MM-DD, and 2026-02-31 matches the
+// pattern but is not a date, so workflow.ValidateDate's calendar parse is what
+// rejects it.
+func TestCLI_Record_InvalidDate_ExitUsage(t *testing.T) {
+	cases := []struct {
+		name string
+		date string
+	}{
+		{"wrong-separators", "2026/10/08"},
+		{"not-a-real-date", "2026-02-31"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			args := []string{"-record", "-date=" + tc.date, "-csv=" + filepath.Join(t.TempDir(), "metrics.csv")}
+			code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+			if code != ExitUsage {
+				t.Fatalf("expected ExitUsage (64), got %d (err: %s)", code, errOut.String())
+			}
+			if !strings.Contains(errOut.String(), "invalid -date") {
+				t.Errorf("expected invalid -date in error output, got: %s", errOut.String())
+			}
+		})
+	}
+}
+
+// TestCLI_Record_RequiresDate is the §7 date-column analogue of R5: -record with
+// no -date fails, even though the machine clock could "supply" a day. No row is
+// written.
+func TestCLI_Record_RequiresDate(t *testing.T) {
+	tempDir := t.TempDir()
+	csvPath := filepath.Join(tempDir, "metrics.csv")
+
 	var out, errOut bytes.Buffer
-	args := []string{"-date=2026/10/08"}
+	args := []string{
+		"-record",
+		"-wall-clock-ms=1420",
+		"-peak-rss-mb=18.4",
+		"-csv=" + csvPath,
+		"-storage-dir=" + filepath.Join(tempDir, "records"),
+	}
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	if code != ExitUsage {
+		t.Fatalf("expected ExitUsage (64), got %d (out: %s err: %s)", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "requires an explicit -date") {
+		t.Fatalf("expected the explicit-date message, got: %s", errOut.String())
+	}
+	if _, err := os.Stat(csvPath); !os.IsNotExist(err) {
+		t.Fatalf("a refused record must write no row, stat err = %v", err)
+	}
+
+	// -chart and -report do not read the date, so they are NOT gated.
+	if code := run(context.Background(), []string{"-chart", "-csv=" + csvPath}, strings.NewReader(""), &out, &errOut); code != ExitOK {
+		t.Fatalf("-chart must not require -date, got code %d (err: %s)", code, errOut.String())
+	}
+	if code := run(context.Background(), []string{"-report", "-csv=" + csvPath}, strings.NewReader(""), &out, &errOut); code != ExitOK {
+		t.Fatalf("-report must not require -date, got code %d (err: %s)", code, errOut.String())
+	}
+}
+
+func TestCLI_InvalidCeiling_ExitUsage(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"-ceiling=0"}, strings.NewReader(""), &out, &errOut)
 	if code != ExitUsage {
 		t.Fatalf("expected ExitUsage (64), got %d (err: %s)", code, errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "invalid -date") {
-		t.Errorf("expected invalid -date in error output, got: %s", errOut.String())
+	if !strings.Contains(errOut.String(), "invalid -ceiling") {
+		t.Errorf("expected invalid -ceiling in error output, got: %s", errOut.String())
 	}
 }
 
@@ -48,6 +107,8 @@ func TestCLI_Record_ManualValues(t *testing.T) {
 		"-peak-rss-mb=18.4",
 		"-entries=4",
 		"-csv=" + csvPath,
+		// No record exists here, so the token cells stay unknown.
+		"-storage-dir=" + filepath.Join(tempDir, "records"),
 	}
 
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
@@ -66,22 +127,64 @@ func TestCLI_Record_ManualValues(t *testing.T) {
 	if len(metrics) != 1 {
 		t.Fatalf("expected 1 metric, got %d", len(metrics))
 	}
-	if metrics[0].WallClockMS != 1420 || metrics[0].PeakRSSMB != 18.4 || metrics[0].Entries != 4 {
+	if metrics[0].WallClockMS != 1420 || metrics[0].PeakRSSMB != 18.4 {
 		t.Errorf("unexpected metric content: %+v", metrics[0])
+	}
+	if metrics[0].Entries == nil || *metrics[0].Entries != 4 {
+		t.Errorf("an explicit -entries value must be recorded, got %+v", metrics[0].Entries)
+	}
+
+	// The day has no workflow record: the token cells are EMPTY, never 0.
+	raw, err := os.ReadFile(csvPath)
+	if err != nil {
+		t.Fatalf("read csv: %v", err)
+	}
+	if !strings.Contains(string(raw), "2026-10-07,1420,18.4,,,,,4\n") {
+		t.Fatalf("token cells must be empty for a day with no record, got:\n%s", raw)
 	}
 }
 
-func TestCLI_Record_WithTranscript(t *testing.T) {
+// TestCLI_Record_RecordFedColumns asserts the token columns and the entry count
+// are copied from the day's workflow record, and that -storage-dir points at the
+// WORKFLOW store (not the legacy one).
+func TestCLI_Record_RecordFedColumns(t *testing.T) {
 	tempDir := t.TempDir()
+	storageDir := filepath.Join(tempDir, "records")
 	csvPath := filepath.Join(tempDir, "metrics.csv")
-	fixturePath := filepath.Join("..", "..", "internal", "benchmark", "testdata", "sample_claude.jsonl")
+	targetDate := "2026-10-08"
+
+	store, err := workflow.NewJSONFileStore(storageDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateDay(context.Background(), targetDate, func(rec *workflow.Record) error {
+		rec.Confirmed = append(rec.Confirmed,
+			workflow.ConfirmedInterval{ID: "c1", Date: targetDate},
+			workflow.ConfirmedInterval{ID: "c2", Date: targetDate},
+			workflow.ConfirmedInterval{ID: "c3", Date: targetDate},
+		)
+		rec.Usage = &workflow.EditorialUsage{
+			Date:            targetDate,
+			Editorial:       workflow.KnownMeasurement(295),
+			EditorialInput:  workflow.KnownMeasurement(220),
+			EditorialOutput: workflow.KnownMeasurement(75),
+			EditorialCache:  workflow.KnownMeasurement(0),
+			EditorialRuns:   1,
+			Invoked:         true,
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	var out, errOut bytes.Buffer
 	args := []string{
 		"-record",
-		"-date=2026-10-08",
-		"-transcript=" + fixturePath,
+		"-date=" + targetDate,
+		"-storage-dir=" + storageDir,
 		"-csv=" + csvPath,
+		"-wall-clock-ms=340",
+		"-peak-rss-mb=14.2",
 	}
 
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
@@ -91,13 +194,65 @@ func TestCLI_Record_WithTranscript(t *testing.T) {
 
 	metrics, err := benchmark.ReadMetrics(csvPath)
 	if err != nil {
-		t.Fatalf("failed to read metrics: %v", err)
+		t.Fatal(err)
 	}
 	if len(metrics) != 1 {
 		t.Fatalf("expected 1 metric, got %d", len(metrics))
 	}
-	if metrics[0].TotalTokens != 455 || metrics[0].InputTokens != 285 || metrics[0].OutputTokens != 110 {
-		t.Errorf("unexpected token counters parsed: %+v", metrics[0])
+	m := metrics[0]
+	if m.InputTokens == nil || *m.InputTokens != 220 ||
+		m.OutputTokens == nil || *m.OutputTokens != 75 ||
+		m.CacheTokens == nil || *m.CacheTokens != 0 ||
+		m.TotalTokens == nil || *m.TotalTokens != 295 {
+		t.Fatalf("token columns must come from the record: %+v", m)
+	}
+	if m.Entries == nil || *m.Entries != 3 {
+		t.Fatalf("entries must come from the record's confirmed intervals: %+v", m.Entries)
+	}
+	if !strings.Contains(out.String(), "Tokens (In/Out/Cache/Total): 220/75/0/295") {
+		t.Errorf("expected the record-fed tokens in stdout, got: %s", out.String())
+	}
+}
+
+// TestCLI_Record_RecordReadErrorWarns asserts a record-read error leaves the
+// entries (and token) cells EMPTY with a stderr warning: never a swallowed zero.
+func TestCLI_Record_RecordReadErrorWarns(t *testing.T) {
+	tempDir := t.TempDir()
+	storageDir := filepath.Join(tempDir, "records")
+	csvPath := filepath.Join(tempDir, "metrics.csv")
+	targetDate := "2026-10-08"
+
+	if _, err := workflow.NewJSONFileStore(storageDir); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := filepath.Join(storageDir, "workflow", targetDate+".json")
+	if err := os.WriteFile(corrupt, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	args := []string{
+		"-record",
+		"-date=" + targetDate,
+		"-storage-dir=" + storageDir,
+		"-csv=" + csvPath,
+		"-wall-clock-ms=340",
+		"-peak-rss-mb=14.2",
+	}
+
+	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+	if code != ExitOK {
+		t.Fatalf("a record-read error is a warning, not a failure: code=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "warning: reading the workflow record") {
+		t.Fatalf("expected a stderr warning, got: %s", errOut.String())
+	}
+	raw, err := os.ReadFile(csvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "2026-10-08,340,14.2,,,,,\n") {
+		t.Fatalf("a record-read error must leave the cells empty, got:\n%s", raw)
 	}
 }
 
@@ -111,6 +266,7 @@ func TestCLI_Record_WithRunCommand(t *testing.T) {
 		"-date=2026-10-08",
 		"-run=echo running-test-cmd",
 		"-csv=" + csvPath,
+		"-storage-dir=" + filepath.Join(tempDir, "records"),
 	}
 
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
@@ -130,81 +286,22 @@ func TestCLI_Record_WithRunCommand(t *testing.T) {
 	}
 }
 
-func TestCLI_Record_Errors(t *testing.T) {
+func TestCLI_Record_RunCommandError(t *testing.T) {
 	tempDir := t.TempDir()
 	csvPath := filepath.Join(tempDir, "metrics.csv")
-
-	// 1. Invalid transcript file
-	var out, errOut bytes.Buffer
-	args1 := []string{
-		"-record",
-		"-date=2026-10-08",
-		"-transcript=" + filepath.Join(tempDir, "missing.jsonl"),
-		"-csv=" + csvPath,
-	}
-	code1 := run(context.Background(), args1, strings.NewReader(""), &out, &errOut)
-	if code1 != ExitErr {
-		t.Errorf("expected ExitErr for missing transcript, got %d", code1)
-	}
-
-	// 2. Invalid run command
-	out.Reset()
-	errOut.Reset()
-	args2 := []string{
-		"-record",
-		"-date=2026-10-08",
-		"-run=non-existent-binary-123456",
-		"-csv=" + csvPath,
-	}
-	code2 := run(context.Background(), args2, strings.NewReader(""), &out, &errOut)
-	if code2 != ExitErr {
-		t.Errorf("expected ExitErr for invalid command, got %d", code2)
-	}
-}
-
-func TestCLI_Record_AutoDetectEntriesFromStorage(t *testing.T) {
-	tempDir := t.TempDir()
-	storageDir := filepath.Join(tempDir, "records")
-	csvPath := filepath.Join(tempDir, "metrics.csv")
-	targetDate := "2026-10-08"
-
-	store, err := storage.NewJSONFileStore(storageDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rec := storage.TimesheetRecord{
-		Date:      targetDate,
-		UpdatedAt: time.Now().UTC(),
-		Blocks: []timesheet.TimeBlock{
-			{ID: "b1", Date: targetDate},
-			{ID: "b2", Date: targetDate},
-			{ID: "b3", Date: targetDate},
-		},
-	}
-	if err := store.SaveDay(context.Background(), rec); err != nil {
-		t.Fatal(err)
-	}
 
 	var out, errOut bytes.Buffer
 	args := []string{
 		"-record",
-		"-date=" + targetDate,
-		"-storage-dir=" + storageDir,
+		"-date=2026-10-08",
+		"-run=non-existent-binary-123456",
 		"-csv=" + csvPath,
+		"-storage-dir=" + filepath.Join(tempDir, "records"),
 	}
 
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
-	if code != ExitOK {
-		t.Fatalf("expected ExitOK, got %d (err: %s)", code, errOut.String())
-	}
-
-	metrics, err := benchmark.ReadMetrics(csvPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(metrics) != 1 || metrics[0].Entries != 3 {
-		t.Errorf("expected 3 entries auto-detected from storage, got %+v", metrics)
+	if code != ExitErr {
+		t.Errorf("expected ExitErr for invalid command, got %d", code)
 	}
 }
 
@@ -212,12 +309,12 @@ func TestCLI_ChartAndReportModes(t *testing.T) {
 	tempDir := t.TempDir()
 	csvPath := filepath.Join(tempDir, "metrics.csv")
 
+	total := int64(420)
 	m := benchmark.DailyMetric{
 		Date:        "2026-10-08",
-		TotalTokens: 420,
-		Entries:     2,
+		TotalTokens: &total,
 	}
-	if err := benchmark.AppendMetric(csvPath, m); err != nil {
+	if err := benchmark.UpsertMetric(csvPath, m); err != nil {
 		t.Fatal(err)
 	}
 
@@ -252,6 +349,55 @@ func TestCLI_ChartAndReportModes(t *testing.T) {
 	}
 }
 
+// TestCLI_CeilingReachesBothRenderers (R4) asserts -ceiling governs the chart AND
+// the report's compliance line, and that the untouched invocation keeps the
+// owner's 1000 from the one workflow constant.
+func TestCLI_CeilingReachesBothRenderers(t *testing.T) {
+	tempDir := t.TempDir()
+	csvPath := filepath.Join(tempDir, "metrics.csv")
+
+	total := int64(900)
+	if err := benchmark.UpsertMetric(csvPath, benchmark.DailyMetric{Date: "2026-10-08", TotalTokens: &total}); err != nil {
+		t.Fatal(err)
+	}
+
+	runMode := func(args ...string) (string, string) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), append(args, "-csv="+csvPath), strings.NewReader(""), &out, &errOut)
+		if code != ExitOK {
+			t.Fatalf("run %v: code=%d err=%s", args, code, errOut.String())
+		}
+		return out.String(), errOut.String()
+	}
+
+	chart, _ := runMode("-chart", "-ceiling=500")
+	if !strings.Contains(chart, "Ceiling: 500 tokens") {
+		t.Errorf("chart must use -ceiling, got: %s", chart)
+	}
+	if !strings.Contains(chart, "[OVER]") {
+		t.Errorf("chart must flag 900 > 500, got: %s", chart)
+	}
+
+	report, _ := runMode("-report", "-ceiling=500")
+	if !strings.Contains(report, "<= 500 tokens") {
+		t.Errorf("report must use -ceiling, got: %s", report)
+	}
+	if !strings.Contains(report, "0/1 known days") {
+		t.Errorf("report must count 900 > 500 as over budget, got: %s", report)
+	}
+
+	// The untouched invocation defaults to the owner's 1000 (one workflow constant).
+	chartDefault, _ := runMode("-chart")
+	if !strings.Contains(chartDefault, "Ceiling: 1000 tokens") || !strings.Contains(chartDefault, "[PASS]") {
+		t.Errorf("the default ceiling must be 1000, got: %s", chartDefault)
+	}
+	reportDefault, _ := runMode("-report")
+	if !strings.Contains(reportDefault, "<= 1000 tokens") || !strings.Contains(reportDefault, "1/1 known days") {
+		t.Errorf("the default ceiling must be 1000, got: %s", reportDefault)
+	}
+}
+
 func TestCLI_ChartAndReport_ReadErrors(t *testing.T) {
 	tempDir := t.TempDir()
 	// Directory path instead of file path will cause ReadMetrics to fail
@@ -281,7 +427,7 @@ func TestCLI_ChartAndReport_ReadErrors(t *testing.T) {
 	}
 }
 
-func TestCLI_Record_AppendError(t *testing.T) {
+func TestCLI_Record_WriteError(t *testing.T) {
 	tempDir := t.TempDir()
 	// An invalid CSV path where parent is a regular file
 	fileAsParent := filepath.Join(tempDir, "regular_file")
@@ -295,13 +441,14 @@ func TestCLI_Record_AppendError(t *testing.T) {
 		"-record",
 		"-date=2026-10-08",
 		"-csv=" + invalidCSV,
+		"-storage-dir=" + filepath.Join(tempDir, "records"),
 	}
 	code := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
 	if code != ExitErr {
-		t.Errorf("expected ExitErr (1) when appending metric fails, got %d", code)
+		t.Errorf("expected ExitErr (1) when recording the metric fails, got %d", code)
 	}
-	if !strings.Contains(errOut.String(), "error: appending metric") {
-		t.Errorf("expected appending metric error in errOut, got: %s", errOut.String())
+	if !strings.Contains(errOut.String(), "error: recording metric") {
+		t.Errorf("expected recording metric error in errOut, got: %s", errOut.String())
 	}
 }
 

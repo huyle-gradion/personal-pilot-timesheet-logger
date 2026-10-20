@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -212,30 +214,6 @@ func TestPIAdapter_CostPreserved(t *testing.T) {
 	}
 }
 
-// TestImport_FailClosedOnUnderivableDate (F9) asserts a transcript with no
-// derivable date and no --date fails closed instead of writing Date="".
-func TestImport_FailClosedOnUnderivableDate(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/nodate.jsonl"
-	// A session header with no timestamp, and an assistant turn with no timestamp.
-	content := `{"type":"session","id":"s-nodate"}` + "\n" +
-		`{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","arguments":{"command":"timesheet review"}}],"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":2}}}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if _, err := Import(context.Background(), path, ImportOptions{}); err == nil {
-		t.Fatal("Import should fail closed when the date is underivable and --date is absent")
-	}
-	// With --date it succeeds.
-	rec, err := Import(context.Background(), path, ImportOptions{Date: "2026-10-11"})
-	if err != nil {
-		t.Fatalf("Import with --date: %v", err)
-	}
-	if rec.Date != "2026-10-11" {
-		t.Fatalf("date = %q, want 2026-10-11", rec.Date)
-	}
-}
-
 // TestImport_AnnotationsSet (F4) asserts import sets the run annotations.
 func TestImport_AnnotationsSet(t *testing.T) {
 	rec, err := Import(context.Background(), "testdata/pi_partial_offline.jsonl", ImportOptions{
@@ -250,5 +228,98 @@ func TestImport_AnnotationsSet(t *testing.T) {
 	}
 	if rec.Commit != "abc1234" || rec.WorkflowVersion != "v1" || rec.ConfigMode != "offline" || rec.OptimizationChange != "narrow-ai-step" {
 		t.Fatalf("annotations not set: %+v", rec)
+	}
+}
+
+// TestImport_RequiresExplicitDate (R5, fail-before) asserts that a transcript
+// that CARRIES timestamps is still refused when no --date is supplied: no day is
+// inferred from the transcript or the clock. With --date the same transcript
+// imports and takes exactly that day.
+func TestImport_RequiresExplicitDate(t *testing.T) {
+	rec, err := Import(context.Background(), "testdata/pi_partial_offline.jsonl", ImportOptions{Provider: "pi"})
+	if err == nil {
+		t.Fatalf("Import with no --date succeeded (date=%q); no day may be inferred from the transcript or the clock", rec.Date)
+	}
+	if !errors.Is(err, ErrDateRequired) {
+		t.Fatalf("error = %v, want ErrDateRequired", err)
+	}
+	if !strings.Contains(err.Error(), "requires an explicit --date") {
+		t.Fatalf("error = %q, want it to state that an explicit --date is required", err)
+	}
+	if !strings.Contains(err.Error(), "no day is inferred from the transcript or the clock") {
+		t.Fatalf("error = %q, want the no-inference rule stated", err)
+	}
+
+	// With an explicit day the same transcript imports, and the day is the
+	// operator's, not the transcript's.
+	rec, err = Import(context.Background(), "testdata/pi_partial_offline.jsonl", ImportOptions{Provider: "pi", Date: "2026-10-11"})
+	if err != nil {
+		t.Fatalf("Import with --date: %v", err)
+	}
+	if rec.Date != "2026-10-11" {
+		t.Fatalf("date = %q, want 2026-10-11", rec.Date)
+	}
+}
+
+// TestImport_ProviderMismatchRefused (R6) asserts a forced wrong provider against
+// another REGISTERED provider's transcript refuses, naming requested and detected.
+func TestImport_ProviderMismatchRefused(t *testing.T) {
+	_, err := Import(context.Background(), "testdata/claude_declared.jsonl", ImportOptions{
+		Provider: "pi",
+		Date:     "2026-10-11",
+	})
+	if !errors.Is(err, ErrProviderMismatch) {
+		t.Fatalf("error = %v, want ErrProviderMismatch", err)
+	}
+	if !strings.Contains(err.Error(), `requested "pi"`) || !strings.Contains(err.Error(), `detected "claude"`) {
+		t.Fatalf("error = %q, want it to name requested pi and detected claude", err)
+	}
+}
+
+// TestImport_UnreadableTranscriptRefused (R6, antigravity-shaped arm) asserts a
+// transcript no REGISTERED adapter recognizes parses to nothing and is REFUSED
+// (OWNER-DECISION-6: refuse-all). The lines are INVENTED values carrying the real
+// field names; no real transcript is copied. When #73 registers the antigravity
+// adapter this assertion UPGRADES to ErrProviderMismatch naming antigravity.
+func TestImport_UnreadableTranscriptRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "antigravity-shaped.jsonl")
+	content := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","created_at":"2026-10-11T09:00:00Z","content":"<invented>"}` + "\n" +
+		`{"step_index":1,"source":"MODEL","type":"GENERIC","created_at":"2026-10-11T09:00:05Z","input_tokens":11,"output_tokens":5,"cache_read_tokens":2}` + "\n" +
+		`{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-10-11T09:00:09Z","input_tokens":7,"output_tokens":3,"cache_read_tokens":0}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	for _, provider := range []string{"pi", "claude"} {
+		_, err := Import(context.Background(), path, ImportOptions{Provider: provider, Date: "2026-10-11"})
+		if !errors.Is(err, ErrUnreadableTranscript) {
+			t.Fatalf("provider %q: error = %v, want ErrUnreadableTranscript", provider, err)
+		}
+	}
+	// `auto` on garbage keeps today's behaviour: no Detect match on the header is
+	// ErrUnknownProvider, and no day is guessed.
+	if _, err := Import(context.Background(), path, ImportOptions{Date: "2026-10-11"}); !errors.Is(err, ErrUnknownProvider) {
+		t.Fatalf("auto on garbage: error = %v, want ErrUnknownProvider", err)
+	}
+}
+
+// TestImport_ReadableResumedFileNotRefused (R6 companion) asserts the guard never
+// refuses a NON-empty parse whose first line is not the probe line: a resumed file
+// with a leading queue line imports exactly as before.
+func TestImport_ReadableResumedFileNotRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resumed.jsonl")
+	content := `{"type":"queue","id":"q-1"}` + "\n" +
+		`{"type":"session","id":"s-resumed","timestamp":"2026-10-11T09:00:00Z"}` + "\n" +
+		`{"type":"message","timestamp":"2026-10-11T09:00:10Z","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","arguments":{"command":"timesheet review"}}],"usage":{"input":30,"output":10,"cacheRead":5,"cacheWrite":0,"reasoning":2,"totalTokens":45}}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	rec, err := Import(context.Background(), path, ImportOptions{Provider: "pi", Date: "2026-10-11"})
+	if err != nil {
+		t.Fatalf("a readable import must never refuse: %v", err)
+	}
+	if len(rec.Calls) != 1 || rec.SessionID != "s-resumed" || rec.Date != "2026-10-11" {
+		t.Fatalf("unexpected record: calls=%d session=%q date=%q", len(rec.Calls), rec.SessionID, rec.Date)
 	}
 }

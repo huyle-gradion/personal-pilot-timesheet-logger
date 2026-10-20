@@ -534,7 +534,7 @@ the 3.5 optimization can be measured (3.6). A failure here prints a warning and
 replay. Skip it entirely if `$PI_SESSION` is unset.
 
 ```bash
-$TS metrics import --transcript "$PI_SESSION" && $TS metrics report --date "$DATE"
+$TS metrics import --transcript "$PI_SESSION" --date "$DATE" && $TS metrics report --date "$DATE"
 ```
 
 - `import` reads the harness transcript and writes one run file; a reimport of an

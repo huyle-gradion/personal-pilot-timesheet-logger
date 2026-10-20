@@ -21,13 +21,6 @@ func EvaluateBudget(spent workflow.Measurement, target int64) BudgetState {
 	return BudgetKnownAvailable
 }
 
-// OrchestrationUsageFromBenchmark adapts a benchmark TokenUsage into an editorial
-// Usage. Orchestration usage is reported SEPARATELY and is never summed with
-// editorial usage.
-func OrchestrationUsageFromBenchmark(tu benchmark.TokenUsage) Usage {
-	return KnownUsage(tu.InputTokens, tu.OutputTokens, tu.CacheTokens)
-}
-
 // DefaultMeasureRSS reports the current process peak RSS in MB via benchmark.
 func DefaultMeasureRSS() float64 { return benchmark.CurrentProcessRSSMB() }
 

@@ -32,8 +32,13 @@ not a replacement for those unrelated code paths.
   a JSONL transcript); `claude` is DECLARED (schema known, not verified on this
   host) and the report prints a `[declared schema]` marker. `--provider auto`
   detects on the first non-empty line and returns `ErrUnknownProvider` on no match;
-  it never guesses. A run whose date is neither derivable from the transcript nor
-  supplied with `--date` FAILS CLOSED rather than being written with an empty date.
+  it never guesses. *(Amended 2026-10-20 by #69.)* The day is an OPERATOR input: an
+  import without an explicit `--date` fails closed with `ErrDateRequired`, and no
+  day is derived from the transcript's timestamps or from the clock. A forced
+  provider whose parse yields no call is REFUSED (`ErrProviderMismatch` naming the
+  requested and the detected provider, or `ErrUnreadableTranscript` when no
+  registered adapter recognizes the transcript) rather than written as an empty
+  record. See [Amendments](#amendments).
 - **Safety.** An adapter extracts only counters, ids, timestamps, the `timesheet`
   subcommand token, and the provider-native NUMERIC cost. Message text, tool
   arguments, and tool results are never decoded into a persisted field.
@@ -118,6 +123,10 @@ not a replacement for those unrelated code paths.
 
 - Reuse `internal/benchmark`: rejected because its extractor double-counts and
   couples accounting to the legacy CSV chart path; the legacy code is left as-is.
+  *(Superseded 2026-10-20 by #69: the legacy parser is RETIRED and
+  `benchmark.DefaultTokenCeiling=600` is DELETED. The rejection itself stands; what
+  changed is that the legacy code is no longer left as-is. See
+  [Amendments](#amendments).)*
 - Define a metrics-local unknown/zero type: rejected to keep one honest
   representation across the workflow and metrics layers.
 - Derive editorial components from the persisted total: rejected because the total
@@ -137,5 +146,59 @@ transcript import cannot observe an exit code, so those states are not derivable
 from a transcript.
 
 The soft daily editorial target is 1,000 tokens/day (owner override of the
-specification's 600). The legacy `benchmark.DefaultTokenCeiling=600` is stale and is
-not changed.
+specification's 600). *(Amended 2026-10-20 by #69.)* **1,000 is the only surviving
+ceiling.** It is defined ONCE, in `internal/workflow` (`workflow.EditorialTokenCeiling`),
+and `editorial.SoftDailyTokenTarget` and `metrics.BudgetTargetTokens` are named
+aliases of it: no mirror, no second number. It governs the EDITORIAL-CHILD token
+lane only (the lane the benchmark CSV's token columns carry); harness-session tokens
+have no ceiling and no number is invented for them. The legacy
+`benchmark.DefaultTokenCeiling=600` is DELETED, not re-pointed: a formatter package
+states no budget. See [Amendments](#amendments).
+
+## Amendments
+
+### 2026-10-20 — recorded refusals superseded, and the explicit-date gate (#69)
+
+Two recorded refusals are superseded by the owner-approved #69 design
+(`docs/benchmark-rewiring.md`, decisions 1, 2, 5, 6 and 7). The rest of this ADR
+stands as written.
+
+- **The legacy parser is RETIRED; the 1,000 ceiling has one home.** `internal/benchmark`
+  no longer parses transcripts: `rawTokenRecord`, `extractTokens`, `ParseTranscript`,
+  `ParseTranscriptFile`, `ErrEmptyTranscript`, `TokenUsage`, the `cmd/benchmark`
+  `-transcript` flag, and `editorial.OrchestrationUsageFromBenchmark` (which had no
+  production caller) are gone. The package is stdlib-only again. The benchmark CSV
+  keeps its file, its header order, and its reader; its token columns are now COPIES
+  of the day's `EditorialInput`/`EditorialOutput`/`EditorialCache` from the workflow
+  record, never a transcript reading. This is why the previous "the legacy code is
+  left as-is" refusal no longer applies.
+- **`benchmark.DefaultTokenCeiling = 600` is DELETED, not re-pointed.** 1,000 is the
+  only surviving number, defined once as `workflow.EditorialTokenCeiling` with
+  `editorial.SoftDailyTokenTarget` and `metrics.BudgetTargetTokens` as named aliases.
+  It governs the editorial-child token lane only; harness-session tokens remain
+  ceiling-free. `cmd/benchmark -ceiling` now reaches BOTH renderers (chart and the
+  report's compliance line); its default is the shared constant.
+- **An unknown cell is EMPTY, never 0.** The CSV token and entry cells are nullable:
+  a day with no record (or no editor) writes an empty cell and prints `unknown`; a
+  record-read error leaves the cells empty and warns on stderr. The chart omits the
+  bar and prints `unknown` rather than a `0 <= ceiling` tick. Rows are upserted one
+  per date (last value wins) by temp-file + atomic rename, and reads/rewrites are no
+  longer truncated at 1,000 rows.
+- **The date gate.** A run's day is an operator input. `metrics.Import` requires an
+  explicit `--date YYYY-MM-DD` (validated, `ErrDateRequired` when absent) and no
+  longer derives a date from the transcript's first timestamp or from the clock;
+  the derivation in the shared run assembly path is removed. With `--date` set, both
+  the run and the session `LoggedDate` take that value with `Association = import_flag`.
+  The gate is **PROSPECTIVE**: sessions stored before it keep their derived or absent
+  associations and can still flow into a day's lane until they age out or are
+  re-imported. `metrics run` and `metrics aggregate` keep their `today` default and
+  are NOT gated: `run` writes only a run record, and `aggregate` reads a day rather
+  than attributing one.
+- **Refusal, not an empty record.** A parsed transcript that yields NO call is
+  refused: with `ErrProviderMismatch` (naming the requested and the detected
+  provider) when another registered adapter's `Detect` matches within the first 32
+  non-empty lines, and with `ErrUnreadableTranscript` when nothing matches. A parse
+  that yields a call never refuses, so every previously readable import is unchanged.
+  `--provider auto` on an unrecognized transcript keeps `ErrUnknownProvider`. When
+  #73 registers the antigravity adapter, its arm of this guard is upgraded from
+  `ErrUnreadableTranscript` to `ErrProviderMismatch` naming antigravity.

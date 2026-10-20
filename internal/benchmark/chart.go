@@ -10,13 +10,17 @@ const (
 	chartBarWidth = 40
 )
 
-// RenderASCIIChart prints a terminal ASCII bar chart representing daily token consumption
-// measured against the specified daily ceiling (defaulting to DefaultTokenCeiling if <= 0).
+// RenderASCIIChart prints a terminal ASCII bar chart representing the daily
+// editorial-child token lane measured against ceiling, which must be positive
+// (main supplies workflow.EditorialTokenCeiling by default). A day whose token
+// total is UNKNOWN takes the nil path: its bar is OMITTED and its status prints
+// `unknown`. It is never a dereference, never a zero-fill and never a `0 <=
+// ceiling` pass for a day nobody measured.
 func RenderASCIIChart(w io.Writer, metrics []DailyMetric, ceiling int64) error {
 	Assert(w != nil, AssertBenchmarkNilWriter)
 
 	if ceiling <= 0 {
-		ceiling = DefaultTokenCeiling
+		return fmt.Errorf("chart: ceiling must be positive, got %d", ceiling)
 	}
 
 	if len(metrics) == 0 {
@@ -33,10 +37,15 @@ func RenderASCIIChart(w io.Writer, metrics []DailyMetric, ceiling int64) error {
 		var bar string
 		var status string
 
-		pct := float64(m.TotalTokens) / float64(ceiling) * 100.0
+		if m.TotalTokens == nil {
+			sb.WriteString(fmt.Sprintf("%-12s  %-8s  %-42s  %s\n", m.Date, "unknown", "", "unknown"))
+			continue
+		}
+		total := *m.TotalTokens
+		pct := float64(total) / float64(ceiling) * 100.0
 
-		if m.TotalTokens <= ceiling {
-			bars := int((float64(m.TotalTokens) / float64(ceiling)) * chartBarWidth)
+		if total <= ceiling {
+			bars := int((float64(total) / float64(ceiling)) * chartBarWidth)
 			if bars > chartBarWidth {
 				bars = chartBarWidth
 			}
@@ -44,7 +53,7 @@ func RenderASCIIChart(w io.Writer, metrics []DailyMetric, ceiling int64) error {
 			bar = strings.Repeat("█", bars) + strings.Repeat("░", remaining)
 			status = fmt.Sprintf("[PASS] %5.1f%%", pct)
 		} else {
-			excessTokens := m.TotalTokens - ceiling
+			excessTokens := total - ceiling
 			excessChars := int((float64(excessTokens) / float64(ceiling)) * chartBarWidth)
 			if excessChars < 1 {
 				excessChars = 1
@@ -56,7 +65,7 @@ func RenderASCIIChart(w io.Writer, metrics []DailyMetric, ceiling int64) error {
 			status = fmt.Sprintf("[OVER] +%d tokens (%5.1f%%)", excessTokens, pct)
 		}
 
-		sb.WriteString(fmt.Sprintf("%-12s  %-8d  %-42s  %s\n", m.Date, m.TotalTokens, bar, status))
+		sb.WriteString(fmt.Sprintf("%-12s  %-8d  %-42s  %s\n", m.Date, total, bar, status))
 	}
 
 	sb.WriteString(strings.Repeat("-", 78) + "\n")

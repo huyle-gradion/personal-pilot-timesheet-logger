@@ -1,5 +1,0 @@
-{"type":"user","message":{"role":"user","content":"Run timesheet sync"}}
-{"type":"assistant","message":{"id":"msg_101","role":"assistant","usage":{"input_tokens":250,"output_tokens":95,"cache_read_input_tokens":50}}}
-{"type":"tool_call","name":"fetch_calendar"}
-{"type":"assistant","message":{"id":"msg_102","role":"assistant","usage":{"input_tokens":35,"output_tokens":15,"cache_read_input_tokens":10}}}
-{"type":"completion","content":"Timesheet sync finished successfully."}

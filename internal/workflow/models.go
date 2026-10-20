@@ -341,6 +341,15 @@ type EditorialSuggestion struct {
 	Warnings    []string      `json:"warnings,omitempty"`
 }
 
+// EditorialTokenCeiling is the ONE definition of the owner-confirmed soft daily
+// ceiling for the editorial-child token lane, in tokens. It counts editorial
+// input+output+cache tokens across retries and reruns, and is an explicit owner
+// override of the specification's historical 600. editorial.SoftDailyTokenTarget
+// and metrics.BudgetTargetTokens are named aliases of THIS number: there is no
+// mirror and no second constant. It NEVER governs harness-session tokens, which
+// have no ceiling.
+const EditorialTokenCeiling int64 = 1000
+
 // EditorialUsage is the durable daily usage report (ADDITIVE S7). Editorial and
 // orchestration usage are reported SEPARATELY and are never summed: an unknown
 // measurement is not zero.

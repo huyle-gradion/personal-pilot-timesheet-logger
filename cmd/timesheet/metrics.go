@@ -26,7 +26,7 @@ import (
 const metricsUsage = `timesheet metrics <action> [flags]
 
 Actions:
-  import     import a transcript into the metrics store: metrics import --transcript FILE
+  import     import a transcript into the metrics store: metrics import --transcript FILE --date YYYY-MM-DD
   sessions   list stored session records: metrics sessions [--date D | --session ID]
   aggregate  build and persist the daily aggregate: metrics aggregate --date D
   report     render the daily aggregate: metrics report [--date D | --from/--to]
@@ -40,8 +40,9 @@ Flags:
                            default: $PI_MODEL_CATALOG, else ~/.pi/agent/models-store.json)
   --timezone TZ            IANA zone for the session's local-date association (import;
                            default: the process local zone)
-  --date YYYY-MM-DD        target date (default: today); on import it also records the
-                           session's logged day (association=import_flag)
+  --date YYYY-MM-DD        target date (default: today); REQUIRED on import, where it is
+                           also the session's logged day (association=import_flag) and no
+                           day is inferred from the transcript or the clock
   --session ID             one session id (sessions)
   --from/--to YYYY-MM-DD   date range (report)
   --base/--target D        base and target dates (compare)
@@ -92,7 +93,7 @@ func cmdMetricsImport(ctx context.Context, args []string, stdout, stderr io.Writ
 	fs.SetOutput(stderr)
 	transcript := fs.String("transcript", "", "transcript path")
 	provider := fs.String("provider", "auto", "transcript provider: auto|pi|claude")
-	date := fs.String("date", "", "override the transcript-derived date YYYY-MM-DD")
+	date := fs.String("date", "", "the day this import counts for (required) YYYY-MM-DD")
 	modelCatalog := fs.String("model-catalog", "", "runtime model catalog file")
 	timezone := fs.String("timezone", "", "IANA timezone for the session's local-date association")
 	metricsDir := fs.String("metrics-dir", "", "metrics store directory")

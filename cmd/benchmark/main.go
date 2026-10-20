@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"regexp"
+	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/benchmark"
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/metrics"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
 const (
@@ -26,8 +27,6 @@ const (
 	AssertBenchContextNil = "ASSERT_BENCH_CLI_001_NIL_CONTEXT"
 	AssertBenchWritersNil = "ASSERT_BENCH_CLI_002_NIL_WRITERS"
 )
-
-var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 // Assert enforces invariant conditions for TigerStyle reliability.
 func Assert(condition bool, invariantID string) {
@@ -57,7 +56,6 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		chartMode   bool
 		reportMode  bool
 		targetDate  string
-		transcript  string
 		csvPath     string
 		runCmd      string
 		wallClockMS int64
@@ -67,28 +65,26 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		ceiling     int64
 	)
 
-	today := time.Now().UTC().Format("2006-01-02")
 	fs.BoolVar(&recordMode, "record", false, "Record a new benchmark metric row")
 	fs.BoolVar(&chartMode, "chart", false, "Output terminal ASCII bar chart of daily token consumption")
 	fs.BoolVar(&reportMode, "report", false, "Output summary report and statistics of recorded benchmarks")
-	fs.StringVar(&targetDate, "date", today, "Date of benchmark in YYYY-MM-DD format")
-	fs.StringVar(&transcript, "transcript", "", "Path to Claude Code or Antigravity JSONL transcript file")
+	fs.StringVar(&targetDate, "date", "", "Date of the benchmark row in YYYY-MM-DD format (REQUIRED with -record; no day is inferred from the clock)")
 	fs.StringVar(&csvPath, "csv", benchmark.DefaultCSVPath, "Path to benchmarks metrics.csv file")
 	fs.StringVar(&runCmd, "run", "", "Optional shell command to execute and measure wall clock and peak RSS")
 	fs.Int64Var(&wallClockMS, "wall-clock-ms", 0, "Manual wall clock execution time in milliseconds")
 	fs.Float64Var(&peakRSSMB, "peak-rss-mb", 0.0, "Manual peak RSS memory in megabytes")
-	fs.IntVar(&entries, "entries", 0, "Number of timesheet entries logged (defaults to querying storage store if 0)")
-	fs.StringVar(&storageDir, "storage-dir", "", "Directory of Tier 2 storage store to automatically count entries")
-	fs.Int64Var(&ceiling, "ceiling", benchmark.DefaultTokenCeiling, "Daily token budget ceiling for chart and compliance check")
+	fs.IntVar(&entries, "entries", 0, "Number of timesheet entries logged (defaults to the day's workflow record)")
+	fs.StringVar(&storageDir, "storage-dir", "", "Directory of the workflow record store holding the day's entries and editorial tokens")
+	fs.Int64Var(&ceiling, "ceiling", workflow.EditorialTokenCeiling, "Daily editorial-child token ceiling for chart and compliance check")
 
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
 
-	// Validate target date
-	targetDate = strings.TrimSpace(targetDate)
-	if !datePattern.MatchString(targetDate) {
-		fmt.Fprintf(errOut, "error: invalid -date %q: must be YYYY-MM-DD\n", targetDate)
+	// The ceiling has one home (workflow.EditorialTokenCeiling); a non-positive
+	// value is a usage error rather than a silently-defaulted chart.
+	if ceiling <= 0 {
+		fmt.Fprintf(errOut, "error: invalid -ceiling %d: must be positive\n", ceiling)
 		return ExitUsage
 	}
 
@@ -97,13 +93,34 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		reportMode = true
 	}
 
+	// A supplied -date is always validated as a REAL calendar date (workflow's
+	// parse, not just the YYYY-MM-DD shape), whichever mode reads it.
+	targetDate = strings.TrimSpace(targetDate)
+	if targetDate != "" {
+		if err := workflow.ValidateDate(targetDate); err != nil {
+			fmt.Fprintf(errOut, "error: invalid -date %q: must be a real YYYY-MM-DD date\n", targetDate)
+			return ExitUsage
+		}
+	}
+
 	// 1. Record Mode
 	if recordMode {
+		// The row's date is the OPERATOR's day: required, never derived from the
+		// clock (mirroring metrics.Import's --date gate). -chart/-report do not
+		// read it, so it is not required globally.
+		if targetDate == "" {
+			fmt.Fprintln(errOut, "error: -record requires an explicit -date YYYY-MM-DD; no day is inferred from the clock")
+			return ExitUsage
+		}
+
 		metric := benchmark.DailyMetric{
 			Date:        targetDate,
 			WallClockMS: wallClockMS,
 			PeakRSSMB:   peakRSSMB,
-			Entries:     entries,
+		}
+		if entries > 0 {
+			n := entries
+			metric.Entries = &n
 		}
 
 		// A. Execute command if requested
@@ -120,43 +137,30 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 			}
 		}
 
-		// B. Parse transcript if provided
-		if strings.TrimSpace(transcript) != "" {
-			usage, err := benchmark.ParseTranscriptFile(ctx, transcript)
-			if err != nil {
-				fmt.Fprintf(errOut, "error: parsing transcript %s: %v\n", transcript, err)
-				return ExitErr
-			}
-			metric.InputTokens = usage.InputTokens
-			metric.OutputTokens = usage.OutputTokens
-			metric.CacheTokens = usage.CacheTokens
-			metric.TotalTokens = usage.TotalTokens
-		}
-
-		// C. Auto-detect entries count from storage store if not provided
-		if metric.Entries <= 0 {
-			if store, sErr := storage.NewJSONFileStore(storageDir); sErr == nil {
-				if rec, gErr := store.GetDay(ctx, targetDate); gErr == nil {
-					metric.Entries = len(rec.Blocks)
-				}
-			}
-		}
+		// B. Record-fed columns. The token columns are the [AI] editorial-child
+		// lane, COPIES of the day's workflow record; nothing is parsed from a
+		// transcript. A date with no record (or no store) leaves the cells EMPTY
+		// (unknown), never 0. A record-read error leaves them empty too and WARNS:
+		// it is never swallowed into a zero. Wall clock and RSS come from the run
+		// itself and never depend on the store.
+		readDayColumns(ctx, targetDate, resolveStorageDir(storageDir), &metric, errOut)
 
 		// If peak RSS was not set, measure current process RSS
 		if metric.PeakRSSMB <= 0 {
 			metric.PeakRSSMB = benchmark.CurrentProcessRSSMB()
 		}
 
-		if err := benchmark.AppendMetric(csvPath, metric); err != nil {
-			fmt.Fprintf(errOut, "error: appending metric to %s: %v\n", csvPath, err)
+		if err := benchmark.UpsertMetric(csvPath, metric); err != nil {
+			fmt.Fprintf(errOut, "error: recording metric in %s: %v\n", csvPath, err)
 			return ExitErr
 		}
 
 		fmt.Fprintf(out, "Recorded benchmark metric for %s into %s:\n", targetDate, csvPath)
-		fmt.Fprintf(out, "  Wall clock: %d ms | Peak RSS: %.1f MB | Tokens (In/Out/Cache/Total): %d/%d/%d/%d | Entries: %d\n",
+		fmt.Fprintf(out, "  Wall clock: %d ms | Peak RSS: %.1f MB | Tokens (In/Out/Cache/Total): %s/%s/%s/%s | Entries: %s\n",
 			metric.WallClockMS, metric.PeakRSSMB,
-			metric.InputTokens, metric.OutputTokens, metric.CacheTokens, metric.TotalTokens,
-			metric.Entries,
+			formatOptInt64(metric.InputTokens), formatOptInt64(metric.OutputTokens),
+			formatOptInt64(metric.CacheTokens), formatOptInt64(metric.TotalTokens),
+			formatOptInt(metric.Entries),
 		)
 	}
 
@@ -180,11 +184,78 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 			fmt.Fprintf(errOut, "error: reading metrics from %s: %v\n", csvPath, err)
 			return ExitErr
 		}
-		if err := benchmark.RenderReport(out, metrics); err != nil {
+		if err := benchmark.RenderReport(out, metrics, ceiling); err != nil {
 			fmt.Fprintf(errOut, "error: rendering report: %v\n", err)
 			return ExitErr
 		}
 	}
 
 	return ExitOK
+}
+
+// readDayColumns fills the token columns and the entry count from the day's
+// workflow record, the same RecordSource the metrics aggregate reads. An unknown
+// measurement becomes a nil cell (UNKNOWN), never a zero.
+func readDayColumns(ctx context.Context, date, storageDir string, metric *benchmark.DailyMetric, errOut io.Writer) {
+	store, err := workflow.NewJSONFileStore(storageDir)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: workflow record store unavailable for %s; token and entry cells stay unknown: %v\n", date, err)
+		return
+	}
+	var src metrics.RecordSource = store
+	rec, err := src.GetDay(ctx, date)
+	if err != nil {
+		if !errors.Is(err, workflow.ErrRecordNotFound) {
+			fmt.Fprintf(errOut, "warning: reading the workflow record for %s; token and entry cells stay unknown: %v\n", date, err)
+		}
+		return
+	}
+	if rec.Usage != nil {
+		metric.InputTokens = knownValue(rec.Usage.EditorialInput)
+		metric.OutputTokens = knownValue(rec.Usage.EditorialOutput)
+		metric.CacheTokens = knownValue(rec.Usage.EditorialCache)
+		metric.TotalTokens = knownValue(rec.Usage.Editorial)
+	}
+	// An explicit -entries value is the operator's; otherwise the record's
+	// confirmed intervals are the day's entries.
+	if metric.Entries == nil {
+		n := len(rec.Confirmed)
+		metric.Entries = &n
+	}
+}
+
+// knownValue maps a workflow Measurement to a nil-vs-value cell: an unknown
+// measurement is nil, never 0.
+func knownValue(m workflow.Measurement) *int64 {
+	if !m.Known {
+		return nil
+	}
+	v := m.Value
+	return &v
+}
+
+// resolveStorageDir defaults --storage-dir to ~/.timesheet/records, the same
+// default the workflow CLI uses.
+func resolveStorageDir(dir string) string {
+	if d := strings.TrimSpace(dir); d != "" {
+		return d
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".timesheet", "records")
+	}
+	return ".timesheet/records"
+}
+
+func formatOptInt64(v *int64) string {
+	if v == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+func formatOptInt(v *int) string {
+	if v == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d", *v)
 }

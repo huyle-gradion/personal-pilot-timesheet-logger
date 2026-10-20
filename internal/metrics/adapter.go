@@ -13,12 +13,36 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
 // ErrUnknownProvider is returned when provider selection cannot identify a
 // transcript format. Selection NEVER guesses: an unrecognized transcript fails
 // closed.
 var ErrUnknownProvider = errors.New("metrics: unknown provider transcript format")
+
+// ErrDateRequired is returned when an import supplies no explicit --date. A day
+// is never inferred from the transcript or the clock: nothing lands in a day's
+// lane without an operator-stated day.
+var ErrDateRequired = errors.New("metrics: import requires an explicit --date YYYY-MM-DD; no day is inferred from the transcript or the clock")
+
+// ErrProviderMismatch is returned when a forced --provider parses the transcript
+// to nothing while another REGISTERED adapter's Detect recognizes it. Refusing is
+// the owner decision: an unreadable-by-this-provider transcript is never written
+// as an empty record.
+var ErrProviderMismatch = errors.New("metrics: transcript provider mismatch")
+
+// ErrUnreadableTranscript is returned when a transcript parses to no calls and no
+// registered adapter recognizes it. It is refused rather than written as an empty
+// record (refuse-all is the owner-approved arm).
+var ErrUnreadableTranscript = errors.New("metrics: transcript is unreadable: no call carried a usage object")
+
+// detectScanWindowLines bounds Guard 1's diagnosis to the first 32 non-empty
+// lines. Detect was built for `auto` on ONE header line; validating a whole file
+// with it would refuse legitimate imports whose first line is not the probe line
+// (resumed files, leading queue/snapshot lines).
+const detectScanWindowLines = 32
 
 // ErrTranscriptTooLarge is returned when a transcript exceeds MaxTranscriptBytes.
 var ErrTranscriptTooLarge = errors.New("metrics: transcript exceeds maximum size")
@@ -40,6 +64,11 @@ type Adapter interface {
 	Parse(ctx context.Context, r io.Reader) (RunRecord, error)
 }
 
+// adapters returns every REGISTERED adapter in auto-detection order. Adding a
+// provider is one entry here and one case in SelectAdapter: there is no dispatch
+// table.
+func adapters() []Adapter { return []Adapter{piAdapter{}, claudeAdapter{}} }
+
 // SelectAdapter chooses an adapter for the requested provider. provider is
 // "auto", "pi", or "claude". For "auto" (or empty) it runs Detect over the
 // header in order and returns ErrUnknownProvider when nothing matches.
@@ -50,7 +79,7 @@ func SelectAdapter(provider string, header []byte) (Adapter, error) {
 	case "claude":
 		return claudeAdapter{}, nil
 	case "", "auto":
-		for _, a := range []Adapter{piAdapter{}, claudeAdapter{}} {
+		for _, a := range adapters() {
 			if a.Detect(header) {
 				return a, nil
 			}
@@ -61,11 +90,41 @@ func SelectAdapter(provider string, header []byte) (Adapter, error) {
 	}
 }
 
+// detectAdapter runs every registered adapter's UNCHANGED Detect logic over the
+// first detectScanWindowLines non-empty lines and returns the first match, or nil
+// when nothing matches. It is used ONLY to diagnose an empty parse (Guard 1),
+// never to validate a readable one.
+func detectAdapter(data []byte) Adapter {
+	remaining := data
+	for line := 0; line < detectScanWindowLines; {
+		var raw []byte
+		if nl := bytes.IndexByte(remaining, '\n'); nl < 0 {
+			raw, remaining = remaining, nil
+		} else {
+			raw, remaining = remaining[:nl], remaining[nl+1:]
+		}
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) > 0 {
+			line++
+			for _, a := range adapters() {
+				if a.Detect(trimmed) {
+					return a
+				}
+			}
+		}
+		if len(remaining) == 0 {
+			break
+		}
+	}
+	return nil
+}
+
 // ImportOptions tunes Import.
 type ImportOptions struct {
 	// Provider is "auto" (default), "pi", or "claude".
 	Provider string
-	// Date overrides the transcript-derived date when non-empty.
+	// Date is the operator's explicit day (YYYY-MM-DD). It is REQUIRED: no day is
+	// inferred from the transcript or the clock.
 	Date string
 	// Commit/WorkflowVersion/ConfigMode/OptimizationChange are non-secret run
 	// annotations.
@@ -78,9 +137,25 @@ type ImportOptions struct {
 // Import reads a transcript file, detects its provider, parses it, and returns a
 // finalized RunRecord. ContentHash is the sha256 of the raw file bytes; RunID is
 // the session id when present, else "sha256:"+ContentHash.
+//
+// Two guards fail closed, both AFTER a parse that produced no call:
+//   - ErrProviderMismatch when another registered adapter recognizes the
+//     transcript, naming the requested and the detected provider;
+//   - ErrUnreadableTranscript when nothing does.
+//
+// A parse that produced calls NEVER refuses.
 func Import(ctx context.Context, path string, opts ImportOptions) (RunRecord, error) {
 	if ctx == nil {
 		return RunRecord{}, errors.New("metrics: nil context")
+	}
+	// The day is an operator input, never derived: no transcript timestamp and no
+	// clock value is ever used to attribute a run to a day.
+	date := strings.TrimSpace(opts.Date)
+	if date == "" {
+		return RunRecord{}, ErrDateRequired
+	}
+	if err := workflow.ValidateDate(date); err != nil {
+		return RunRecord{}, fmt.Errorf("metrics: invalid --date %q: %w", date, err)
 	}
 	data, err := readTranscript(path)
 	if err != nil {
@@ -98,6 +173,17 @@ func Import(ctx context.Context, path string, opts ImportOptions) (RunRecord, er
 		return RunRecord{}, err
 	}
 
+	// Guard 1: refuse, never write an empty record. The harm exists only where the
+	// parse produced no call, so a readable import is never refused. Observations
+	// are not persisted on a RunRecord (they only derive durations), so the
+	// observable empty-parse condition is the call set.
+	if len(rec.Calls) == 0 {
+		if detected := detectAdapter(data); detected != nil && detected.Name() != adapter.Name() {
+			return RunRecord{}, fmt.Errorf("%w: requested %q, detected %q", ErrProviderMismatch, adapter.Name(), detected.Name())
+		}
+		return RunRecord{}, ErrUnreadableTranscript
+	}
+
 	sum := sha256.Sum256(data)
 	rec.ContentHash = hex.EncodeToString(sum[:])
 	if strings.TrimSpace(rec.RunID) == "" {
@@ -107,15 +193,7 @@ func Import(ctx context.Context, path string, opts ImportOptions) (RunRecord, er
 			rec.RunID = "sha256:" + rec.ContentHash
 		}
 	}
-	if d := strings.TrimSpace(opts.Date); d != "" {
-		rec.Date = d
-	}
-	// F9: FAIL CLOSED. A run whose date is neither derivable from the transcript
-	// nor supplied with --date is never written with an empty Date (it would be
-	// unlistable and unaggregatable).
-	if strings.TrimSpace(rec.Date) == "" {
-		return RunRecord{}, errors.New("metrics: cannot derive the run date from the transcript; pass --date YYYY-MM-DD")
-	}
+	rec.Date = date
 	rec.Commit = opts.Commit
 	rec.WorkflowVersion = opts.WorkflowVersion
 	rec.ConfigMode = opts.ConfigMode
@@ -288,8 +366,7 @@ func buildRun(in runParts) RunRecord {
 		Cancelled:   in.cancelled,
 		ClosingTurn: in.closingTurn,
 	})
-	if !in.startedAt.IsZero() {
-		rec.Date = in.startedAt.UTC().Format("2006-01-02")
-	}
+	// The day is NEVER derived from the transcript: Import requires an explicit
+	// --date and assigns it after the parse.
 	return rec
 }
