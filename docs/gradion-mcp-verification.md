@@ -270,3 +270,19 @@ New blockers (B5, B6):
 
 No secret was displayed or committed; no Keychain item was created, modified, or
 replaced; no remote write was performed.
+
+## 10. Vendor bundle boundary (2026-10-15)
+
+The vendor bundle at `references/gradion-workspace-skill-antigravity/` is a
+deliberately untracked local copy of a **messaging**-product skill bundle. It is
+not the timesheet tool contract, and nothing under `references/` can be reviewed
+through the repository. See `docs/gradion-vendor-bundle.md`.
+
+The `tools/list` evidence in this document remains authoritative for the
+timesheet tool contract. Two cautions apply when reading the bundle:
+
+- **HIGH, transport surface.** The bundle documents REST plus a REST app-proxy
+  and never mentions native MCP JSON-RPC at `/api/mcp`, the endpoint our client
+  speaks.
+- **HIGH, example tool mismatch.** The bundle's `log_hours` example with
+  `{project, hours}` does not match our live-verified `timesheet__log_time`.
