@@ -2611,6 +2611,21 @@ Cleanup: both local branches deleted with `-d` only (the records-carrier deletio
 Next gate and blockers: OWNER-DECISIONS 1-7 of the design await the owner before/with the implementation packet; the implementation slice (#69's own) is the next coding work, cut per the design's boundaries; #73 and #24 follow in the design's stated order. The queue's remaining items unchanged; #56 mode 2 remains the OWNER'S. Production submission remains blocked.
 ```
 
+```text
+2026-10-20 14:52 +0700 / OWNER-APPROVAL-69-DESIGN / recorded on the driving session's transcription, with the owner's one-word reply as the instrument
+THE INSTRUMENT: the owner replied "approve and handoff for the next agent" at 2026-10-20 ~14:52 local, in reply to the driving session's report that carried the design's decision list and asked him to take or delegate the seven OWNER-DECISION items (docs/benchmark-rewiring.md, "Owner decisions required"). The approval is WHOLE over that enumerated list; the driving session records it as a per-item recording of what was approved, and the owner may re-open any item individually.
+THE SEVEN, RESOLVED AS APPROVED (each per the design's stated recommendation):
+1. ADR-0006 amendment for the recorded refusals (ADR-0006:119-120 "the legacy code is left as-is" and :139-141 "is not changed", plus docs/timesheet-redesign.md:147) IS approved, WITH the number confirmation: 1000 is the only surviving cost ceiling, benchmark's DefaultTokenCeiling=600 is DELETED, not re-pointed. The amendment text is executed within the #69 implementation packet as a deliverable (not pre-drafted here).
+2. CSV: the file is KEPT with the design's §7 column definitions (the only wall-clock/RSS store); the record owns the token lane, the CSV keeps the day lane.
+3. ADR-0006 amendment for the §4 gate (the transcript-derived-date blessing at :35-36 is tightened to explicit --date) IS approved; executed in the same packet.
+4. `metrics run` / `metrics aggregate` KEEP their today default (no session lane, no gate) — the owner approves the design's out-of-scope statement; no change in that packet.
+5. Legacy fixtures RETIRE (both parser fixtures, sample_antigravity.jsonl and sample_claude.jsonl, no consumer after the parser retirement) — the recorded leave-untouched default (state.md:2372) is SUPERSEDED by this approval; retires rather than renames.
+6. The unreadable-refusal class (Guard 1's second arm) is APPROVED for every provider — refuse-all, not forced-case-only, not the labelled row.
+7. Ceiling scope CONFIRMED: 1000 governs the editorial-child token lane only; harness-session tokens remain ceiling-free, no number invented for them.
+WHAT THIS AUTHORIZES, and what it does not: the implementation packet for #69's own slice may now be written and executed per the design's slice boundaries (§1 retirement, §2 constant, §3 record-reading mechanism, §4 gate, §5 guards, §7 CSV, R1-R9, the two ADR amendments as deliverables 1 and 3), with the #73 adapter and #24 packaging still bounded to their own slices. It does NOT authorize: merging PR #95 (that is the next slice's merge-ordering step), any production timesheet write, Gradion access, Keychain modification, or #56 mode 2 (STILL the owner's alone).
+ATTRIBUTION: approval spoken by the owner (huyle-gradion); recorded by the driving session (GLM-5.3-Flash, OpenCode) by transcription, at 14:52 local, the message quoted: "approve and handoff for the next agent".
+```
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
