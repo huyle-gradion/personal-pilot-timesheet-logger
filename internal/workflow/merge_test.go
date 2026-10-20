@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -240,4 +241,57 @@ func TestNoTimeSlotInferenceFunction(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestOperationOutcome_OriginErrorCodeOmitemptyAndHashNeutral specifies the
+// ADDITIVE OperationOutcome.OriginErrorCode contract: a row with an empty value
+// marshals with NO origin_error_code key and a non-empty value serialises it, so
+// a legacy record marshals byte-identically. It further asserts the field does not
+// feed LocalFingerprint.
+func TestOperationOutcome_OriginErrorCodeOmitemptyAndHashNeutral(t *testing.T) {
+	legacy := OperationOutcome{
+		OperationKey: "k1", LocalID: "c1", Action: string(PlanOpEdit), Status: OutcomeUncertain,
+		Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", Description: "work",
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy outcome: %v", err)
+	}
+	if strings.Contains(string(data), "origin_error_code") {
+		t.Fatalf("an empty OriginErrorCode must be omitted, got %s", data)
+	}
+
+	stamped := legacy
+	stamped.OriginErrorCode = "GRADION_WRITE_CONTENT_MISMATCH"
+	data, err = json.Marshal(stamped)
+	if err != nil {
+		t.Fatalf("marshal stamped outcome: %v", err)
+	}
+	if !strings.Contains(string(data), `"origin_error_code":"GRADION_WRITE_CONTENT_MISMATCH"`) {
+		t.Fatalf("a non-empty OriginErrorCode must be serialized, got %s", data)
+	}
+
+	rec := Record{
+		SchemaVersion: SchemaVersion,
+		Date:          "2026-10-06",
+		Confirmed: []ConfirmedInterval{{
+			ID: "c1", Date: "2026-10-06", StartTime: "09:00", EndTime: "10:00", ClassificationID: "cls-1",
+		}},
+	}
+	f1 := LocalFingerprint(rec)
+
+	// LocalFingerprint hashes confirmed intervals, review decisions and the
+	// plan-relevant mapping fields; outcome rows participate in NONE of them, so
+	// adding outcome rows must not move it.
+	rec.Outcomes = []OperationOutcome{legacy, stamped}
+	if LocalFingerprint(rec) != f1 {
+		t.Error("OperationOutcome.OriginErrorCode must not feed LocalFingerprint")
+	}
+
+	// PlanHash is sha256 over the canonical JSON of
+	// SubmissionPlan{Date, LocalFingerprint, RemoteObservedAt, RemoteComplete,
+	// Operations}. No outcome input participates, so "an outcome field does not
+	// feed PlanHash" holds by construction and is recorded here as a statement of
+	// the contract rather than asserted (a comparison over the same plan value
+	// would be vacuous).
 }

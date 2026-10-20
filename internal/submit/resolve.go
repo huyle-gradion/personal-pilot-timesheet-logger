@@ -171,11 +171,15 @@ func adoptUnresolved(rec *workflow.Record, o workflow.OperationOutcome, d Resolu
 	return ApplyReconcile(rec, res, now)
 }
 
-// markNotApplied resolves an operation as failed (never applied remotely).
+// markNotApplied resolves an operation as failed (never applied remotely). The
+// code the row carried on entry is preserved in OriginErrorCode before the
+// resolution code overwrites it, so the originating failure is not erased.
 func markNotApplied(rec *workflow.Record, o workflow.OperationOutcome, now time.Time) {
+	origin := o.ErrorCode
 	resolved := o
 	resolved.Status = workflow.OutcomeFailed
 	resolved.Resolved = true
+	resolved.OriginErrorCode = origin
 	resolved.ErrorCode = CodeResolvedNotApplied
 	resolved.RecordedAt = now
 	workflow.UpsertOutcome(rec, resolved)

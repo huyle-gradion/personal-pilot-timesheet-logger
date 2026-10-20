@@ -3,6 +3,7 @@ package submit
 import (
 	"testing"
 
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/gradion"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -84,6 +85,64 @@ func TestResolveUnresolved_NotAppliedMarksFailed(t *testing.T) {
 	}
 	if blocked, reasons := RestartGate(rec); blocked {
 		t.Errorf("a resolved failure must not block the restart gate, got %v", reasons)
+	}
+}
+
+// DEFECT-6: marking a row not applied keeps the originating failure code in the
+// ADDITIVE OriginErrorCode instead of erasing it. The row's ErrorCode stays the
+// resolution code, and every pre-write field (all six key inputs, plus
+// ClassificationID and IntentAt) is asserted untouched; RecordedAt is stamped
+// by the path by design and not part of the claim.
+func TestResolveUnresolved_NotAppliedPreservesOriginCode(t *testing.T) {
+	rec := reviewedRecord()
+	key := workflow.DeriveOperationKey(workflow.OperationOutcome{
+		Date: testDate, Action: string(workflow.PlanOpEdit), LocalID: "c1",
+		StartTime: "09:00", EndTime: "10:00",
+	})
+	const origin = gradion.CodeWriteContentMismatch
+	rec.Outcomes = []workflow.OperationOutcome{{
+		OperationKey: key, LocalID: "c1", RemoteID: "remote-1", Action: string(workflow.PlanOpEdit),
+		Status: workflow.OutcomeUncertain, Date: testDate, StartTime: "09:00", EndTime: "10:00",
+		Description: "work", ErrorCode: origin,
+	}}
+
+	if err := ResolveUnresolved(&rec, completeListing(), []Resolution{{OperationKey: key, Kind: ResolutionNotApplied}}, testNow); err != nil {
+		t.Fatalf("ResolveUnresolved: %v", err)
+	}
+	got := rec.Outcomes[0]
+	if got.Status != workflow.OutcomeFailed || !got.Resolved {
+		t.Fatalf("want failed+resolved, got %+v", got)
+	}
+	if got.ErrorCode != CodeResolvedNotApplied {
+		t.Errorf("the row's resolution code must stay the not-applied code, got %q", got.ErrorCode)
+	}
+	if got.OriginErrorCode != origin {
+		t.Errorf("want the originating failure preserved, got %q", got.OriginErrorCode)
+	}
+	if got.RecordedAt != testNow {
+		t.Errorf("the resolution stamp must be RecordedAt=now, got %v", got.RecordedAt)
+	}
+	if got.OperationKey != key || got.LocalID != "c1" || got.Action != string(workflow.PlanOpEdit) ||
+		got.Date != testDate || got.StartTime != "09:00" || got.EndTime != "10:00" ||
+		got.RemoteID != "remote-1" || got.Description != "work" ||
+		got.ClassificationID != "" || !got.IntentAt.IsZero() {
+		t.Errorf("marking not applied must not touch the row's other fields, got %+v", got)
+	}
+}
+
+// DEFECT-6: a row that carried no failure code gains no origin artifact.
+func TestMarkNotApplied_EmptyOriginStaysEmpty(t *testing.T) {
+	rec := reviewedRecord()
+	markNotApplied(&rec, workflow.OperationOutcome{
+		OperationKey: "k1", LocalID: "c1", Action: string(workflow.PlanOpCreate),
+	}, testNow)
+
+	got := rec.Outcomes[0]
+	if got.Status != workflow.OutcomeFailed || !got.Resolved || got.ErrorCode != CodeResolvedNotApplied {
+		t.Fatalf("want failed+resolved with the not-applied code, got %+v", got)
+	}
+	if got.OriginErrorCode != "" {
+		t.Errorf("an empty origin code must stay empty, got %q", got.OriginErrorCode)
 	}
 }
 

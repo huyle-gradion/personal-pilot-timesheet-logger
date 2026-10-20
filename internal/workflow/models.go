@@ -230,8 +230,13 @@ type OperationOutcome struct {
 	EndTime      string        `json:"end_time"`
 	Description  string        `json:"description"`
 	ErrorCode    string        `json:"error_code"`
-	Resolved     bool          `json:"resolved"`
-	RecordedAt   time.Time     `json:"recorded_at"`
+	// OriginErrorCode is the ADDITIVE (omitempty) stable code the row carried when
+	// it was resolved as not applied; preserved so the originating failure is not
+	// erased. An empty value (a legacy row) marshals byte-identically, and it is
+	// never part of the operation key.
+	OriginErrorCode string    `json:"origin_error_code,omitempty"`
+	Resolved        bool      `json:"resolved"`
+	RecordedAt      time.Time `json:"recorded_at"`
 	// IntentAt is stamped when the operation's pre-write intent was persisted.
 	// It is distinct from RecordedAt (last update time) and lets a restart
 	// report when an unresolved in_flight operation began.

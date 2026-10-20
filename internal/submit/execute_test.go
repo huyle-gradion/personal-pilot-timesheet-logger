@@ -573,6 +573,12 @@ func TestExecute_ClassificationOnlyEditMismatchResolvesFailed(t *testing.T) {
 	if got.Outcomes[0].Status != workflow.OutcomeFailed || !got.Outcomes[0].Resolved {
 		t.Fatalf("an unapplied classification-only edit must resolve failed, not confirmed: got %+v", got.Outcomes[0])
 	}
+	if got.Outcomes[0].ErrorCode != CodeResolvedNotApplied {
+		t.Errorf("the durable row must carry the resolution code, got %q", got.Outcomes[0].ErrorCode)
+	}
+	if got.Outcomes[0].OriginErrorCode != gradion.CodeWriteContentMismatch {
+		t.Errorf("the durable row must preserve the originating mismatch, got %q", got.Outcomes[0].OriginErrorCode)
+	}
 }
 
 // An absent read-back (found=false) leaves the write unresolved with the
