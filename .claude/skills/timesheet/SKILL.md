@@ -23,8 +23,8 @@ stops following the documented workflow. This skill therefore documents the
 interface **completely**, and the agent that uses it reads nothing else.
 
 **Allowed reads.** The skill's own files (`SKILL.md`, `workflow.md`), the config
-document, the workflow record, the daily note, and the binary's own `--help` output
-and standard output.
+document, the workflow record (its path is given under guided setup, question 5),
+the daily note, and the binary's own `--help` output and standard output.
 
 **Forbidden.** `internal/`, `cmd/`, `docs/`, any Go file, any `grep` of the
 repository source, and any `git log` archaeology of the implementation. Grep your own
@@ -220,10 +220,11 @@ Pass a JSON config document with `--config`. Start from the shipped
 `cmd/timesheet/timesheet.personal.example.json` (journal + local-only git): its
 PLACEHOLDER values — the `vault` root, the git `author`, and `local_repos`/`repos`
 — MUST be replaced with your own local paths before use. The document carries the
-evidence config (timezone and sources), the workflow record directory, the
-optional vault export settings, the Gradion MCP endpoint plus a
-`keychain:<service>` credential reference, the optional editorial config, and the
-project→classification map. Raw secrets are never placed in it.
+evidence config (timezone and sources), the workflow record directory (a ROOT —
+each day's state lives in its `workflow/` subdirectory; see the storage-directory
+question under guided setup), the optional vault export settings, the Gradion MCP
+endpoint plus a `keychain:<service>` credential reference, the optional editorial
+config, and the project→classification map. Raw secrets are never placed in it.
 
 `--offline` skips **ONLY** the Gradion remote; configured source fetches (calendar
 ICS, git, journal) still run. The per-source keys are listed under guided setup
@@ -264,7 +265,15 @@ answers the flow would (blank keeps the shown default):
    (`local`/`remote`/`both`), `local_repos`, `repos` (host-less `owner/repo`,
    required when `mode` includes remote), `author`, `project_map`; journal `vault`
    + `daily_dir` (relative to the vault); agent `path`.
-5. **Storage directory** — workflow records (default `~/.timesheet/records`).
+5. **Storage directory** — the records **root** (default `~/.timesheet/records`).
+   Each day's live state is `<root>/workflow/<date>.json`, i.e. by default
+   `~/.timesheet/records/workflow/<date>.json`. A legacy `<date>.json` sitting
+   **directly** in the root (`~/.timesheet/records/<date>.json`) is **SUPERSEDED**
+   by ADR-0005 and is not the day's state: no `timesheet` command reads it, so it
+   can be stale or pre-review while the day itself is already reviewed. Never open
+   it to answer "what is this day's state?" — ask the CLI (`review` / `preview`,
+   which read `<root>/workflow/` only). The legacy files are owner data: leave
+   them in place and treat them as superseded, never as a migration backlog.
 6. **Vault export root** (optional) and the **daily-note directory** relative to it.
 7. **Gradion** (optional) — `endpoint` + `credential_ref` (`keychain:<service>`).
 8. **Editorial** (optional) — `enabled`, `adapter` (`none`/`command`), `command`,

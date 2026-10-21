@@ -158,3 +158,50 @@ func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudeSkill_StoragePathNamesWorkflowDir pins the storage-path wording so a
+// legacy record file can never again be mistaken for a day's state (issue #75).
+//
+// The live store reads <root>/workflow/<date>.json only
+// (internal/workflow.JSONFileStore.recordPath). A legacy <root>/<date>.json is
+// the ADR-0005-superseded internal/storage shape and no cmd/timesheet command
+// reads it. Deleting either phrase — or restoring the old bare "workflow records
+// (default ~/.timesheet/records)" line — makes this test fail.
+func TestClaudeSkill_StoragePathNamesWorkflowDir(t *testing.T) {
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolving repo root: %v", err)
+	}
+	skillMDPath := filepath.Join(repoRoot, ".claude", "skills", "timesheet", "SKILL.md")
+	skillBytes, err := os.ReadFile(skillMDPath)
+	if err != nil {
+		t.Fatalf("failed to read SKILL.md at %s: %v", skillMDPath, err)
+	}
+	skillContent := string(skillBytes)
+
+	// The precise live path, the explicit superseded-legacy statement, and the
+	// owner-data instruction (leave the legacy files alone, never a migration
+	// backlog) that stops an agent from "fixing" them.
+	for _, want := range []string{
+		"`~/.timesheet/records/workflow/<date>.json`",
+		"`~/.timesheet/records/<date>.json`",
+		"SUPERSEDED",
+		"is not the day's state",
+		"never as a migration backlog",
+	} {
+		if !strings.Contains(skillContent, want) {
+			t.Errorf("SKILL.md must disambiguate the records path: missing %q "+
+				"(live state is <root>/workflow/<date>.json; a root-level <date>.json is superseded)", want)
+		}
+	}
+
+	// The old wording that let an agent read the legacy file must not come back.
+	// Matched as a whitespace-tolerant pattern so a reflowed or re-punctuated
+	// resurrection — "workflow records (default `...`)" in any wrap or ending —
+	// still fails, while the positive phrases above keep the paragraphs in place.
+	staleLine := regexp.MustCompile("workflow records\\s*\\(default\\s*`~/\\.timesheet/records`")
+	if loc := staleLine.FindString(skillContent); loc != "" {
+		t.Errorf("SKILL.md restored the ambiguous storage-directory wording %q: "+
+			"call the setting the records ROOT and name the live <root>/workflow/<date>.json path", loc)
+	}
+}
