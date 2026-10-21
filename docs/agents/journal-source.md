@@ -75,7 +75,11 @@ Decorative heading forms (e.g. an emoji prefix) are normalized. The following
 are always skipped:
 
 - checkbox tasks (`- [ ]` / `- [x]`), even when checked;
-- `priorities`, `standup`, and `todo` sections;
+- `priorities`, `standup`, `todo`, and `agent session` sections. These four are
+  CONTAINS matches on the NORMALIZED heading text (case and emoji decoration
+  ignored), so `### Agent session log` is skipped whole; a hyphenated
+  `Agent-session log` does not match, because normalization keeps hyphens but
+  turns underscores into spaces;
 - fenced code blocks;
 - the exact `internal/export` managed markers
   (`<!-- timesheet:begin v1 -->` … `<!-- timesheet:end -->`); an **unterminated**
@@ -85,6 +89,9 @@ are always skipped:
   generated `Timesheet — <date>` heading), and skip phrases apply to SECTION
   headings (level ≥ 2), never to a level-1 note title. An arbitrary heading that
   merely contains `timesheet`/`todo` never silently empties the note.
+
+The authoritative, code-grounded list of collected and skipped headings is
+[the journal collection note](../journal-collection.md).
 
 Markdown **multiline bullets** are supported: an indented continuation block
 belongs to the same item. Text is retained unchanged. A narrow, fixed set of

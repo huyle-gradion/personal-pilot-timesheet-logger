@@ -50,13 +50,16 @@ primary store.
   (`Work journal`, `quick capture`, `Daily impact` / `Daily impact and brag
   bullets (for performance review)`), including nested descendants with their
   full heading ancestry. Checkbox tasks (even checked), `priorities`/`standup`/
-  `todo` sections, fenced code, the exact `internal/export` managed markers,
-  and legacy `## Clustered timesheet` / generated `## Timesheet` sections are
-  skipped. The generated/legacy timesheet skip matches ONLY precise shapes (the
-  exact `clustered timesheet` heading or the exact generated `Timesheet — <date>`
-  heading), and skip phrases apply to SECTION headings (level ≥ 2), never to a
-  level-1 note title: an arbitrary heading that merely contains `timesheet`/`todo`
-  never silently empties a note. A malformed (unterminated) managed region fails
+  `todo`/`agent session` sections, fenced code, the exact `internal/export`
+  managed markers, and legacy `## Clustered timesheet` / generated `## Timesheet`
+  sections are skipped. The generated/legacy timesheet skip matches ONLY precise
+  shapes (the exact `clustered timesheet` heading or the exact generated
+  `Timesheet — <date>` heading), and skip phrases apply to SECTION headings
+  (level ≥ 2), never to a level-1 note title: an arbitrary heading that merely
+  contains `timesheet`/`todo` never silently empties a note.
+  *(Amended 2026-10-21 by #85.)* The skip-token set is a CONTAINS match on the
+  normalized heading text, and `agent session` is its fourth token. See
+  [Amendments](#amendments). A malformed (unterminated) managed region fails
   closed so exported text can never feed back.
 - **Narrow, fixed exclusions.** A small fixed set of whole-item authority/safety
   boilerplate strings and metrics-only entries are excluded, with a count
@@ -127,3 +130,36 @@ subcommand. The exact authority/safety boilerplate strings must be confirmed by
 the owner against the real vault (the current set is deliberately small). This
 record is mirrored in the vault as ADR-007. No UI or downstream (B) dependency is
 added.
+
+## Amendments
+
+### 2026-10-21 — the `agent session` skip token (#85)
+
+The skip-token set gained a fourth token, `agent session` (#85, merged as PR
+#91), so an agent's activity is never read as the owner's working time. The rest
+of this ADR stands as written: the collected headings, the timesheet shapes, the
+exclusions, identity, provenance and privacy clauses are unchanged.
+
+- **A fourth skip token, matched by containment.** The tokens are `priorities`,
+  `standup`, `todo` and `agent session`, and each is a CONTAINS match on the
+  NORMALIZED heading text (lowercased, markdown and emoji decoration stripped),
+  rather than an exact heading match. A heading such as `### Agent session log` is
+  skipped, and because skip applies to any heading in a bullet's ancestry the
+  whole subtree contributes nothing — including when it nests inside a recognized
+  `## Work journal` section, where the deepest recognized heading would otherwise
+  supply the family and the agent's leg would be collected as work time. It also
+  skips the subtree when an `agent session` heading sits above recognized
+  headings.
+- **The level-1 exception leaves one residual, stated rather than hidden.** Skip
+  phrases still never apply to a level-1 note title, so a note is never emptied by
+  an arbitrary title. For this token that leaves a residual: a note whose H1
+  contains `agent session` still collects a recognized section beneath it, so the
+  split has to hold at section level.
+- **The hyphen spelling is not covered.** Normalization preserves hyphens but
+  turns underscores into spaces, so `Agent_session log` matches the token and
+  `Agent-session log` does not. That asymmetry is inherited from the shared
+  normalization and applies to every token, `To-do` included; a note that
+  hyphenates the heading will not be skipped.
+
+The authoritative, code-grounded list of collected and skipped headings is
+[the journal collection note](../journal-collection.md).

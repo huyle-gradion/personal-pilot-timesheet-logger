@@ -82,11 +82,11 @@ collector agree, and this note is the repository-side record of the agreement.
 
 ## Older lists in this repository
 
-Three earlier documents describe the skip list as it stood before the
-`agent session` token, and they are the ones this note supersedes on that single
-point: `docs/adr/0007-journal-evidence-source.md` (the recognized-sections
-bullet), `docs/agents/journal-source.md` (the always-skipped list) and
-`docs/timesheet-redesign.md` (the narrative-collection paragraph). Their
-statements remain accurate about everything else. They were not edited here
-because this change is scoped to the collector, its tests and this note; the
-authoritative current list is this file.
+Three earlier documents described the skip list as it stood before the
+`agent session` token: `docs/adr/0007-journal-evidence-source.md` (the
+recognized-sections bullet), `docs/agents/journal-source.md` (the always-skipped
+list) and `docs/timesheet-redesign.md` (the narrative-collection paragraph). All
+three were brought into line with this note on 2026-10-21 (#92) — the ADR through
+an amendment, the other two in place — so each now names the four tokens. Their
+statements remain accurate about everything else, and this file stays the
+authoritative current list.
