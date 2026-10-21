@@ -159,6 +159,48 @@ func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
 	}
 }
 
+// TestClaudeSkill_ExecutionSurfaceRequirement pins the execution-surface
+// requirement (issue #74): every step requires running the `timesheet` binary, so
+// a harness with no shell cannot start the workflow and must say so and STOP
+// instead of improvising or reading the implementation. Deleting the requirement
+// block — or rewording it into an "improvise" allowance — fails here.
+//
+// The positive phrases are reflow-SENSITIVE: each must sit on one source line, so
+// rewrapping the block fails the test and a rewrap therefore has to re-check the
+// pins. A presence-only pin is deliberate: a sentence-window pattern for a
+// contradicting fallback cannot tell "no shell means STOP" from "no shell, read
+// the source", and this package already carries the requirement plus the
+// Boundary's stop rule, so the test does not police prose it cannot read.
+func TestClaudeSkill_ExecutionSurfaceRequirement(t *testing.T) {
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolving repo root: %v", err)
+	}
+	skillMDPath := filepath.Join(repoRoot, ".claude", "skills", "timesheet", "SKILL.md")
+	skillBytes, err := os.ReadFile(skillMDPath)
+	if err != nil {
+		t.Fatalf("failed to read SKILL.md at %s: %v", skillMDPath, err)
+	}
+	skillContent := string(skillBytes)
+
+	// The capability statement, the unavailable-and-STOP instruction, the
+	// no-improvisation rule, and the "no MCP server surface" fact.
+	for _, want := range []string{
+		"## Requirement: the harness must execute commands",
+		"shell (command execution)",
+		"the workflow is unavailable",
+		"**STOP** — do not read the implementation",
+		"do not improvise",
+		"MCP **server** surface exists today",
+		"ships only an MCP client",
+	} {
+		if !strings.Contains(skillContent, want) {
+			t.Errorf("SKILL.md missing the execution-surface requirement %q "+
+				"(a harness without a shell cannot run the workflow; it must be stated and STOP, not improvised)", want)
+		}
+	}
+}
+
 // TestClaudeSkill_StoragePathNamesWorkflowDir pins the storage-path wording so a
 // legacy record file can never again be mistaken for a day's state (issue #75).
 //

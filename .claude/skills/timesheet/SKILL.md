@@ -12,6 +12,16 @@ of its own**. Every deterministic decision lives in the shared core
 never parses the vault, never accounts, and never confirms, approves, or submits
 on its own.
 
+## Requirement: the harness must execute commands
+
+Every step below **requires running** the `timesheet` binary, so the harness **MUST**
+expose a shell (command execution). Without it the workflow is unavailable: name the
+missing capability and **STOP** — do not read the implementation, do not answer from
+the records by hand, do not improvise. Remediation: enable command execution in the
+agent's permissions, or use a shell-capable harness.
+No MCP **server** surface exists today: the repository ships only an MCP client
+transport for Gradion.
+
 ## Boundary: run the binary, never read the implementation
 
 **The binary is the contract.** The repository's design is one shared
