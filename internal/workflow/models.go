@@ -388,7 +388,7 @@ type EditorialUsage struct {
 }
 
 // Record is the durable per-day workflow document. It is stored separately from
-// the legacy storage.TimesheetRecord and never overwrites or migrates it.
+// the legacy timesheet record and never overwrites or migrates it.
 //
 // CollectedEvidence and Collection are ADDITIVE S3 fields (omitempty). They hold
 // the raw collected evidence and the collection summary for the day. The legacy

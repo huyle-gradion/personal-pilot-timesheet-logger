@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
 )
 
 // Typed operating errors. These are stable sentinels: callers branch on
@@ -85,7 +83,7 @@ type Store interface {
 	ListDays(ctx context.Context, fromDate, toDate string) ([]string, error)
 	UpdateDay(ctx context.Context, date string, mutate func(*Record) error) (*Record, error)
 	BeginDaySession(ctx context.Context, date string) (Session, error)
-	LoadLegacyDay(ctx context.Context, date string) (*storage.TimesheetRecord, error)
+	LoadLegacyDay(ctx context.Context, date string) (*LegacyRecord, error)
 }
 
 // Session is an exclusive day-writer session. The day lock is acquired by

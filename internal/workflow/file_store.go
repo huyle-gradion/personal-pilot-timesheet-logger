@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
 )
 
 var datePattern = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})$`)
@@ -29,15 +27,15 @@ var syncWorkflowDir = func(dir *os.File) error {
 }
 
 // JSONFileStore implements Store backed by atomic per-day JSON files under
-// <rootDir>/workflow. Legacy storage.TimesheetRecord files remain at
-// <rootDir>/<date>.json and are only ever read.
+// <rootDir>/workflow. Legacy timesheet records remain at <rootDir>/<date>.json
+// and are only ever read (see LegacyRecord).
 type JSONFileStore struct {
 	rootDir     string
 	workflowDir string
 }
 
 // NewJSONFileStore initializes the workflow store for the same records directory
-// callers already pass to storage.ResolveDataDir. It creates <rootDir>/workflow
+// callers already pass to the legacy resolver. It creates <rootDir>/workflow
 // with directory permission 0750.
 func NewJSONFileStore(rootDir string) (*JSONFileStore, error) {
 	resolved := filepath.Clean(strings.TrimSpace(rootDir))
@@ -339,9 +337,63 @@ func (s *JSONFileStore) ListDays(ctx context.Context, fromDate, toDate string) (
 	return dates, nil
 }
 
-// LoadLegacyDay reads a legacy storage.TimesheetRecord from <rootDir>/<date>.json.
+// FROZEN legacy wire types. These describe the artifact the retired
+// timesheet/storage packages wrote to <rootDir>/<date>.json. The struct shape and
+// JSON tags below are a byte-compatible copy of the wire format and MUST NOT be
+// "modernized": the owner's real files at ~/.timesheet/records/*.json must keep
+// decoding after those packages are deleted. Unknown keys are tolerated (no
+// DisallowUnknownFields) so an older or newer artifact still reads.
+//
+// LegacyBlock.Category is deliberately a plain string where the original was
+// timesheet.SemanticCategory: that type is a string with no MarshalJSON,
+// MarshalText, or UnmarshalJSON, so the wire form is identical. Do not reinstate a
+// semantic type here on the strength of a field-by-field diff against the deleted
+// package; tests/legacy_wire_differential_test.go records why while both exist.
+type LegacyRecord struct {
+	Date       string        `json:"date"`       // Format: "YYYY-MM-DD"
+	UpdatedAt  time.Time     `json:"updated_at"` // ISO-8601 UTC timestamp
+	Version    int           `json:"version"`    // Incremented on every upsert
+	TotalHours float64       `json:"total_hours"`
+	Blocks     []LegacyBlock `json:"blocks"`
+}
+
+type LegacyBlock struct {
+	ID           string        `json:"id"`
+	Source       string        `json:"source"`
+	Category     string        `json:"category"`
+	StartTime    string        `json:"startTime"`
+	EndTime      string        `json:"endTime"`
+	Date         string        `json:"date"`
+	Title        string        `json:"title"`
+	Description  string        `json:"description"`
+	Entries      []LegacyEntry `json:"entries"`
+	HasCollision bool          `json:"collision"`
+}
+
+type LegacyEntry struct {
+	ID          string               `json:"id"`
+	Source      string               `json:"source"`
+	Timestamp   string               `json:"timestamp"`
+	EndTime     string               `json:"endTime"`
+	Title       string               `json:"title"`
+	Description string               `json:"description"`
+	Metadata    *LegacyEntryMetadata `json:"metadata,omitempty"`
+}
+
+type LegacyEntryMetadata struct {
+	Status          string  `json:"status,omitempty"`
+	Location        *string `json:"location,omitempty"`
+	DurationMinutes int     `json:"duration_minutes,omitempty"`
+	AllDay          bool    `json:"all_day,omitempty"`
+	Transparent     bool    `json:"transparent,omitempty"`
+	Repo            string  `json:"repo,omitempty"`
+	Branch          string  `json:"branch,omitempty"`
+	PRNumber        int     `json:"pr_number,omitempty"`
+}
+
+// LoadLegacyDay reads a frozen LegacyRecord from <rootDir>/<date>.json.
 // It is read-only and never migrates or overwrites the legacy file.
-func (s *JSONFileStore) LoadLegacyDay(ctx context.Context, date string) (*storage.TimesheetRecord, error) {
+func (s *JSONFileStore) LoadLegacyDay(ctx context.Context, date string) (*LegacyRecord, error) {
 	Assert(ctx != nil, AssertWorkflowContextNil)
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -376,7 +428,7 @@ func (s *JSONFileStore) LoadLegacyDay(ctx context.Context, date string) (*storag
 		return nil, ErrRecordTooLarge
 	}
 
-	var record storage.TimesheetRecord
+	var record LegacyRecord
 	if err := json.Unmarshal(data, &record); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRecordCorrupt, err)
 	}

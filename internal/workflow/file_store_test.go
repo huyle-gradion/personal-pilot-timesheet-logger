@@ -7,13 +7,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
 )
 
 func TestValidateDate(t *testing.T) {
@@ -339,6 +337,50 @@ func TestJSONFileStore_NonRecordPayloadsFailClosed(t *testing.T) {
 	}
 }
 
+// legacyArtifactJSON is a frozen copy of what the retired timesheet/storage
+// packages wrote to <rootDir>/<date>.json. Tests read it as bytes instead of
+// building it through those packages, so the workflow package owns no runtime or
+// build dependency on code that is being deleted.
+const legacyArtifactJSON = `{
+  "date": "2026-10-08",
+  "updated_at": "2026-10-09T07:18:00.919721Z",
+  "version": 1,
+  "total_hours": 1.5,
+  "blocks": [
+    {
+      "id": "block-1",
+      "source": "git",
+      "category": "development",
+      "startTime": "09:00",
+      "endTime": "10:30",
+      "date": "2026-10-08",
+      "title": "Legacy work",
+      "description": "Frozen legacy artifact.",
+      "entries": [
+        {
+          "id": "entry-1",
+          "source": "git",
+          "timestamp": "2026-10-08T09:00:00+07:00",
+          "endTime": "2026-10-08T10:30:00+07:00",
+          "title": "Legacy commit",
+          "description": "Frozen entry.",
+          "metadata": {
+            "status": "confirmed",
+            "location": "Hanoi",
+            "duration_minutes": 90,
+            "all_day": false,
+            "transparent": false,
+            "repo": "huyle-gradion/personal-pilot-timesheet-logger",
+            "branch": "main",
+            "pr_number": 1
+          }
+        }
+      ],
+      "collision": false
+    }
+  ]
+}`
+
 // TestJSONFileStore_LegacyReadOnly proves legacy storage records are never
 // overwritten or migrated, and no remote mapping is ever inferred from them.
 func TestJSONFileStore_LegacyReadOnly(t *testing.T) {
@@ -346,23 +388,11 @@ func TestJSONFileStore_LegacyReadOnly(t *testing.T) {
 	ctx := context.Background()
 	date := "2026-10-08"
 
-	legacyStore, err := storage.NewJSONFileStore(root)
-	if err != nil {
-		t.Fatalf("failed to create legacy store: %v", err)
-	}
-	legacy := storage.TimesheetRecord{
-		Date:      date,
-		UpdatedAt: time.Now().UTC(),
-		Version:   1,
-		Blocks: []timesheet.TimeBlock{
-			{ID: "block-1", Date: date, StartTime: "09:00", EndTime: "10:00", Title: "Legacy work"},
-		},
-	}
-	if err := legacyStore.SaveDay(ctx, legacy); err != nil {
-		t.Fatalf("failed to save legacy day: %v", err)
+	legacyPath := filepath.Join(root, date+".json")
+	if err := os.WriteFile(legacyPath, []byte(legacyArtifactJSON), FilePermPrivate); err != nil {
+		t.Fatalf("failed to write legacy fixture: %v", err)
 	}
 
-	legacyPath := filepath.Join(root, date+".json")
 	before, err := os.ReadFile(legacyPath)
 	if err != nil {
 		t.Fatalf("failed to read legacy file: %v", err)
@@ -383,6 +413,9 @@ func TestJSONFileStore_LegacyReadOnly(t *testing.T) {
 	}
 	if len(loaded.Blocks) != 1 || loaded.Blocks[0].ID != "block-1" {
 		t.Errorf("expected legacy blocks returned, got %+v", loaded.Blocks)
+	}
+	if loaded.Date != date || loaded.Version != 1 {
+		t.Errorf("expected legacy date/version preserved, got %q v%d", loaded.Date, loaded.Version)
 	}
 
 	after, err := os.ReadFile(legacyPath)
@@ -406,6 +439,237 @@ func TestJSONFileStore_LegacyReadOnly(t *testing.T) {
 			t.Errorf("unexpected workflow record %q created from legacy data", entry.Name())
 		}
 	}
+}
+
+// TestJSONFileStore_LegacyUnknownKeysTolerated proves unknown-key tolerance is a
+// property of the LOADER, not just of the structs: a future
+// json.Decoder.DisallowUnknownFields inside LoadLegacyDay would fail the owner's
+// real files, and only a read through LoadLegacyDay catches that. Extra keys appear
+// at root, block, entry, and metadata level.
+func TestJSONFileStore_LegacyUnknownKeysTolerated(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	date := "2026-10-08"
+
+	artifact := `{
+  "date": "2026-10-08",
+  "updated_at": "2026-10-09T07:18:00.919721Z",
+  "version": 3,
+  "total_hours": 2.25,
+  "future_root_key": {"nested": [1, 2, 3]},
+  "blocks": [
+    {
+      "id": "block-1",
+      "category": "development",
+      "title": "Legacy work",
+      "future_block_key": 7,
+      "entries": [
+        {
+          "id": "entry-1",
+          "title": "Legacy commit",
+          "future_entry_key": "x",
+          "metadata": {"repo": "huyle-gradion/personal-pilot-timesheet-logger", "future_meta_key": true}
+        }
+      ],
+      "collision": true
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(root, date+".json"), []byte(artifact), FilePermPrivate); err != nil {
+		t.Fatalf("failed to write legacy fixture: %v", err)
+	}
+
+	wf, err := NewJSONFileStore(root)
+	if err != nil {
+		t.Fatalf("unexpected error creating workflow store: %v", err)
+	}
+
+	loaded, err := wf.LoadLegacyDay(ctx, date)
+	if err != nil {
+		t.Fatalf("LoadLegacyDay must tolerate unknown keys, got %v", err)
+	}
+	if loaded.Version != 3 || loaded.TotalHours != 2.25 || len(loaded.Blocks) != 1 {
+		t.Fatalf("known root fields lost alongside unknown keys: %+v", loaded)
+	}
+	block := loaded.Blocks[0]
+	if block.ID != "block-1" || block.Category != "development" || block.Title != "Legacy work" || !block.HasCollision {
+		t.Errorf("known block fields lost alongside unknown keys: %+v", block)
+	}
+	if len(block.Entries) != 1 || block.Entries[0].ID != "entry-1" || block.Entries[0].Title != "Legacy commit" {
+		t.Fatalf("known entry fields lost alongside unknown keys: %+v", block.Entries)
+	}
+	if block.Entries[0].Metadata == nil || block.Entries[0].Metadata.Repo != "huyle-gradion/personal-pilot-timesheet-logger" {
+		t.Errorf("known metadata fields lost alongside unknown keys: %+v", block.Entries[0].Metadata)
+	}
+}
+
+// TestLegacyRecord_FrozenWireFormat pins the frozen legacy wire format. The real
+// owner files at ~/.timesheet/records/*.json must keep decoding after the retired
+// timesheet and storage packages are deleted, so the JSON tags on
+// LegacyRecord/LegacyBlock/LegacyEntry/LegacyEntryMetadata are a contract, not an
+// implementation detail: any rename, retag, or reordering-visible change here is
+// silent data loss. The test decodes a fixture that carries every field, checks
+// each value, re-marshals it, and compares the exact key set. It also proves
+// unknown keys stay tolerated so artifacts written by other versions still read.
+// Note the limit: this test pins key NAMES and values, not numeric width — it would
+// not notice int widening to int64, which is why the encoder side is not part of the
+// compatibility claim (the types are decode-only in production).
+func TestLegacyRecord_FrozenWireFormat(t *testing.T) {
+	var record LegacyRecord
+	if err := json.Unmarshal([]byte(legacyArtifactJSON), &record); err != nil {
+		t.Fatalf("frozen artifact no longer decodes: %v", err)
+	}
+
+	if record.Date != "2026-10-08" {
+		t.Errorf("date: got %q", record.Date)
+	}
+	if got, want := record.UpdatedAt.UTC().Format(time.RFC3339Nano), "2026-10-09T07:18:00.919721Z"; got != want {
+		t.Errorf("updated_at: got %q, want %q", got, want)
+	}
+	if record.Version != 1 {
+		t.Errorf("version: got %d", record.Version)
+	}
+	if record.TotalHours != 1.5 {
+		t.Errorf("total_hours: got %v", record.TotalHours)
+	}
+	if len(record.Blocks) != 1 {
+		t.Fatalf("blocks: got %d", len(record.Blocks))
+	}
+
+	block := record.Blocks[0]
+	if block.ID != "block-1" || block.Source != "git" || block.Category != "development" ||
+		block.StartTime != "09:00" || block.EndTime != "10:30" || block.Date != "2026-10-08" ||
+		block.Title != "Legacy work" || block.Description != "Frozen legacy artifact." ||
+		block.HasCollision {
+		t.Errorf("block fields not preserved: %+v", block)
+	}
+	if len(block.Entries) != 1 {
+		t.Fatalf("entries: got %d", len(block.Entries))
+	}
+
+	entry := block.Entries[0]
+	if entry.ID != "entry-1" || entry.Source != "git" ||
+		entry.Timestamp != "2026-10-08T09:00:00+07:00" || entry.EndTime != "2026-10-08T10:30:00+07:00" ||
+		entry.Title != "Legacy commit" || entry.Description != "Frozen entry." {
+		t.Errorf("entry fields not preserved: %+v", entry)
+	}
+	if entry.Metadata == nil {
+		t.Fatal("entry metadata: got nil")
+	}
+	meta := entry.Metadata
+	if meta.Status != "confirmed" || meta.Location == nil || *meta.Location != "Hanoi" ||
+		meta.DurationMinutes != 90 || meta.AllDay || meta.Transparent ||
+		meta.Repo != "huyle-gradion/personal-pilot-timesheet-logger" || meta.Branch != "main" ||
+		meta.PRNumber != 1 {
+		t.Errorf("entry metadata not preserved: %+v", meta)
+	}
+
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("frozen artifact no longer encodes: %v", err)
+	}
+
+	var roundTripped map[string]any
+	if err := json.Unmarshal(encoded, &roundTripped); err != nil {
+		t.Fatalf("re-marshalled artifact is not valid JSON: %v", err)
+	}
+	assertExactKeys(t, "record", roundTripped, []string{"date", "updated_at", "version", "total_hours", "blocks"})
+
+	blocks, ok := roundTripped["blocks"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("blocks not re-encoded as an array: %v", roundTripped["blocks"])
+	}
+	blockMap, ok := blocks[0].(map[string]any)
+	if !ok {
+		t.Fatalf("block not re-encoded as an object: %v", blocks[0])
+	}
+	assertExactKeys(t, "block", blockMap,
+		[]string{"id", "source", "category", "startTime", "endTime", "date", "title", "description", "entries", "collision"})
+
+	entries, ok := blockMap["entries"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("entries not re-encoded as an array: %v", blockMap["entries"])
+	}
+	entryMap, ok := entries[0].(map[string]any)
+	if !ok {
+		t.Fatalf("entry not re-encoded as an object: %v", entries[0])
+	}
+	assertExactKeys(t, "entry", entryMap,
+		[]string{"id", "source", "timestamp", "endTime", "title", "description", "metadata"})
+
+	metadataMap, ok := entryMap["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata not re-encoded as an object: %v", entryMap["metadata"])
+	}
+	// all_day and transparent are `omitempty` bools: a false value is dropped,
+	// which is exactly what the retired encoder did. The fixture's false values
+	// must therefore not appear, and the true case is pinned below.
+	assertExactKeys(t, "metadata", metadataMap,
+		[]string{"status", "location", "duration_minutes", "repo", "branch", "pr_number"})
+
+	truthyMeta := *record.Blocks[0].Entries[0].Metadata
+	truthyMeta.AllDay = true
+	truthyMeta.Transparent = true
+	truthyEncoded, err := json.Marshal(truthyMeta)
+	if err != nil {
+		t.Fatalf("metadata with true bools did not encode: %v", err)
+	}
+	var truthyMap map[string]any
+	if err := json.Unmarshal(truthyEncoded, &truthyMap); err != nil {
+		t.Fatalf("re-marshalled metadata is not valid JSON: %v", err)
+	}
+	assertExactKeys(t, "metadata(true bools)", truthyMap,
+		[]string{"status", "location", "duration_minutes", "all_day", "transparent", "repo", "branch", "pr_number"})
+
+	// Unknown keys must stay tolerated: real artifacts may carry fields written
+	// by a version of the retired packages newer or older than this copy.
+	withUnknown := `{
+	  "date": "2026-10-08",
+	  "updated_at": "2026-10-09T07:18:00.919721Z",
+	  "version": 2,
+	  "total_hours": 0.5,
+	  "future_top_level": {"nested": true},
+	  "blocks": [
+	    {
+	      "id": "block-1",
+	      "category": "development",
+	      "future_block_field": 7,
+	      "entries": [{"id": "entry-1", "future_entry_field": "x"}],
+	      "collision": true
+	    }
+	  ]
+	}`
+	var tolerant LegacyRecord
+	if err := json.Unmarshal([]byte(withUnknown), &tolerant); err != nil {
+		t.Fatalf("unknown keys must not fail decode: %v", err)
+	}
+	if tolerant.Version != 2 || tolerant.TotalHours != 0.5 || len(tolerant.Blocks) != 1 ||
+		tolerant.Blocks[0].ID != "block-1" || tolerant.Blocks[0].Category != "development" ||
+		!tolerant.Blocks[0].HasCollision || len(tolerant.Blocks[0].Entries) != 1 ||
+		tolerant.Blocks[0].Entries[0].ID != "entry-1" {
+		t.Errorf("known fields not preserved alongside unknown keys: %+v", tolerant)
+	}
+}
+
+func assertExactKeys(t *testing.T, label string, object map[string]any, want []string) {
+	t.Helper()
+	if len(object) != len(want) {
+		t.Fatalf("%s keys: got %v, want %v", label, sortedKeys(object), want)
+	}
+	for _, key := range want {
+		if _, ok := object[key]; !ok {
+			t.Errorf("%s missing key %q (got %v)", label, key, sortedKeys(object))
+		}
+	}
+}
+
+func sortedKeys(object map[string]any) []string {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // TestJSONFileStore_DirectorySyncFailureSurfaces proves that a directory fsync
