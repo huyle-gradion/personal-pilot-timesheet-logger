@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/calendar"
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 )
 
 // Named finite bounds with explicit units (TigerStyle).
@@ -28,6 +27,14 @@ const (
 	MaxFormatLengthBytes   int           = 16               // 16 bytes maximum format argument length
 	MaxEmailLengthBytes    int           = 256              // 256 bytes maximum email argument length
 	CommandTimeoutDuration time.Duration = 30 * time.Second // 30s overall command execution deadline
+)
+
+// Operating exit codes conforming to sysexits.h.
+const (
+	ExitOK        = 0
+	ExitUsage     = 64 // EX_USAGE (command line usage error / preflight missing config)
+	ExitErr       = 1
+	ExitFlagParse = 2 // flag.ContinueOnError convention (unchanged by ADR-0004 pre-flight)
 )
 
 // Invariant assertion identifiers (TigerStyle).
@@ -45,19 +52,25 @@ func Assert(condition bool, invariantID string) {
 }
 
 // Operating error codes for CLI level errors (TigerStyle).
+//
+// Missing configuration is NOT one of these: it is reported by the pre-flight
+// step (ADR-0004) as a guided message plus EX_USAGE, so CAL_CLI_MISSING_SOURCE
+// and CAL_CLI_KEYCHAIN_FAILED are retired with the inline resolver.
 const (
-	ErrCodeMissingSource   = "CAL_CLI_MISSING_SOURCE"
 	ErrCodeInvalidDate     = "CAL_CLI_INVALID_DATE"
 	ErrCodeInvalidTimezone = "CAL_CLI_INVALID_TIMEZONE"
 	ErrCodeInvalidFormat   = "CAL_CLI_INVALID_FORMAT"
 	ErrCodeBoundExceeded   = "CAL_CLI_BOUND_EXCEEDED"
 	ErrCodeEnvFailed       = "CAL_CLI_ENV_FAILED"
 	ErrCodeTimeout         = "CAL_CLI_TIMEOUT"
-	ErrCodeKeychainFailed  = "CAL_CLI_KEYCHAIN_FAILED"
 )
 
 // Config represents validated CLI options.
 type Config struct {
+	// ExplicitSource is the source named on the command line (-file, then -url).
+	// It is empty when the source must come from the environment or Keychain.
+	ExplicitSource string
+	// Source is the source resolved by the pre-flight step in run().
 	Source          string
 	Date            string
 	Timezone        string
@@ -116,8 +129,15 @@ func loadEnv(path string) error {
 	return scanner.Err()
 }
 
-// parseConfig parses CLI flags and enforces finite bounds on all string inputs.
-func parseConfig(ctx context.Context, args []string, stderr io.Writer) (*Config, int, error) {
+// parseConfig parses CLI flags and enforces the flag-level bounds (date,
+// timezone, format). The source and user-email bounds depend on the resolved
+// credential, so they are applied in run() after the pre-flight step.
+//
+// It performs NO credential lookup: source resolution (environment, then
+// Keychain) is the pre-flight step in run(), per ADR-0004. The explicit
+// command-line source is carried through unchanged so the pre-flight step can
+// short-circuit on it.
+func parseConfig(args []string, stderr io.Writer) (*Config, int, error) {
 	fs := flag.NewFlagSet("fetch-calendar", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -132,44 +152,24 @@ func parseConfig(ctx context.Context, args []string, stderr io.Writer) (*Config,
 	skipTransparentFlag := fs.Bool("skip-transparent", false, "Filter out transparent (available/free) calendar events")
 
 	if err := fs.Parse(args); err != nil {
-		return nil, 2, err
+		return nil, ExitFlagParse, err
 	}
 
-	source := *fileFlag
-	if source == "" {
-		source = *urlFlag
-	}
-	if source == "" {
-		source = os.Getenv("GCAL_ICS_URL")
-	}
-	if source == "" {
-		// Keychain is the authoritative secret store. Only a genuine NotFound
-		// (absent item, or unavailable security tooling) falls through to the
-		// missing-source error. Any other failure (timeout, access failure,
-		// malformed/oversized output, ...) stops resolution and is surfaced as
-		// a typed, secret-free error rather than silently downgraded.
-		tok, kcErr := keychain.Lookup(ctx, keychain.ServiceCalendarFeed)
-		switch {
-		case kcErr == nil:
-			source = tok
-		case keychain.IsNotFound(kcErr):
-			// Absent item: fall through to the missing-source error.
-		default:
-			return nil, 1, fmt.Errorf("[%s] keychain lookup for %s failed: %w", ErrCodeKeychainFailed, keychain.ServiceCalendarFeed, kcErr)
-		}
+	// Explicit command-line source only: -file wins over -url. Environment and
+	// Keychain resolution belongs to the pre-flight step.
+	explicitSource := *fileFlag
+	if explicitSource == "" {
+		explicitSource = *urlFlag
 	}
 
-	if len(source) > int(MaxSourceLengthBytes) {
-		return nil, 1, fmt.Errorf("[%s] source length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxSourceLengthBytes)
-	}
 	if len(*dateFlag) > MaxDateLengthBytes {
-		return nil, 1, fmt.Errorf("[%s] date length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxDateLengthBytes)
+		return nil, ExitErr, fmt.Errorf("[%s] date length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxDateLengthBytes)
 	}
 	if len(*tzFlag) > MaxTimezoneLengthBytes {
-		return nil, 1, fmt.Errorf("[%s] timezone length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxTimezoneLengthBytes)
+		return nil, ExitErr, fmt.Errorf("[%s] timezone length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxTimezoneLengthBytes)
 	}
 	if len(*formatFlag) > MaxFormatLengthBytes {
-		return nil, 1, fmt.Errorf("[%s] format length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxFormatLengthBytes)
+		return nil, ExitErr, fmt.Errorf("[%s] format length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxFormatLengthBytes)
 	}
 
 	userEmail := strings.TrimSpace(*userEmailFlag)
@@ -179,19 +179,9 @@ func parseConfig(ctx context.Context, args []string, stderr io.Writer) (*Config,
 	if userEmail == "" {
 		userEmail = strings.TrimSpace(os.Getenv("USER_EMAIL"))
 	}
-	if userEmail == "" {
-		userEmail = calendar.ExtractEmailFromICSURL(source)
-	}
-	if len(userEmail) > MaxEmailLengthBytes {
-		return nil, 1, fmt.Errorf("[%s] user email length exceeds limit of %d bytes", ErrCodeBoundExceeded, MaxEmailLengthBytes)
-	}
 
 	if *formatFlag != "json" && *formatFlag != "entry" {
-		return nil, 1, fmt.Errorf("[%s] invalid format %q, allowed options: 'json', 'entry'", ErrCodeInvalidFormat, *formatFlag)
-	}
-
-	if source == "" {
-		return nil, 1, fmt.Errorf("[%s] no iCal source provided. Set GCAL_ICS_URL or pass -url or -file", ErrCodeMissingSource)
+		return nil, ExitErr, fmt.Errorf("[%s] invalid format %q, allowed options: 'json', 'entry'", ErrCodeInvalidFormat, *formatFlag)
 	}
 
 	skipTransparent := *skipTransparentFlag
@@ -202,7 +192,7 @@ func parseConfig(ctx context.Context, args []string, stderr io.Writer) (*Config,
 	}
 
 	return &Config{
-		Source:          source,
+		ExplicitSource:  explicitSource,
 		Date:            *dateFlag,
 		Timezone:        *tzFlag,
 		Format:          *formatFlag,
@@ -210,7 +200,7 @@ func parseConfig(ctx context.Context, args []string, stderr io.Writer) (*Config,
 		NoCache:         *noCacheFlag,
 		UserEmail:       userEmail,
 		SkipTransparent: skipTransparent,
-	}, 0, nil
+	}, ExitOK, nil
 }
 
 // run coordinates the calendar fetch, parsing, and formatting under context cancellation.
@@ -219,29 +209,50 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	if err := loadEnv(".env"); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
+		return ExitErr
 	}
 
-	cfg, exitCode, err := parseConfig(ctx, args, stderr)
+	cfg, exitCode, err := parseConfig(args, stderr)
 	if err != nil {
-		if exitCode == 2 {
-			return 2
+		if exitCode == ExitFlagParse {
+			return ExitFlagParse
 		}
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return exitCode
 	}
 	Assert(cfg != nil, AssertConfigNonNil)
 
+	// 1. Pre-flight check (ADR-0004): credential presence with a guided
+	// onboarding message. Missing configuration is a usage error (EX_USAGE).
+	preflight := calendar.CheckPreflight(ctx, cfg.ExplicitSource)
+	if !preflight.Ready {
+		fmt.Fprintf(stderr, "Pre-flight check failed:\n%s\n", preflight.Guide)
+		return ExitUsage
+	}
+	cfg.Source = preflight.Source
+
+	if len(cfg.Source) > MaxSourceLengthBytes {
+		fmt.Fprintf(stderr, "Error: [%s] source length exceeds limit of %d bytes\n", ErrCodeBoundExceeded, MaxSourceLengthBytes)
+		return ExitErr
+	}
+	if cfg.UserEmail == "" {
+		cfg.UserEmail = calendar.ExtractEmailFromICSURL(cfg.Source)
+	}
+	if len(cfg.UserEmail) > MaxEmailLengthBytes {
+		fmt.Fprintf(stderr, "Error: [%s] user email length exceeds limit of %d bytes\n", ErrCodeBoundExceeded, MaxEmailLengthBytes)
+		return ExitErr
+	}
+
 	loc, err := time.LoadLocation(cfg.Timezone)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: [%s] invalid timezone %q: %v\n", ErrCodeInvalidTimezone, cfg.Timezone, err)
-		return 1
+		return ExitErr
 	}
 
 	targetDate, err := time.ParseInLocation("2006-01-02", cfg.Date, loc)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: [%s] invalid date format %q (expected YYYY-MM-DD)\n", ErrCodeInvalidDate, cfg.Date)
-		return 1
+		return ExitErr
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, CommandTimeoutDuration)
@@ -252,10 +263,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 			fmt.Fprintf(stderr, "Error: [%s] operation timed out after %v\n", ErrCodeTimeout, CommandTimeoutDuration)
-			return 1
+			return ExitErr
 		}
 		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
+		return ExitErr
 	}
 
 	entries, err := calendar.ParseCalendarEventsWithOptions(icsData, calendar.ParseOptions{
@@ -266,21 +277,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
+		return ExitErr
 	}
 
 	if cfg.Format == "entry" {
 		fmt.Fprintln(stdout, calendar.FormatMarkdown(entries))
-		return 0
+		return ExitOK
 	}
 
 	jsonBytes, err := calendar.FormatJSON(entries, cfg.Minified)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
+		return ExitErr
 	}
 	fmt.Fprintln(stdout, string(jsonBytes))
-	return 0
+	return ExitOK
 }
 
 func main() {

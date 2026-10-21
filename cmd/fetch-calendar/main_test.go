@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/calendar"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/keychain"
 )
 
@@ -238,57 +239,102 @@ func TestRun_MissingSource(t *testing.T) {
 	t.Cleanup(restore)
 
 	code := run(ctx, []string{"-date", "2026-10-06"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("expected exit code 1 for missing source, got %d", code)
+	if code != ExitUsage {
+		t.Fatalf("expected exit code %d (EX_USAGE) for missing source, got %d (stderr: %s)", ExitUsage, code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), ErrCodeMissingSource) {
-		t.Errorf("expected %s in stderr, got: %s", ErrCodeMissingSource, stderr.String())
+	if !strings.Contains(stderr.String(), "Pre-flight check failed:") {
+		t.Errorf("expected pre-flight banner in stderr, got: %s", stderr.String())
 	}
-}
-
-func TestParseConfig_KeychainFallback(t *testing.T) {
-	t.Setenv("GCAL_ICS_URL", "")
-	t.Setenv("GCAL_USER_EMAIL", "")
-	t.Setenv("USER_EMAIL", "")
-
-	const fakeURL = "https://example.com/calendar/ical/user/fake-feed-token/basic.ics"
-	restore := keychain.SetDefaultResolver(fakeResolver{secret: fakeURL})
-	t.Cleanup(restore)
-
-	cfg, code, err := parseConfig(context.Background(), []string{"-date", "2026-10-06"}, &bytes.Buffer{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// The guide must name every resolution path, including the Keychain command
+	// and where the secret address comes from.
+	for _, want := range []string{
+		"calendar_feed_url",
+		"export GCAL_ICS_URL",
+		"-url=",
+		"-file=",
+		"Integrate calendar",
+		"Secret address in iCal format",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("expected guide to contain %q, got: %s", want, stderr.String())
+		}
 	}
-	if code != 0 {
-		t.Fatalf("expected exit code 0, got %d", code)
-	}
-	if cfg.Source != fakeURL {
-		t.Fatalf("expected Source from Keychain %q, got %q", fakeURL, cfg.Source)
+	if strings.Contains(stderr.String(), "CAL_CLI_MISSING_SOURCE") {
+		t.Errorf("missing configuration must be guided pre-flight, not a bare error, got: %s", stderr.String())
 	}
 }
 
-func TestParseConfig_KeychainMissMissingSource(t *testing.T) {
-	t.Setenv("GCAL_ICS_URL", "")
+// TestRun_EnvSourceHandoffToFetcher proves the source resolved by pre-flight is
+// the one the fetcher actually uses. Nothing is passed on the command line, so
+// ExplicitSource is empty: only cfg.Source = preflight.Source can make the run
+// succeed, and the output must carry the env-named fixture's event.
+//
+// Red mechanism: reverting the handoff to `cfg.Source = cfg.ExplicitSource`
+// yields an empty Source, so FetchICS fails with CAL_ERR_EMPTY_SOURCE and run()
+// returns ExitErr (1) with no stdout — this test fails on the exit-code and
+// output assertions.
+func TestRun_EnvSourceHandoffToFetcher(t *testing.T) {
+	icsContent := `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:event-env-handoff@google.com
+DTSTART:20261006T060000Z
+DTEND:20261006T070000Z
+SUMMARY:Env Feed Handoff
+END:VEVENT
+END:VCALENDAR`
 
-	// An absent-item resolver must fall through to the missing-source error.
+	tmpDir := t.TempDir()
+	icsPath := writeTempFile(t, tmpDir, "env-feed.ics", []byte(icsContent))
+	t.Setenv("GCAL_ICS_URL", icsPath)
+
+	// Absent-item resolver: the Keychain is never the source here, and a real
+	// calendar_feed_url item is never read.
 	restore := keychain.SetDefaultResolver(fakeResolver{err: keychainNotFound()})
 	t.Cleanup(restore)
 
-	_, code, err := parseConfig(context.Background(), []string{"-date", "2026-10-06"}, &bytes.Buffer{})
-	if err == nil {
-		t.Fatal("expected missing-source error")
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"-date", "2026-10-06", "-no-cache"}, &stdout, &stderr)
+	if code != ExitOK {
+		t.Fatalf("expected exit code %d from the env-resolved source, got %d (stderr: %s)", ExitOK, code, stderr.String())
 	}
-	if code != 1 {
-		t.Fatalf("expected exit code 1, got %d", code)
-	}
-	if !strings.Contains(err.Error(), ErrCodeMissingSource) {
-		t.Fatalf("expected %s, got: %v", ErrCodeMissingSource, err)
+	if !strings.Contains(stdout.String(), "Env Feed Handoff") {
+		t.Fatalf("expected the fetched fixture's event in output, got: %s", stdout.String())
 	}
 }
 
-// TestParseConfig_KeychainTerminalErrorSurfaced proves a non-NotFound Keychain
-// failure stops resolution and is surfaced as a typed, secret-free CLI error.
-func TestParseConfig_KeychainTerminalErrorSurfaced(t *testing.T) {
+func TestPreflight_KeychainMissNotReady(t *testing.T) {
+	t.Setenv("GCAL_ICS_URL", "")
+
+	// An absent-item resolver must fall through to "missing", guided pre-flight.
+	restore := keychain.SetDefaultResolver(fakeResolver{err: keychainNotFound()})
+	t.Cleanup(restore)
+
+	status := calendar.CheckPreflight(context.Background(), "")
+	if status.Ready {
+		t.Fatal("expected Ready=false on a Keychain miss")
+	}
+	if status.Source != "" {
+		t.Fatalf("expected no Source on a Keychain miss, got %q", status.Source)
+	}
+	found := false
+	for _, k := range status.MissingKeys {
+		if k == "GCAL_ICS_URL" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected GCAL_ICS_URL in MissingKeys, got %v", status.MissingKeys)
+	}
+	if !strings.Contains(status.Guide, "calendar_feed_url") {
+		t.Fatalf("expected the Keychain fix in the guide, got: %s", status.Guide)
+	}
+}
+
+// TestPreflight_KeychainTerminalErrorSurfaced proves a non-NotFound Keychain
+// failure is surfaced as a typed, secret-free pre-flight failure.
+func TestPreflight_KeychainTerminalErrorSurfaced(t *testing.T) {
 	t.Setenv("GCAL_ICS_URL", "")
 
 	const secret = "super-secret-feed-token-value"
@@ -304,26 +350,21 @@ func TestParseConfig_KeychainTerminalErrorSurfaced(t *testing.T) {
 	})
 	t.Cleanup(restore)
 
-	_, code, err := parseConfig(context.Background(), []string{"-date", "2026-10-06"}, &bytes.Buffer{})
-	if err == nil {
-		t.Fatal("expected terminal keychain error to be surfaced")
+	status := calendar.CheckPreflight(context.Background(), "")
+	if status.Ready {
+		t.Fatal("expected Ready=false on a terminal Keychain failure")
 	}
-	if code != 1 {
-		t.Fatalf("expected exit code 1, got %d", code)
+	if !strings.Contains(status.Error, "KEYCHAIN_ERR_TIMEOUT") {
+		t.Fatalf("expected typed keychain code, got: %v", status.Error)
 	}
-	if !strings.Contains(err.Error(), ErrCodeKeychainFailed) {
-		t.Fatalf("expected %s, got: %v", ErrCodeKeychainFailed, err)
-	}
-	if !strings.Contains(err.Error(), "KEYCHAIN_ERR_TIMEOUT") {
-		t.Fatalf("expected typed keychain code, got: %v", err)
-	}
-	if strings.Contains(err.Error(), secret) {
-		t.Fatalf("secret leaked into diagnostics: %v", err)
+	if strings.Contains(status.Guide+status.Error, secret) {
+		t.Fatalf("secret leaked into diagnostics: %v", status.Error)
 	}
 }
 
 // TestRun_KeychainTerminalErrorStopsBeforeFetch proves run() reports the
-// Keychain failure and never attempts a calendar fetch.
+// Keychain failure as a guided pre-flight failure (EX_USAGE) and never attempts
+// a calendar fetch.
 func TestRun_KeychainTerminalErrorStopsBeforeFetch(t *testing.T) {
 	t.Setenv("GCAL_ICS_URL", "")
 
@@ -338,8 +379,11 @@ func TestRun_KeychainTerminalErrorStopsBeforeFetch(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), []string{"-date", "2026-10-06"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("expected exit code 1, got %d (stderr: %s)", code, stderr.String())
+	if code != ExitUsage {
+		t.Fatalf("expected exit code %d (EX_USAGE), got %d (stderr: %s)", ExitUsage, code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Pre-flight check failed:") {
+		t.Fatalf("expected pre-flight banner in stderr, got: %s", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "KEYCHAIN_ERR_ACCESS") {
 		t.Fatalf("expected keychain failure in stderr, got: %s", stderr.String())
