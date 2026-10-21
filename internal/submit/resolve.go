@@ -245,6 +245,8 @@ func refreshMappingLastObserved(rec *workflow.Record, localID string, observed w
 	observed.ContentObserved = true
 	for i := range rec.RemoteMappings {
 		if rec.RemoteMappings[i].LocalID == localID {
+			// Binding fields are deliberately not refreshed here; LastObserved is
+			// the single carrier of observed truth.
 			rec.RemoteMappings[i].LastObserved = observed
 			rec.RemoteMappings[i].UpdatedAt = now
 			return

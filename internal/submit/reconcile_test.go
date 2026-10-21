@@ -230,6 +230,86 @@ func TestApplyReconcile_NilRecordIsSafe(t *testing.T) {
 	}
 }
 
+// DEFECT-5: ApplyReconcile's re-observation loop is observation-only. A bare
+// read updates LastObserved and leaves the top-level binding snapshot — and
+// therefore LocalFingerprint — exactly as the last binding event left it. This
+// is what keeps a re-observation from silently invalidating an approval. Under
+// the rejected alternative (refreshing the binding fields from the observed
+// listing) the classification, description and fingerprint assertions go red;
+// the observed Description deliberately DIFFERS from the mapping's so a
+// peer-field-only refresh cannot slip through.
+func TestApplyReconcile_ObservationRefreshDoesNotMoveBindingFields(t *testing.T) {
+	rec := reviewedRecord()
+	rec.RemoteMappings = []workflow.RemoteMapping{
+		mappingFor("c1", remoteState("r1", "09:00", "10:00", "cls-1", "work")),
+	}
+	before := workflow.LocalFingerprint(rec)
+
+	res := Reconcile(rec, completeListing(remoteState("r1", "09:00", "10:00", "cls-2", "changed remotely")), nil, testNow)
+	if err := ApplyReconcile(&rec, res, testNow); err != nil {
+		t.Fatalf("ApplyReconcile: %v", err)
+	}
+
+	m := rec.RemoteMappings[0]
+	if m.ClassificationID != "cls-1" {
+		t.Errorf("an observation must not move the binding classification: want cls-1, got %q", m.ClassificationID)
+	}
+	if m.Description != "work" {
+		t.Errorf("an observation must not move the binding description: want work, got %q", m.Description)
+	}
+	if m.LastObserved.ClassificationID != "cls-2" {
+		t.Errorf("LastObserved must carry the observed classification: want cls-2, got %q", m.LastObserved.ClassificationID)
+	}
+	if m.LastObserved.Description != "changed remotely" {
+		t.Errorf("LastObserved must carry the observed description: want changed remotely, got %q", m.LastObserved.Description)
+	}
+	if after := workflow.LocalFingerprint(rec); after != before {
+		t.Errorf("an observation-only refresh must not change LocalFingerprint, %q -> %q", before, after)
+	}
+}
+
+// DEFECT-5: an adoption is a BINDING event, so it writes the top-level
+// classification from the LOCAL interval choice. The observed remote value is
+// only the documented fallback when that local choice is empty (legacy record).
+func TestApplyReconcile_AdoptClassificationRule(t *testing.T) {
+	t.Run("local choice wins over observed", func(t *testing.T) {
+		rec := reviewedRecord()
+		rec.Confirmed[0].ClassificationID = "cls-local"
+		observed := remoteState("r1", "09:00", "10:00", "cls-remote", "work")
+		res := Reconcile(rec, completeListing(observed), []Adoption{{RemoteID: "r1", LocalID: "c1", AdoptedAt: testNow}}, testNow)
+
+		if err := ApplyReconcile(&rec, res, testNow); err != nil {
+			t.Fatalf("ApplyReconcile: %v", err)
+		}
+		if len(rec.RemoteMappings) != 1 {
+			t.Fatalf("want one adopted mapping, got %+v", rec.RemoteMappings)
+		}
+		if got := rec.RemoteMappings[0].ClassificationID; got != "cls-local" {
+			t.Errorf("an adoption binds the local choice: want cls-local, got %q", got)
+		}
+		if got := rec.RemoteMappings[0].LastObserved.ClassificationID; got != "cls-remote" {
+			t.Errorf("LastObserved must still carry observed truth: want cls-remote, got %q", got)
+		}
+	})
+
+	t.Run("empty local choice falls back to observed", func(t *testing.T) {
+		rec := reviewedRecord()
+		rec.Confirmed[0].ClassificationID = ""
+		observed := remoteState("r1", "09:00", "10:00", "cls-remote", "work")
+		res := Reconcile(rec, completeListing(observed), []Adoption{{RemoteID: "r1", LocalID: "c1", AdoptedAt: testNow}}, testNow)
+
+		if err := ApplyReconcile(&rec, res, testNow); err != nil {
+			t.Fatalf("ApplyReconcile: %v", err)
+		}
+		if len(rec.RemoteMappings) != 1 {
+			t.Fatalf("want one adopted mapping, got %+v", rec.RemoteMappings)
+		}
+		if got := rec.RemoteMappings[0].ClassificationID; got != "cls-remote" {
+			t.Errorf("an empty local choice must fall back to the observed value: want cls-remote, got %q", got)
+		}
+	})
+}
+
 // T3: a bare read/skip (no adoption) must not populate a mapping.
 func TestApplyReconcile_NoAdoptionsAddsNoMapping(t *testing.T) {
 	rec := reviewedRecord()

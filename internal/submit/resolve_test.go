@@ -261,6 +261,60 @@ func TestResolveUnresolved_EditInference(t *testing.T) {
 	})
 }
 
+// DEFECT-5: the inference-confirm refresh is observation-only. Confirming a
+// classification-changing edit carries the new classification into LastObserved
+// and leaves the top-level binding snapshot, and thus LocalFingerprint, at the
+// values of the last binding event. The top-level Description ("work", the local
+// intent) deliberately differs from the observed one ("old text"), so a
+// peer-field-only refresh cannot slip through. Under the rejected alternative
+// (refreshing the binding fields from the observation) the classification,
+// description and fingerprint assertions go red.
+func TestResolveEditFromObservation_ConfirmKeepsBindingClassification(t *testing.T) {
+	key := workflow.DeriveOperationKey(workflow.OperationOutcome{
+		Date: testDate, Action: string(workflow.PlanOpEdit), RemoteID: "r1", LocalID: "c1",
+		StartTime: "09:00", EndTime: "10:00",
+	})
+	rec := reviewedRecord()
+	// The binding snapshot is local intent: its Description need not match the
+	// observed content it was bound to.
+	rec.RemoteMappings = []workflow.RemoteMapping{{
+		LocalID: "c1", RemoteID: "r1", Date: testDate,
+		StartTime: "09:00", EndTime: "10:00",
+		ClassificationID: "cls-1", Description: "work",
+		LastObserved: remoteState("r1", "09:00", "10:00", "cls-1", "old text"),
+	}}
+	rec.Outcomes = []workflow.OperationOutcome{{
+		OperationKey: key, LocalID: "c1", RemoteID: "r1", Action: string(workflow.PlanOpEdit),
+		Status: workflow.OutcomeUncertain, Date: testDate, StartTime: "09:00", EndTime: "10:00",
+		Description: "old text", ClassificationID: "cls-2",
+	}}
+	before := workflow.LocalFingerprint(rec)
+
+	observed := remoteState("r1", "09:00", "10:00", "cls-2", "old text")
+	if err := ResolveUnresolved(&rec, completeListing(observed), nil, testNow); err != nil {
+		t.Fatalf("ResolveUnresolved: %v", err)
+	}
+
+	if len(rec.Outcomes) != 1 || rec.Outcomes[0].Status != workflow.OutcomeConfirmed || !rec.Outcomes[0].Resolved {
+		t.Fatalf("the applied classification edit must resolve confirmed, got %+v", rec.Outcomes)
+	}
+	if got := rec.RemoteMappings[0].LastObserved.ClassificationID; got != "cls-2" {
+		t.Errorf("LastObserved must carry the observed classification: want cls-2, got %q", got)
+	}
+	if got := rec.RemoteMappings[0].LastObserved.Description; got != "old text" {
+		t.Errorf("LastObserved must carry the observed description: want old text, got %q", got)
+	}
+	if got := rec.RemoteMappings[0].ClassificationID; got != "cls-1" {
+		t.Errorf("a confirm must not move the binding classification: want cls-1, got %q", got)
+	}
+	if got := rec.RemoteMappings[0].Description; got != "work" {
+		t.Errorf("a confirm must not move the binding description: want work, got %q", got)
+	}
+	if after := workflow.LocalFingerprint(rec); after != before {
+		t.Errorf("an observation-only refresh must not change LocalFingerprint, %q -> %q", before, after)
+	}
+}
+
 // A legacy plan-echo baseline (LastObserved.ContentObserved false) must NEVER be
 // trusted for inference: even post-edit content present leaves the edit
 // unresolved rather than confirming against an unverified baseline.

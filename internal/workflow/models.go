@@ -160,10 +160,20 @@ type ReviewState struct {
 
 // RemoteMapping binds a local interval identity to a stable remote ID. Identity
 // is created only from a real remote response; it is never inferred from
-// time-slot equality. This model is the mapping REPRESENTATION only: this store
-// populates mappings from confirmed WRITE responses. Populating mappings from
-// remote reads, skip, or adoption decisions belongs to the reconciliation slice
-// (S6), not this model.
+// time-slot equality. Mappings are populated by a confirmed write response or by
+// an explicit adoption, never by a bare read or a skip.
+//
+// BINDING SNAPSHOT: the top-level binding fields (ClassificationID and its peers
+// Date, StartTime, EndTime, Description) are the values of the LAST BINDING
+// EVENT — a confirmed execute-time gradion.BuildMapping, or an adoption whose
+// classification is the local interval choice (the observed value is only the
+// fallback when that local choice is empty). They record local intent, NOT
+// remote truth. Observation-only paths — the resolve inference-confirm refresh
+// and the ApplyReconcile re-observation loop — update LastObserved only — they
+// bump UpdatedAt, but no binding field moves. LastObserved is the single carrier
+// of observed remote CONTENT truth. This distinction is load-bearing: the
+// binding fields feed LocalFingerprint, so a bare observation must never move
+// them.
 type RemoteMapping struct {
 	LocalID          string      `json:"local_id"`
 	RemoteID         string      `json:"remote_id"`

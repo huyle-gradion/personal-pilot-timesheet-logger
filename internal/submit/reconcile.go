@@ -259,6 +259,8 @@ func ApplyReconcile(rec *workflow.Record, res ReconcileResult, now time.Time) er
 	}
 
 	// Refresh LastObserved for re-observed mapped entries (identity unchanged).
+	// Binding fields are deliberately not refreshed here; LastObserved is the
+	// single carrier of observed truth.
 	for i := range rec.RemoteMappings {
 		if observed, ok := observedByID[rec.RemoteMappings[i].RemoteID]; ok {
 			rec.RemoteMappings[i].LastObserved = observed
