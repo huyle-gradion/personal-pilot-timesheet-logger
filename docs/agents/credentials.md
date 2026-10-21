@@ -32,7 +32,7 @@ environment step below exists only for backward compatibility.
 `gh_auth_token` is the service read by the GitHub preflight resolver
 (`internal/git/preflight.go` via `keychain.ServiceGitHubToken`). The Gradion item
 was created as `gradion.workspace.ApiKey` before this note, so that name is
-fixed. The `.claude/skills/timesheet/SKILL.md` item name `timesheet_api_token`
+fixed. The `.agents/skills/timesheet/SKILL.md` item name `timesheet_api_token`
 is **superseded and stale**; use `gradion.workspace.ApiKey`.
 
 ## Resolver — implemented (`internal/keychain`)

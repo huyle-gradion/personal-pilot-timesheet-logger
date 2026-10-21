@@ -1,12 +1,21 @@
 package tests
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+// canonicalSkillDir is the skill's one physical home in this repository. Harness
+// directories (.claude/skills/timesheet, and the home-level ~/.agents entry) reach
+// it through a symlink rather than holding a copy. Every test in this package reads
+// the skill through this constant (package cmd/timesheet cannot import it and
+// repeats the same path literal in TestClassifySkillParity), and
+// TestAgentsSkill_CanonicalLocationAndHarnessSymlink pins the layout itself.
+const canonicalSkillDir = ".agents/skills/timesheet"
 
 // TestClaudeSkill_PackagingAndContracts verifies the skill packaging, its
 // harness-agnostic command sequence, and that the skill delegates to the shared
@@ -18,8 +27,8 @@ func TestClaudeSkill_PackagingAndContracts(t *testing.T) {
 		t.Fatalf("resolving repo root: %v", err)
 	}
 
-	skillMDPath := filepath.Join(repoRoot, ".claude", "skills", "timesheet", "SKILL.md")
-	workflowMDPath := filepath.Join(repoRoot, ".claude", "skills", "timesheet", "workflow.md")
+	skillMDPath := filepath.Join(repoRoot, canonicalSkillDir, "SKILL.md")
+	workflowMDPath := filepath.Join(repoRoot, canonicalSkillDir, "workflow.md")
 
 	// 1. SKILL.md exists and starts with YAML frontmatter.
 	skillBytes, err := os.ReadFile(skillMDPath)
@@ -176,7 +185,7 @@ func TestClaudeSkill_ExecutionSurfaceRequirement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolving repo root: %v", err)
 	}
-	skillMDPath := filepath.Join(repoRoot, ".claude", "skills", "timesheet", "SKILL.md")
+	skillMDPath := filepath.Join(repoRoot, canonicalSkillDir, "SKILL.md")
 	skillBytes, err := os.ReadFile(skillMDPath)
 	if err != nil {
 		t.Fatalf("failed to read SKILL.md at %s: %v", skillMDPath, err)
@@ -214,7 +223,7 @@ func TestClaudeSkill_StoragePathNamesWorkflowDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolving repo root: %v", err)
 	}
-	skillMDPath := filepath.Join(repoRoot, ".claude", "skills", "timesheet", "SKILL.md")
+	skillMDPath := filepath.Join(repoRoot, canonicalSkillDir, "SKILL.md")
 	skillBytes, err := os.ReadFile(skillMDPath)
 	if err != nil {
 		t.Fatalf("failed to read SKILL.md at %s: %v", skillMDPath, err)
@@ -246,4 +255,152 @@ func TestClaudeSkill_StoragePathNamesWorkflowDir(t *testing.T) {
 		t.Errorf("SKILL.md restored the ambiguous storage-directory wording %q: "+
 			"call the setting the records ROOT and name the live <root>/workflow/<date>.json path", loc)
 	}
+}
+
+// TestAgentsSkill_CanonicalLocationAndHarnessSymlink pins the skill's packaging
+// layout: `.agents/skills/timesheet` is the ONE physical copy, and the Claude Code
+// harness directory `.claude/skills/timesheet` is a SYMLINK to it, not a second
+// copy. The skill is harness-agnostic, so its canonical home must live where the
+// harness-neutral convention looks; a dotdir-only home is the inversion this
+// guards against (issue #24's packaging residual, closed by owner decision).
+//
+// "One physical copy" is asserted by CONTENT, never by filename: a second skill at
+// `.claude/skills/<other>/SKILL.md` is a different skill and must pass, while a
+// file named SKILL.md whose bytes ARE this skill's must not exist anywhere except
+// the canonical path. Issue #24 had two halves — the missing harness-neutral
+// location (`skills/timesheet`) and the `.claude` mirror — so the retired top-level
+// `skills/` directory is held to the same content rule.
+//
+// RED mechanisms, verified in a scratch copy of the tree: replace the symlink with
+// a real copy (`rm .claude/skills/timesheet && cp -R .agents/skills/timesheet
+// .claude/skills/timesheet`) and the test fails on the os.Lstat symlink check;
+// copy the canonical SKILL.md to `.claude/skills/other/SKILL.md` (or to
+// `skills/timesheet/SKILL.md`) and it fails on the duplicate-content sweep;
+// delete a canonical file and the regular-file check fails; point the symlink
+// elsewhere and the resolved-path comparison fails; replace the canonical
+// directory with a symlink and the canonical-directory check fails. A second skill
+// with DIFFERENT content passes.
+func TestAgentsSkill_CanonicalLocationAndHarnessSymlink(t *testing.T) {
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolving repo root: %v", err)
+	}
+
+	canonical := filepath.Join(repoRoot, canonicalSkillDir)
+	harness := filepath.Join(repoRoot, ".claude", "skills", "timesheet")
+
+	// (a) The canonical directory is a REAL directory: the one physical copy must
+	// not itself be a link (a link there would mean the content lives elsewhere).
+	dirInfo, err := os.Lstat(canonical)
+	if err != nil {
+		t.Fatalf("canonical skill directory missing: %v", err)
+	}
+	if !dirInfo.IsDir() {
+		t.Fatalf("%s must be a real directory holding the one physical copy, got mode %v "+
+			"(a symlink here means the skill's content lives somewhere else)", canonical, dirInfo.Mode())
+	}
+
+	// (b) Both canonical files are REGULAR files: real content, not links.
+	skillBytes, err := os.ReadFile(filepath.Join(canonical, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("reading the canonical SKILL.md: %v", err)
+	}
+	for _, name := range []string{"SKILL.md", "workflow.md"} {
+		p := filepath.Join(canonical, name)
+		info, statErr := os.Lstat(p)
+		if statErr != nil {
+			t.Fatalf("canonical skill file missing: %v", statErr)
+		}
+		if !info.Mode().IsRegular() {
+			t.Errorf("%s must be a regular file in the canonical directory, got mode %v", p, info.Mode())
+		}
+	}
+
+	// (c) The Claude harness path is a SYMLINK. Lstat, not Stat: Stat follows the
+	// link and would report the directory, hiding an in-tree copy.
+	info, err := os.Lstat(harness)
+	if err != nil {
+		t.Fatalf("harness path %s must exist as a symlink: %v", harness, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("harness path %s must be a symlink, not %s "+
+			"(a real copy under .claude makes .claude the second physical copy of the skill)",
+			harness, info.Mode())
+	}
+
+	// (d) It resolves to the canonical directory — and it is a RELATIVE link, so a
+	// clone or worktree at any path keeps working.
+	linkTarget, err := os.Readlink(harness)
+	if err != nil {
+		t.Fatalf("reading the harness symlink: %v", err)
+	}
+	if filepath.IsAbs(linkTarget) {
+		t.Errorf("harness symlink must be relative so it survives clones and worktrees, got absolute %q", linkTarget)
+	}
+	resolvedHarness, err := filepath.EvalSymlinks(harness)
+	if err != nil {
+		t.Fatalf("resolving the harness symlink: %v", err)
+	}
+	resolvedCanonical, err := filepath.EvalSymlinks(canonical)
+	if err != nil {
+		t.Fatalf("resolving the canonical skill directory: %v", err)
+	}
+	if resolvedHarness != resolvedCanonical {
+		t.Errorf("harness symlink resolves to %q, want the canonical directory %q", resolvedHarness, resolvedCanonical)
+	}
+
+	// (e) No second copy of THIS skill under .claude. Content decides, not the
+	// filename: another harness skill named SKILL.md is fine, a copy of this one is
+	// not, and a symlink is a route rather than a copy.
+	if copies, walkErr := duplicateSkillCopies(filepath.Join(repoRoot, ".claude"), skillBytes); walkErr != nil {
+		t.Fatalf("walking .claude for duplicate skill copies: %v", walkErr)
+	} else {
+		for _, p := range copies {
+			t.Errorf("second physical copy of the skill under .claude: %s "+
+				"(the one copy belongs to %s; .claude must only link to it)", p, canonicalSkillDir)
+		}
+	}
+
+	// (f) The retired top-level `skills/timesheet` of issue #24 must not come back as
+	// a second home. `skills/` may simply be absent (the owner chose `.agents`); if
+	// it exists, it must hold no copy of this skill's content.
+	retired := filepath.Join(repoRoot, "skills")
+	if _, statErr := os.Lstat(retired); os.IsNotExist(statErr) {
+		// Absent: the harness-neutral home is .agents, so there is nothing to guard.
+	} else if statErr != nil {
+		t.Fatalf("checking the retired skills/ directory: %v", statErr)
+	} else if copies, walkErr := duplicateSkillCopies(retired, skillBytes); walkErr != nil {
+		t.Fatalf("walking skills/ for duplicate skill copies: %v", walkErr)
+	} else {
+		for _, p := range copies {
+			t.Errorf("%s holds a second copy of the skill: issue #24's harness-neutral home is "+
+				"%s now, and skills/ must not reappear as another one", p, canonicalSkillDir)
+		}
+	}
+}
+
+// duplicateSkillCopies walks root and returns every path holding a REGULAR file
+// named SKILL.md whose bytes are identical to canonicalBytes. A SKILL.md with
+// different content is a different skill, not a copy of this one; a symlink is a
+// route, not a copy. filepath.WalkDir does not follow symlinks, so nothing reached
+// through `.claude/skills/timesheet` is reported.
+func duplicateSkillCopies(root string, canonicalBytes []byte) ([]string, error) {
+	var copies []string
+	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.Name() != "SKILL.md" || !d.Type().IsRegular() {
+			return nil
+		}
+		got, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return readErr
+		}
+		if bytes.Equal(got, canonicalBytes) {
+			copies = append(copies, p)
+		}
+		return nil
+	})
+	return copies, walkErr
 }

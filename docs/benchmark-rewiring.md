@@ -176,7 +176,7 @@ unreachable for new imports and survives only for stored legacy sessions; the ag
 unchanged (aggregate.go:284–301 still excludes `LoggedDate == ""`).
 
 **Call sites that violate the rule and must change in the same packet:**
-`.claude/skills/timesheet/SKILL.md:209` and `.claude/skills/timesheet/workflow.md:537` both invoke
+`.agents/skills/timesheet/SKILL.md:209` and `.agents/skills/timesheet/workflow.md:537` both invoke
 `metrics import --transcript "$PI_SESSION"` with no `--date`; and the CLI's own help text breaks
 with the gate — `cmd/timesheet/metrics.go:29` shows `metrics import --transcript FILE` and `:95`
 describes `--date` as overriding the transcript-derived date, which no longer exists. Both

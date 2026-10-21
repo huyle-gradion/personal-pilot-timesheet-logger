@@ -1629,7 +1629,7 @@ func TestAcceptance_11_CLISkillParity(t *testing.T) {
 		}
 	}
 
-	wf, err := os.ReadFile(filepath.Join(repoRoot, ".claude", "skills", "timesheet", "workflow.md"))
+	wf, err := os.ReadFile(filepath.Join(repoRoot, canonicalSkillDir, "workflow.md"))
 	if err != nil {
 		t.Fatalf("read workflow: %v", err)
 	}

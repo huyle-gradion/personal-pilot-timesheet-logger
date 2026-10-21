@@ -692,7 +692,9 @@ func TestClassifySelect_TargetedSubstringMatchNotSilentlySelected(t *testing.T) 
 // implements (classify list then an explicit classify select).
 func TestClassifySkillParity(t *testing.T) {
 	repoRoot := filepath.Join("..", "..")
-	wfBytes, err := os.ReadFile(filepath.Join(repoRoot, ".claude", "skills", "timesheet", "workflow.md"))
+	// The skill's one physical copy lives in .agents; .claude/skills/timesheet is a
+	// symlink to it (pinned by TestAgentsSkill_CanonicalLocationAndHarnessSymlink).
+	wfBytes, err := os.ReadFile(filepath.Join(repoRoot, ".agents", "skills", "timesheet", "workflow.md"))
 	if err != nil {
 		t.Fatalf("read workflow.md: %v", err)
 	}
