@@ -4,9 +4,10 @@
 // servers. The legacy REST SUBMISSION flow (create/edit/delete + plan-derived
 // markdown) was retired in S5 containment and its read surface (internal/api) and
 // stub binary (cmd/sync-timesheet) were deleted in S8; the approval-bound MCP
-// submission e2e remains deferred to S9. The tests below cover collection,
-// review/clustering, benchmarking, and the new cmd/timesheet surface (preflight,
-// review, export, preview, approve, and a fail-closed/read-only submit).
+// submission e2e remains deferred to S9. The tests below cover collection
+// (fetch-git with its outage fallback), benchmarking, and the new cmd/timesheet
+// surface (preflight, review, export, preview, approve, and a fail-closed/read-only
+// submit).
 package tests
 
 import (
@@ -29,18 +30,14 @@ import (
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/benchmark"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/storage"
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
 var (
-	binDir             string
-	binFetchCalendar   string
-	binFetchGit        string
-	binReviewTimesheet string
-	binTimesheet       string
-	binBenchmark       string
+	binDir       string
+	binFetchGit  string
+	binTimesheet string
+	binBenchmark string
 )
 
 func TestMain(m *testing.M) {
@@ -63,9 +60,7 @@ func TestMain(m *testing.M) {
 		pkg  string
 		dest *string
 	}{
-		{"fetch-calendar", "./cmd/fetch-calendar", &binFetchCalendar},
 		{"fetch-git", "./cmd/fetch-git", &binFetchGit},
-		{"review-timesheet", "./cmd/review-timesheet", &binReviewTimesheet},
 		{"timesheet", "./cmd/timesheet", &binTimesheet},
 		{"benchmark", "./cmd/benchmark", &binBenchmark},
 	}
@@ -134,213 +129,7 @@ func TestE2E_FullHeadlessPipeline(t *testing.T) {
 	testDate := "2026-10-08"
 	baseTemp := t.TempDir()
 
-	cacheDir := filepath.Join(baseTemp, ".cache", "timesheet", testDate)
-	storageDir := filepath.Join(baseTemp, "storage")
 	benchmarksDir := filepath.Join(baseTemp, "benchmarks")
-
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		t.Fatalf("creating cache dir: %v", err)
-	}
-
-	// 1. Mock Calendar Feed Server
-	icsData := fmt.Sprintf(`BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Test//EN
-BEGIN:VEVENT
-UID:event-active-sprint@google.com
-DTSTART:20261008T090000Z
-DTEND:20261008T100000Z
-SUMMARY:Sprint Planning
-END:VEVENT
-BEGIN:VEVENT
-UID:event-declined@google.com
-DTSTART:20261008T100000Z
-DTEND:20261008T110000Z
-SUMMARY:Declined Meeting
-ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=DECLINED;CN=Huy Le:mailto:test@example.com
-END:VEVENT
-BEGIN:VEVENT
-UID:event-cancelled@google.com
-DTSTART:20261008T110000Z
-DTEND:20261008T120000Z
-SUMMARY:Cancelled Sync
-STATUS:CANCELLED
-END:VEVENT
-BEGIN:VEVENT
-UID:event-transparent@google.com
-DTSTART:20261008T130000Z
-DTEND:20261008T140000Z
-SUMMARY:Focus Time
-TRANSP:TRANSPARENT
-END:VEVENT
-BEGIN:VEVENT
-UID:event-arch-sync@google.com
-DTSTART:20261008T140000Z
-DTEND:20261008T150000Z
-SUMMARY:Architecture Review
-END:VEVENT
-END:VCALENDAR`)
-
-	calServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/calendar")
-		_, _ = w.Write([]byte(icsData))
-	}))
-	defer calServer.Close()
-
-	// 2. Mock GitHub API Server
-	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/user":
-			_, _ = w.Write([]byte(`{"login":"testuser"}`))
-		case strings.Contains(r.URL.Path, "/commits"):
-			_, _ = w.Write([]byte(`[
-				{
-					"sha": "a1b2c3d4e5f67890",
-					"commit": {
-						"author": {"name": "Test User", "email": "test@example.com", "date": "2026-10-08T10:30:00Z"},
-						"message": "feat(calendar): implement ical parser"
-					}
-				},
-				{
-					"sha": "b2c3d4e5f6789012",
-					"commit": {
-						"author": {"name": "Test User", "email": "test@example.com", "date": "2026-10-08T11:15:00Z"},
-						"message": "test(calendar): add recurrence unit tests"
-					}
-				}
-			]`))
-		case strings.HasSuffix(r.URL.Path, "/pulls"):
-			_, _ = w.Write([]byte(`[
-				{
-					"number": 1,
-					"title": "feat: calendar parser",
-					"state": "open",
-					"created_at": "2026-10-08T09:00:00Z",
-					"updated_at": "2026-10-08T11:30:00Z",
-					"head": {"ref": "feat/calendar", "sha": "b2c3d4e5f6789012"},
-					"user": {"login": "testuser"}
-				}
-			]`))
-		case strings.Contains(r.URL.Path, "/pulls/1/commits"):
-			_, _ = w.Write([]byte(`[
-				{"sha": "a1b2c3d4e5f67890"},
-				{"sha": "b2c3d4e5f6789012"}
-			]`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer ghServer.Close()
-
-	// Step 1: fetch-calendar
-	calJSONPath := filepath.Join(cacheDir, "calendar.json")
-	calOut, calErrOut, code, err := runCmd(ctx, "", binFetchCalendar, nil,
-		"-url", calServer.URL,
-		"-date", testDate,
-		"-tz", "UTC",
-		"-user-email", "test@example.com",
-		"-skip-transparent",
-	)
-	if err != nil || code != 0 {
-		t.Fatalf("fetch-calendar failed with code %d: %v\nstderr: %s", code, err, calErrOut)
-	}
-	if writeErr := os.WriteFile(calJSONPath, []byte(calOut), 0644); writeErr != nil {
-		t.Fatalf("saving calendar.json: %v", writeErr)
-	}
-
-	var calEntries []timesheet.SimpleEntry
-	if err := json.Unmarshal([]byte(calOut), &calEntries); err != nil {
-		t.Fatalf("unmarshaling calendar entries: %v", err)
-	}
-	if len(calEntries) != 2 {
-		t.Fatalf("expected 2 calendar entries after filtering declined/cancelled/transparent, got %d", len(calEntries))
-	}
-
-	// Step 2: fetch-git
-	gitJSONPath := filepath.Join(cacheDir, "git.json")
-	gitOut, gitErrOut, code, err := runCmd(ctx, "", binFetchGit, nil,
-		"-date", testDate,
-		"-tz", "UTC",
-		"-github-base-url", ghServer.URL,
-		"-token", "test-github-token",
-		"-repos", "huyle-gradion/personal-pilot-timesheet-logger",
-		"-author", "testuser",
-	)
-	if err != nil || code != 0 {
-		t.Fatalf("fetch-git failed with code %d: %v\nstderr: %s", code, err, gitErrOut)
-	}
-	if writeErr := os.WriteFile(gitJSONPath, []byte(gitOut), 0644); writeErr != nil {
-		t.Fatalf("saving git.json: %v", writeErr)
-	}
-
-	var gitEntries []timesheet.SimpleEntry
-	if err := json.Unmarshal([]byte(gitOut), &gitEntries); err != nil {
-		t.Fatalf("unmarshaling git entries: %v", err)
-	}
-	if len(gitEntries) == 0 {
-		t.Fatalf("expected git entries, got none")
-	}
-
-	// Step 3: Combine and Cluster time blocks
-	combinedEntries := append(calEntries, gitEntries...)
-	combinedBytes, _ := json.MarshalIndent(combinedEntries, "", "  ")
-	combinedPath := filepath.Join(cacheDir, "combined.json")
-	if err := os.WriteFile(combinedPath, combinedBytes, 0644); err != nil {
-		t.Fatalf("writing combined.json: %v", err)
-	}
-
-	skeletonPath := filepath.Join(cacheDir, "skeleton.json")
-	_, revErrOut, code, err := runCmd(ctx, "", binReviewTimesheet, nil,
-		"-date", testDate,
-		"-input", combinedPath,
-		"-non-interactive",
-		"-auto-resolve", "keep_both",
-		"-confirm",
-		"-output", skeletonPath,
-		"-storage-dir", storageDir,
-	)
-	if err != nil || code != 0 {
-		t.Fatalf("clustering via review-timesheet failed with code %d: %v\nstderr: %s", code, err, revErrOut)
-	}
-
-	skeletonBytes, err := os.ReadFile(skeletonPath)
-	if err != nil {
-		t.Fatalf("reading skeleton.json: %v", err)
-	}
-	var skeletonRecord storage.TimesheetRecord
-	if err := json.Unmarshal(skeletonBytes, &skeletonRecord); err != nil {
-		t.Fatalf("parsing skeleton record: %v", err)
-	}
-	if len(skeletonRecord.Blocks) == 0 {
-		t.Fatalf("expected clustered blocks in skeleton.json, got 0")
-	}
-
-	// Step 4: Collision review and Tier 2 storage persistence
-	_, revErrOut2, code, err := runCmd(ctx, "", binReviewTimesheet, nil,
-		"-date", testDate,
-		"-input", skeletonPath,
-		"-non-interactive",
-		"-auto-resolve", "keep_both",
-		"-confirm",
-		"-storage-dir", storageDir,
-		"-sink", "console",
-	)
-	if err != nil || code != 0 {
-		t.Fatalf("persisting review failed with code %d: %v\nstderr: %s", code, err, revErrOut2)
-	}
-
-	store, err := storage.NewJSONFileStore(storageDir)
-	if err != nil {
-		t.Fatalf("creating JSONFileStore: %v", err)
-	}
-	savedRecord, err := store.GetDay(ctx, testDate)
-	if err != nil {
-		t.Fatalf("loading saved record: %v", err)
-	}
-	if savedRecord.Version < 1 || len(savedRecord.Blocks) == 0 {
-		t.Fatalf("invalid saved record: version=%d, blocks=%d", savedRecord.Version, len(savedRecord.Blocks))
-	}
 
 	// Step 5: The new cmd/timesheet surface (offline, hermetic). Seed the workflow
 	// record with collected evidence, then preflight -> review -> export ->
