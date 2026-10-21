@@ -36,8 +36,16 @@ Actions:
 Flags:
   --transcript FILE        transcript path (import)
   --provider auto|pi|claude|antigravity  transcript provider (import; default auto)
+  --model M                declared model for a transcript that carries none (import;
+                           a transcript-observed model is never overridden)
+  --declare-total          stamp a SYNTHESIZED lower-bound session total for a
+                           transcript that carries no total (import; an observed
+                           total is never downgraded)
   --model-catalog FILE     runtime model catalog for session price lookup (import;
-                           default: $PI_MODEL_CATALOG, else ~/.pi/agent/models-store.json)
+                           default: metrics.model_catalog from the config document,
+                           else NO catalog — every price unknown, never 0)
+  --config FILE            JSON config document (import; read TOLERANTLY — a bad or
+                           absent document only warns and never changes an exit code)
   --timezone TZ            IANA zone for the session's local-date association (import;
                            default: the process local zone)
   --date YYYY-MM-DD        target date (default: today); REQUIRED on import, where it is
@@ -95,6 +103,9 @@ func cmdMetricsImport(ctx context.Context, args []string, stdout, stderr io.Writ
 	provider := fs.String("provider", "auto", "transcript provider: auto|pi|claude|antigravity")
 	date := fs.String("date", "", "the day this import counts for (required) YYYY-MM-DD")
 	modelCatalog := fs.String("model-catalog", "", "runtime model catalog file")
+	model := fs.String("model", "", "declared model for a transcript that carries none")
+	declareTotal := fs.Bool("declare-total", false, "stamp a synthesized lower-bound session total")
+	configPath := fs.String("config", "", "JSON config document (read tolerantly)")
 	timezone := fs.String("timezone", "", "IANA timezone for the session's local-date association")
 	metricsDir := fs.String("metrics-dir", "", "metrics store directory")
 	commit := fs.String("commit", "", "run commit annotation")
@@ -102,6 +113,14 @@ func cmdMetricsImport(ctx context.Context, args []string, stdout, stderr io.Writ
 	configMode := fs.String("config-mode", "", "run config-mode annotation")
 	optimizationChange := fs.String("optimization-change", "", "run optimization-change annotation")
 	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	// Every flag in this command takes its value as `--flag value` or
+	// `--flag=value`; a bare positional is a usage error, never a silently ignored
+	// word. That is what makes `--declare-total 99999` fail instead of stamping a
+	// total nobody declared.
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "timesheet metrics import: unexpected argument %q (flags take --flag value or --flag=value; --declare-total is a boolean)\n", fs.Arg(0))
 		return exitUsage
 	}
 	if strings.TrimSpace(*transcript) == "" {
@@ -152,7 +171,9 @@ func cmdMetricsImport(ctx context.Context, args []string, stdout, stderr io.Writ
 
 	// A missing or unparseable catalog WARNS and continues with an unknown-price
 	// session: a catalog problem must never change an exit code or fail a workflow.
-	cat := loadMetricsCatalog(*modelCatalog, stderr)
+	// A missing or unparseable CONFIG is read the same way: metrics import never
+	// routes through the fatal config-load path.
+	cat := loadMetricsCatalog(*modelCatalog, loadMetricsSection(*configPath, stderr), stderr)
 	session := metrics.BuildSession(rec, cat, loc)
 	if d := strings.TrimSpace(*date); d != "" {
 		// The operator stated the day explicitly: record WHICH DAY this session
@@ -160,14 +181,56 @@ func cmdMetricsImport(ctx context.Context, args []string, stdout, stderr io.Writ
 		session.LoggedDate = d
 		session.Association = metrics.AssociationImportFlag
 	}
-	if _, err := store.WriteSession(session); err != nil {
-		fmt.Fprintln(stderr, "timesheet metrics import:", err)
+	// Declarations are stamped AFTER the build, so they apply to the stored record
+	// exactly as an operator stated them. Both refuse rather than downgrade
+	// transcript evidence: observed outranks declared, for the model and the total
+	// alike.
+	if m := strings.TrimSpace(*model); m != "" {
+		if !metrics.DeclareSessionModel(&session, m, cat) {
+			fmt.Fprintf(stderr, "timesheet metrics import: warning: --model %q ignored: the transcript already carries an observed model; observed outranks declared\n", m)
+		}
+	}
+	if *declareTotal {
+		if metrics.EffectiveTotalTokensSource(session) == metrics.TotalTokensSourceObserved {
+			fmt.Fprintln(stderr, "timesheet metrics import: warning: --declare-total ignored: the transcript already carries observed call totals; observed outranks synthesized")
+		} else if !metrics.DeclareSessionTotal(&session, rec) {
+			fmt.Fprintln(stderr, "timesheet metrics import: warning: --declare-total ignored: no known usage component to synthesize a lower bound from")
+		}
+	}
+	// A bare re-import (same transcript, no --model/--declare-total repeated) builds
+	// a session with NO declarations, which would look like a downgrade of the
+	// stored record. Declarations PERSIST: keep the stronger stored state and say so
+	// once. This is keyed on the DECLARATION fields only, so the price-refresh rule is
+	// untouched — a catalog-only change still no-ops in WriteSession.
+	if stored, rerr := store.ReadSession(session.SessionID); rerr == nil {
+		if preserved := preserveStoredDeclarations(&session, stored, cat); preserved != "" {
+			fmt.Fprintf(stderr, "timesheet metrics import: preserved stored %s declarations: %s\n", session.SessionID, preserved)
+		}
+	}
+	wrote, werr := store.WriteSession(session)
+	if werr != nil {
+		fmt.Fprintln(stderr, "timesheet metrics import:", werr)
 		return exitError
 	}
-	fmt.Fprintf(stdout, "session %s: logged_date=%s association=%s model=%s models=%d total_tokens=%s cache_hit=%s price=%s cost=%s\n",
+	if wrote {
+		fmt.Fprintf(stdout, "session %s written\n", session.SessionID)
+	} else {
+		fmt.Fprintf(stdout, "session %s unchanged (declarations match)\n", session.SessionID)
+	}
+	// When nothing was written, the price/cost printed below were computed by THIS
+	// run and are NOT what the store holds: a catalog change (or a legacy record's
+	// earlier price) leaves the stored figures in place. The `price=` field names the
+	// price SOURCE, so the note says plainly that the figures — not the label — were
+	// not stored.
+	provenanceNote := ""
+	if !wrote {
+		provenanceNote = fmt.Sprintf(" — price source: %s; figures not stored (the stored session keeps its earlier price)", session.PriceSource)
+	}
+	fmt.Fprintf(stdout, "session %s: logged_date=%s association=%s model=%s model_source=%s models=%d total_tokens=%s total_source=%s cache_hit=%s price=%s cost=%s%s\n",
 		session.SessionID, orUnknown(session.LoggedDate), session.Association, orUnknown(session.Model),
-		len(session.Models), formatMeas(session.TotalTokens),
-		formatOptionalPercent(session.CacheHitPct), session.PriceSource, formatOptionalCost(session.Cost))
+		orUnknown(string(session.ModelSource)), len(session.Models), formatMeas(session.TotalTokens),
+		orUnknown(string(session.TotalTokensSource)), formatOptionalPercent(session.CacheHitPct),
+		session.PriceSource, formatOptionalCost(session.Cost), provenanceNote)
 	return exitOK
 }
 
@@ -388,14 +451,53 @@ func resolveMetricsLocation(tz string) (*time.Location, error) {
 	return time.Local, nil
 }
 
-// loadMetricsCatalog resolves and loads the model catalog. Resolution order is the
-// flag, then $PI_MODEL_CATALOG, then ~/.pi/agent/models-store.json. A missing or
-// unparseable file WARNS on stderr and returns a nil catalog (every price unknown):
-// it never changes an exit code.
-func loadMetricsCatalog(flagValue string, stderr io.Writer) *metrics.ModelCatalog {
-	path := resolveModelCatalogPath(flagValue)
+// loadMetricsSection reads the config document's `metrics` section. It is the ONLY
+// place a config is read tolerantly, and deliberately so: metrics work is optional
+// and non-blocking, so an absent document, an unparseable one, or an invalid
+// section prints a WARNING and yields an empty section — never an exit code. The
+// workflow commands keep the fatal loadConfig path.
+//
+// An empty path means the default config document (the same one the workflow
+// commands read), so a user's catalog setting applies without repeating a flag.
+func loadMetricsSection(configPath string, stderr io.Writer) metricsConfig {
+	// An EXPLICIT path that cannot be read is the operator's mistake and must be
+	// visible; the DEFAULT path is expected to be absent on a machine that never
+	// configured metrics, so its absence stays silent. Neither changes an exit code.
+	explicit := strings.TrimSpace(configPath) != ""
+	path := expandHome(configPath)
 	if path == "" {
-		fmt.Fprintln(stderr, "timesheet metrics import: warning: no model catalog path; session prices are unknown")
+		path = defaultConfigPath()
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if explicit {
+			fmt.Fprintf(stderr, "timesheet metrics import: warning: --config %s unreadable; continuing without a metrics section: %v\n", path, err)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(stderr, "timesheet metrics import: warning: config %s unreadable; continuing without a metrics section: %v\n", path, err)
+		}
+		return metricsConfig{}
+	}
+	var cfg cliConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		fmt.Fprintf(stderr, "timesheet metrics import: warning: config %s unparseable; continuing without a metrics section: %v\n", path, err)
+		return metricsConfig{}
+	}
+	if err := cfg.Metrics.Validate(); err != nil {
+		fmt.Fprintf(stderr, "timesheet metrics import: warning: config %s has an invalid metrics section; continuing without it: %v\n", path, err)
+		return metricsConfig{}
+	}
+	return cfg.Metrics
+}
+
+// loadMetricsCatalog resolves and loads the model catalog. Resolution order is the
+// flag, then the config's `metrics.model_catalog`, then NOTHING: no harness is
+// privileged, so there is no built-in default catalog and an unconfigured run
+// prices nothing (every price unknown, never 0). A missing or unparseable file
+// WARNS on stderr and returns a nil catalog: it never changes an exit code.
+func loadMetricsCatalog(flagValue string, cfg metricsConfig, stderr io.Writer) *metrics.ModelCatalog {
+	path := resolveModelCatalogPath(flagValue, cfg)
+	if path == "" {
+		fmt.Fprintln(stderr, "timesheet metrics import: warning: no model catalog configured (--model-catalog or metrics.model_catalog); session prices are unknown")
 		return nil
 	}
 	cat, err := metrics.LoadModelCatalog(path)
@@ -406,19 +508,98 @@ func loadMetricsCatalog(flagValue string, stderr io.Writer) *metrics.ModelCatalo
 	return cat
 }
 
-// resolveModelCatalogPath is the catalog resolution order: the flag, else
-// $PI_MODEL_CATALOG, else ~/.pi/agent/models-store.json.
-func resolveModelCatalogPath(flagValue string) string {
+// resolveModelCatalogPath is the catalog resolution order: the flag, else the
+// config's metrics.model_catalog, else "" (NO catalog). The removed arms —
+// $PI_MODEL_CATALOG and ~/.pi/agent/models-store.json — are deliberately gone: pi is
+// not a default agent.
+//
+// A config-derived value is home-expanded at READ time (a document may legitimately
+// store "~/cat.json"); the value is never rewritten on disk, and a flag value is
+// passed through as the operator typed it (the shell already expanded it).
+func resolveModelCatalogPath(flagValue string, cfg metricsConfig) string {
 	if p := strings.TrimSpace(flagValue); p != "" {
 		return p
 	}
-	if p := strings.TrimSpace(os.Getenv("PI_MODEL_CATALOG")); p != "" {
-		return p
+	return expandHome(strings.TrimSpace(cfg.ModelCatalog))
+}
+
+// preserveStoredDeclarations copies a STORED record's stronger declaration state
+// onto the freshly built session, so a BARE re-import of an unchanged transcript
+// cannot destroy an operator's earlier --model / --declare-total. It returns a
+// non-empty note naming only what it preserved.
+//
+// Rank is unknown < declared/synthesized < observed on both axes, so observed
+// outranks everything and a re-import never overwrites a stronger stored value. The
+// model axis is compared through metrics.EffectiveModelSource, so a LEGACY record
+// (empty model_source with a real model) still ranks as observed; the source is
+// written back EFFECTIVE, so a preserved record never re-emits an empty label.
+//
+// The model ID is a property of the session and is preserved across a reparse, but
+// its DERIVED evidence is gated on the CONTENT HASH exactly like the total: when the
+// stored hash matches, the stored evidence is the current evidence and is copied;
+// when it differs (or the stored hash is empty, which cannot be compared and so is
+// never treated as a match) the transcript was parsed again, so ONLY the id is kept
+// and the per-model usage/price/cost is re-resolved from the CURRENT parse under
+// that id — otherwise a grown transcript would keep an old call count, leaving
+// sum(Models[].TotalTokens) disagreeing with TotalTokens and the cost derived from
+// tokens that are no longer the session's.
+//
+// The TOTAL is preserved only when the CONTENT HASH is unchanged: a synthesized
+// total is a function of the call set, so a different call set must never inherit
+// an old lower bound.
+//
+// The helper is keyed on the DECLARATION fields only, so the price-refresh rule is
+// untouched: a catalog-only change still no-ops in WriteSession.
+func preserveStoredDeclarations(cur *metrics.SessionRecord, stored metrics.SessionRecord, cat *metrics.ModelCatalog) string {
+	// sameParse is EXACTLY the total branch's gate below.
+	sameParse := stored.ContentHash != "" && stored.ContentHash == cur.ContentHash
+	var parts []string
+	storedModelSource := metrics.EffectiveModelSource(stored)
+	if modelSourceRank(storedModelSource) > modelSourceRank(metrics.EffectiveModelSource(*cur)) {
+		if sameParse {
+			cur.Model = stored.Model
+			cur.Models = stored.Models
+			cur.Price = stored.Price
+			cur.PriceSource = stored.PriceSource
+			cur.Cost = stored.Cost
+		} else {
+			metrics.ReattributeSessionModel(cur, stored.Model, cat)
+		}
+		cur.ModelSource = storedModelSource
+		parts = append(parts, fmt.Sprintf("model=%s (model_source=%s)", orUnknown(stored.Model), orUnknown(string(storedModelSource))))
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".pi", "agent", "models-store.json")
+	storedTotal := metrics.EffectiveTotalTokensSource(stored)
+	if sameParse &&
+		totalSourceRank(storedTotal) > totalSourceRank(metrics.EffectiveTotalTokensSource(*cur)) {
+		cur.TotalTokens = stored.TotalTokens
+		cur.TotalTokensSource = storedTotal
+		parts = append(parts, fmt.Sprintf("total_source=%s", storedTotal))
 	}
-	return ""
+	return strings.Join(parts, " ")
+}
+
+// modelSourceRank orders the model sources by strength: a stronger source is never
+// replaced by a weaker one.
+func modelSourceRank(s metrics.ModelSource) int {
+	switch s {
+	case metrics.ModelSourceObserved:
+		return 2
+	case metrics.ModelSourceDeclared:
+		return 1
+	}
+	return 0
+}
+
+// totalSourceRank orders the total sources by strength, mirroring
+// modelSourceRank: observed outranks synthesized, which outranks unknown.
+func totalSourceRank(s metrics.TotalTokensSource) int {
+	switch s {
+	case metrics.TotalTokensSourceObserved:
+		return 2
+	case metrics.TotalTokensSourceSynthesized:
+		return 1
+	}
+	return 0
 }
 
 // orUnknown renders an empty string as "unknown" (never as blank or 0).
@@ -570,7 +751,13 @@ func cmdMetricsReport(ctx context.Context, args []string, stdout, stderr io.Writ
 			fmt.Fprintln(stderr, "timesheet metrics report:", err)
 			return exitError
 		}
-		if err := metrics.RenderTable(stdout, metrics.TableInput{Aggregate: agg, Runs: runs}); err != nil {
+		// The day's SESS-TOKENS sum can include synthesized lower bounds; count the
+		// day's sessions whose total was stamped that way so the table can say so.
+		// The aggregate's JSON is unchanged: this is a rendering note only, and a
+		// session-read failure degrades the note (warning) instead of failing a table
+		// that `--format json` would have printed.
+		synthesized := metricsSynthesizedSessionCount(store, d, stderr)
+		if err := metrics.RenderTable(stdout, metrics.TableInput{Aggregate: agg, Runs: runs, SynthesizedSessions: synthesized}); err != nil {
 			fmt.Fprintln(stderr, "timesheet metrics report:", err)
 			return exitError
 		}
@@ -737,6 +924,35 @@ func metricsCallCount(store *metrics.Store, date string) (int, error) {
 		n += len(runs[i].Calls)
 	}
 	return n, nil
+}
+
+// metricsSynthesizedSessionCount counts the day's sessions whose total was stamped
+// as a synthesized lower bound (`--declare-total`). Only sessions whose LOGGED date
+// is this day participate, the same rule the aggregate's session lane uses. A
+// legacy record with an empty total_source is normalized by
+// metrics.EffectiveTotalTokensSource, so it is never mistaken for synthesized.
+//
+// A read failure is ADVISORY: the footnote is a rendering note, not a measurement,
+// so the table still renders and exits 0 (like `--format json`, which never reads
+// sessions at all) with a warning instead of failing the report. `metrics
+// aggregate` keeps its hard failure, because it genuinely needs the full session
+// set to build the day's lane.
+func metricsSynthesizedSessionCount(store *metrics.Store, date string, stderr io.Writer) int {
+	sessions, err := store.ListSessions()
+	if err != nil {
+		fmt.Fprintf(stderr, "timesheet metrics report: warning: could not read stored sessions; the synthesized-total footnote may be incomplete: %v\n", err)
+		return 0
+	}
+	n := 0
+	for i := range sessions {
+		if sessions[i].LoggedDate != date {
+			continue
+		}
+		if metrics.EffectiveTotalTokensSource(sessions[i]) == metrics.TotalTokensSourceSynthesized {
+			n++
+		}
+	}
+	return n
 }
 
 // metricsRecordSource builds the narrow workflow RecordSource the aggregate reads

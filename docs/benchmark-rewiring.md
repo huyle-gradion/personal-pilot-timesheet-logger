@@ -20,6 +20,43 @@ record, not here.
 
 Both feed the 3.6 proof; neither substitutes for the other. ADR-0006:24–27 keeps both deliberately.
 
+The `store` row above describes where each lane's DATA lives, which is still true. *(Superseded
+2026-10-21 by #126 for the CHART only: `cmd/benchmark -chart` no longer charts the CSV's token
+columns — it reads the metrics store's day aggregates. The CSV row remains the store for
+`-record` and `-report`. See [Reversal, 2026-10-21](#reversal-2026-10-21-126-the-charts-source-moves).)*
+
+### Reversal, 2026-10-21 (#126): the chart's source moves
+
+The pipeline lane keeps its wall-clock/RSS CSV; the chart stops reading it. `cmd/benchmark
+-chart` now reads the metrics store's day aggregates and draws each day's
+`session_total_tokens` — the same number `metrics report` prints — and prints its source on
+the output as `source: <dir> day aggregates (harness session tokens, reasoning excluded; day
+totals may include synthesized lower bounds; see: timesheet metrics sessions --format json ->
+total_source)`. Costs, stated:
+
+- The chart no longer answers the pipeline question "what did the `timesheet` CLI cost per
+  day?" for tokens; it answers the harness question. `-report` still answers the pipeline
+  question from the CSV, so the instrument as a whole loses nothing — the split is now
+  explicit in one flag's help text instead of implied.
+- The ceiling tick on the chart becomes a REFERENCE, not a budget, and the chart SAYS so:
+  after the chart it prints `reference: 1,000/day is the editorial-child soft target;
+  [PASS]/[OVER] compares harness session tokens against it — it is not a harness
+  budget. (use -ceiling to change)`. The verdict is `[PASS]` when every charted day with a
+  KNOWN total is at or below the ceiling and `[OVER]` when any is above it. When no charted
+  day carries a known total the comparison clause is replaced by `[n/a] — no charted day
+  carries a known total. This is not a harness budget. (use -ceiling to change)`, so an
+  unmeasured chart is never called a pass. 1,000 still
+  has one home and still governs the editorial-child lane as a soft target, and no harness
+  budget is claimed (see §2's supersession note and OWNER-DECISION-7).
+- A day's figure can include a synthesized lower bound (`metrics import --declare-total`), so
+  the source line names that caveat rather than leaving it to the aggregate JSON; the
+  per-session label is `total_source` in `metrics sessions --format json`.
+- The chart requires a metrics store to draw anything. With no store it prints one line and
+  no axis; with a corrupt aggregate it exits 1 naming the date. The day axis therefore
+  reflects imported sessions, not pipeline rows.
+- The `-metrics-dir` flag is new and names the store; it is distinct from `-storage-dir`,
+  which keeps its workflow-store meaning.
+
 ### Corrections to anchors as filed
 
 - **`internal/benchmark/parser.go:16-40` is stale.** The invented union is `rawTokenRecord` at
@@ -118,6 +155,13 @@ to the bar. The same
 number is already applied at synthesize time (`internal/run/synthesize.go:41`,
 `editorial/synthesize.go:103`, `editorial/config.go:55–60`), so chart and budget compare
 one lane to one number.
+
+*(Superseded 2026-10-21 by #126: the ceiling's home, value and editorial-child meaning stand,
+but the CHART no longer compares that lane. It compares a day's `session_total_tokens` against
+the same 1,000 as a REFERENCE line. No harness budget is claimed and no number is invented for
+harness tokens — the reversal is in the label and in the ADR, not in a second constant. See
+[Reversal, 2026-10-21](#reversal-2026-10-21-126-the-charts-source-moves) and
+OWNER-DECISION-7.)*
 
 ## 3. Record-fed columns: the mechanism
 
@@ -327,6 +371,12 @@ not a zero-fill: the bar is OMITTED and the day's status prints `unknown` — ne
 `0 ≤ ceiling` tick for a day nobody measured. R1 asserts this for the chart as well as the
 report, because neither R1's store/report legs nor R4's flag plumbing alone proves it.
 
+*(Superseded 2026-10-21 by #126: the chart's input is now the metrics store's day aggregates,
+not the CSV's `TotalTokens`. The UNKNOWN RULE above is unchanged and now governs
+`session_total_tokens`: an unknown session total omits the bar and the day's status prints
+`unknown`, never `0`. The recorded rows and the CSV reader keep their nil-token behavior. See
+[Reversal, 2026-10-21](#reversal-2026-10-21-126-the-charts-source-moves).)*
+
 **The three historical rows** (`benchmarks/metrics.csv:2-4`; 2026-10-06/07/08; totals 180/295/287;
 `cache_tokens` 0) are consistent with this scope: a few hundred **editorial-child** tokens per day
 is what one `[AI]` call plus a retry looks like, and `cache_tokens 0` means the editor reported no
@@ -407,6 +457,13 @@ adapters; `CacheWrite` unknown ⇒ `ConsumedTokens` unknown ⇒ nil cache-hit; e
    and letting `auto` on garbage fail via `ErrUnknownProvider` only.
 7. **Ceiling scope.** The 1000 governs the editorial-child lane only (§2). Confirm that
    harness-session tokens remain ceiling-free — no number is invented for them.
+
+   *(REVERSED 2026-10-21 by #126, in part: harness-session tokens remain free of any BUDGET —
+   no number governs them and none is invented. But the CHART now draws a day's
+   `session_total_tokens` against the same 1,000 as a REFERENCE line, labelled as such. The
+   decision's substance (no invented harness ceiling) stands; its "ceiling-free" wording does
+   not describe the chart any more. See
+   [Reversal, 2026-10-21](#reversal-2026-10-21-126-the-charts-source-moves).)*
 
 ## Owner visibility (not a decision — stated so nothing arrives unannounced)
 

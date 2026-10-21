@@ -146,6 +146,8 @@ Use a soft daily target of **1,000** editorial tokens/day, counting input, outpu
 
 The legacy `benchmark.DefaultTokenCeiling = 600` is **deleted** (`internal/benchmark` now states no budget at all). The 1,000 target is defined ONCE as `workflow.EditorialTokenCeiling` and governs the editorial-child token lane only: harness-session tokens have no ceiling. `internal/benchmark`'s CSV token columns are copied from the day's workflow record (never parsed from a transcript), an unknown cell is empty and prints `unknown` rather than `0`, and `cmd/benchmark -ceiling` governs both the chart and the report's compliance line (amended 2026-10-20 by #69; see ADR-0006's Amendments).
 
+*(Amended 2026-10-21 by #126: the second sentence's "harness-session tokens have no ceiling" still means no harness BUDGET — no number governs a session and none is invented. But the CHART now charts a day's session total, so `cmd/benchmark -chart` draws that number against the same 1,000 as an explicitly labelled REFERENCE line. The chart's source is the metrics store's day aggregates; `-report` keeps the CSV. See ADR-0006's 2026-10-21 amendment.)*
+
 The original bare-JSON and per-call token choices are not additional binding requirements. Choose and validate the editorial output contract during implementation without weakening the text-only boundary.
 
 ## Required verification

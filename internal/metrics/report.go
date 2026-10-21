@@ -17,6 +17,12 @@ import (
 type TableInput struct {
 	Aggregate DailyAggregate
 	Runs      []RunRecord
+	// SynthesizedSessions is the day's count of session totals stamped by
+	// `metrics import --declare-total` (TotalTokensSource == synthesized). A day's
+	// SESS-TOKENS sum can include those lower bounds, so the table must say so; the
+	// aggregate's JSON is unchanged (no key is added), which is why this lives on
+	// the INPUT and not on DailyAggregate.
+	SynthesizedSessions int
 }
 
 // RenderJSON writes the DailyAggregate verbatim: struct field order is stable and
@@ -75,6 +81,7 @@ var tableColumns = []struct {
 	{"SESSIONS", 8},
 	{"SESS-CACHEHIT", 12},
 	{"SESS-COST", 12},
+	{"SESS-TOKENS", 12},
 	{"UNASSOC", 8},
 	{"STATES", 0},
 }
@@ -112,6 +119,11 @@ func RenderTable(w io.Writer, in TableInput) error {
 		strconv.Itoa(agg.SessionCount),
 		formatOptionalPercent(agg.SessionCacheHitPct),
 		formatOptionalCost(agg.SessionCost),
+		// SESS-TOKENS is the SESSION lane's own total (harness session tokens), the
+		// same figure the benchmark chart draws. It is never the step-attributed
+		// Orchestration columns, and it is unknown-propagating: one unknown session
+		// total makes the day's figure unknown, never a partial sum.
+		formatMeasurement(agg.SessionTotalTokens),
 		strconv.Itoa(agg.UnassociatedSessions),
 		formatStates(states),
 	}
@@ -120,6 +132,14 @@ func RenderTable(w io.Writer, in TableInput) error {
 	}
 	if agg.Provenance == ProvenanceDeclared {
 		if _, err := fmt.Fprintln(w, "[declared schema] one or more runs were parsed from a declared provider schema not verified first-hand on this host"); err != nil {
+			return err
+		}
+	}
+	// A day's SESS-TOKENS figure may include a lower bound, so the day says so in
+	// ONE footnote after the batch — the same style as the [declared schema] note,
+	// and only when such a session actually exists.
+	if in.SynthesizedSessions > 0 {
+		if _, err := fmt.Fprintf(w, "[synthesized] %d session total(s) on this day include synthesized lower bounds (total_source=synthesized; stamped by: metrics import --declare-total)\n", in.SynthesizedSessions); err != nil {
 			return err
 		}
 	}

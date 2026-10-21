@@ -79,8 +79,17 @@ func BuildSession(run RunRecord, cat *ModelCatalog, loc *time.Location) SessionR
 		Models:        []SessionModel{},
 		Provenance:    run.Provenance,
 	}
+	// An OBSERVED total is the transcript's own call counters. It is labelled so a
+	// later `--declare-total` can never downgrade it (see DeclareSessionTotal). An
+	// unavailable total carries the UNKNOWN source, never `observed`.
+	if rec.TotalTokens.Known {
+		rec.TotalTokensSource = TotalTokensSourceObserved
+	} else {
+		rec.TotalTokensSource = TotalTokensSourceUnknown
+	}
 	rec.Models = buildSessionModels(run.Calls, cat)
 	rec.Model = singleModel(rec.Models)
+	rec.ModelSource = modelSourceFor(run)
 	rec.Price, rec.PriceSource = sessionPrice(rec.Models)
 	rec.Cost = sessionCost(rec.Models)
 	rec.CacheHitPct = CacheHitPercent(run.Usage)
@@ -122,27 +131,193 @@ func buildSessionModels(calls []CallRecord, cat *ModelCatalog) []SessionModel {
 			Model:       a.model,
 			Usage:       a.usage,
 			TotalTokens: a.usage.ConsumedTokens(),
-			PriceSource: PriceSourceUnknown,
 		}
-		// A present-but-empty catalog cost (key exists, every rate nil) is UNKNOWN,
-		// not `catalog`: the label is never stronger than the evidence. Lookup's own
-		// contract is unchanged (key presence -> ok); this resolution is the single
-		// place that downgrades an all-nil price.
-		if price, ok := cat.Lookup(a.provider, a.model); ok && !priceIsUnknown(price) {
-			sm.Price = price
-			sm.PriceSource = PriceSourceCatalog
-		}
+		sm.Price, sm.PriceSource = resolveCatalogPrice(a.provider, a.model, cat)
 		sm.Cost = EstimateCost(a.usage, sm.Price)
 		out = append(out, sm)
 	}
 	return out
 }
 
+// resolveCatalogPrice resolves a (provider, model) price and its label. It is the
+// SINGLE place that resolves a catalog price, so buildSessionModels and
+// DeclareSessionModel cannot drift. The lookup key is (provider, model) ONLY: there
+// is deliberately no model-only fallback. A present-but-empty catalog cost (key
+// exists, every rate nil) is UNKNOWN, not `catalog`: the label is never stronger
+// than the evidence.
+func resolveCatalogPrice(provider, model string, cat *ModelCatalog) (TokenPrice, PriceSource) {
+	if price, ok := cat.Lookup(provider, model); ok && !priceIsUnknown(price) {
+		return price, PriceSourceCatalog
+	}
+	return TokenPrice{}, PriceSourceUnknown
+}
+
 // priceIsUnknown reports whether a resolved TokenPrice carries NO evidence: every
 // one of its four rates is nil. Such a price is treated as unknown rather than
-// labelled `catalog` (see buildSessionModels).
+// labelled `catalog` (see resolveCatalogPrice).
 func priceIsUnknown(p TokenPrice) bool {
 	return p.Input == nil && p.Output == nil && p.CacheRead == nil && p.CacheWrite == nil
+}
+
+// modelSourceFor labels how the session's model identifier was established. A
+// model the transcript itself carried is OBSERVED; an empty model is NEVER
+// observed. The run-level Model is checked first, then the calls, so a resumed
+// session whose model appears only on its calls is still observed.
+func modelSourceFor(run RunRecord) ModelSource {
+	if strings.TrimSpace(run.Model) != "" {
+		return ModelSourceObserved
+	}
+	for i := range run.Calls {
+		if strings.TrimSpace(run.Calls[i].Model) != "" {
+			return ModelSourceObserved
+		}
+	}
+	return ModelSourceUnknown
+}
+
+// EffectiveModelSource returns the record's EFFECTIVE model source, normalizing the
+// EMPTY value a LEGACY record carries (one written before model_source existed): a
+// record that carries a model identifier was observed from the transcript, while one
+// that carries none was not. It is the model-axis twin of
+// EffectiveTotalTokensSource, so both declaration axes rank a legacy record
+// correctly instead of reading it as "unknown".
+func EffectiveModelSource(s SessionRecord) ModelSource {
+	switch s.ModelSource {
+	case ModelSourceObserved, ModelSourceDeclared, ModelSourceUnknown:
+		return s.ModelSource
+	}
+	if strings.TrimSpace(s.Model) != "" {
+		return ModelSourceObserved
+	}
+	return ModelSourceUnknown
+}
+
+// DeclareSessionModel stamps an OWNER-DECLARED model onto a session whose
+// transcript carries no model identifier. It returns false, changing nothing, when
+// model is blank or the session's model is already OBSERVED: observed outranks
+// declared (mirroring mergeProvenance's rank), so a declaration never overwrites
+// transcript evidence — including a LEGACY record, whose empty source is normalized
+// by EffectiveModelSource.
+//
+// On success it sets Model and every Models[i].Model, re-resolves each model's
+// price by the (provider, model) lookup ONLY (no model-only fallback), and
+// re-derives each cost. An unknown price stays unknown and a cost with any
+// unknown contributor stays nil (never 0).
+func DeclareSessionModel(s *SessionRecord, model string, cat *ModelCatalog) bool {
+	if s == nil {
+		return false
+	}
+	declared := strings.TrimSpace(model)
+	if declared == "" || EffectiveModelSource(*s) == ModelSourceObserved {
+		return false
+	}
+	ReattributeSessionModel(s, declared, cat)
+	s.ModelSource = ModelSourceDeclared
+	return true
+}
+
+// ReattributeSessionModel applies a model IDENTIFIER to the record's CURRENT
+// per-model evidence and re-resolves prices and costs, WITHOUT touching
+// ModelSource. It is the evidence half of DeclareSessionModel, shared by callers
+// that keep a stored model id across a NEW parse of the same session (a grown
+// transcript): the id is a declaration about the session, but the usage/price
+// evidence belongs to the parse that just happened, so sum(Models[].TotalTokens)
+// keeps matching TotalTokens and the cost keeps reflecting the tokens actually
+// seen. Prices resolve by the (provider, model) lookup ONLY (no model-only
+// fallback); an unknown price stays unknown and a cost with any unknown
+// contributor stays nil (never 0). A blank id changes nothing and returns false.
+func ReattributeSessionModel(s *SessionRecord, model string, cat *ModelCatalog) bool {
+	if s == nil {
+		return false
+	}
+	id := strings.TrimSpace(model)
+	if id == "" {
+		return false
+	}
+	s.Model = id
+	for i := range s.Models {
+		s.Models[i].Model = id
+		s.Models[i].Price, s.Models[i].PriceSource = resolveCatalogPrice(s.Models[i].Provider, id, cat)
+		s.Models[i].Cost = EstimateCost(s.Models[i].Usage, s.Models[i].Price)
+	}
+	s.Price, s.PriceSource = sessionPrice(s.Models)
+	s.Cost = sessionCost(s.Models)
+	return true
+}
+
+// SynthesizedSessionTotal returns the LOWER-BOUND session total for a DECLARED
+// (`--declare-total`) run: the sum of each call's KNOWN CONSUMED components —
+// exactly the four components ConsumedTokens sums (input + output + cacheRead +
+// cacheWrite), each contributing only WHEN KNOWN.
+//
+// Reasoning is EXCLUDED: it is not a consumed component (ConsumedTokens excludes
+// it too), so counting it here would produce a figure that is not a lower bound of
+// the total it stands in for. That is the whole point of the label: every term is
+// a component of the quantity being estimated.
+//
+// This is computed HERE, at session level, from the already-parsed counters: the
+// per-call CallRecord usage components stay exactly as parsed (a component the
+// provider did not report stays UNKNOWN), ConsumedTokens is unchanged, and no
+// internal/workflow schema or adapter is touched. An unknown component contributes
+// nothing, so the figure can only understate the session — which is why it is
+// labelled synthesized and never presented as observed.
+//
+// A run whose EVERY consumed component is unknown stays UNKNOWN: a synthesized 0
+// would claim a measurement nobody made.
+func SynthesizedSessionTotal(calls []CallRecord) workflow.Measurement {
+	total := int64(0)
+	known := false
+	for i := range calls {
+		u := calls[i].Usage
+		for _, m := range []workflow.Measurement{u.Input, u.Output, u.CacheRead, u.CacheWrite} {
+			if !m.Known {
+				continue
+			}
+			total += m.Value
+			known = true
+		}
+	}
+	if !known {
+		return workflow.UnknownMeasurement()
+	}
+	return workflow.KnownMeasurement(total)
+}
+
+// EffectiveTotalTokensSource returns the record's EFFECTIVE total source,
+// normalizing the EMPTY value a LEGACY record carries (one written before
+// total_source existed): a total that is known there was observed from the
+// transcript's own counters, and an unknown one was simply not observed.
+//
+// This is the ONE normalization site, and DeclareSessionTotal and the CLI's
+// import precedence both read it, so a legacy observed total can never be
+// downgraded to synthesized by a later declaration.
+func EffectiveTotalTokensSource(s SessionRecord) TotalTokensSource {
+	switch s.TotalTokensSource {
+	case TotalTokensSourceObserved, TotalTokensSourceSynthesized, TotalTokensSourceUnknown:
+		return s.TotalTokensSource
+	}
+	if s.TotalTokens.Known {
+		return TotalTokensSourceObserved
+	}
+	return TotalTokensSourceUnknown
+}
+
+// DeclareSessionTotal stamps a SYNTHESIZED (lower-bound) session total for a run
+// whose transcript carries no total. It returns false, changing nothing, when the
+// session's total is already OBSERVED (observed outranks synthesized, so a
+// declaration never downgrades a real total — including a LEGACY record whose empty
+// source means observed-when-known) or when no consumed component is known.
+func DeclareSessionTotal(s *SessionRecord, run RunRecord) bool {
+	if s == nil || EffectiveTotalTokensSource(*s) == TotalTokensSourceObserved {
+		return false
+	}
+	total := SynthesizedSessionTotal(run.Calls)
+	if !total.Known {
+		return false
+	}
+	s.TotalTokens = total
+	s.TotalTokensSource = TotalTokensSourceSynthesized
+	return true
 }
 
 // singleModel returns the session's model only when exactly one distinct

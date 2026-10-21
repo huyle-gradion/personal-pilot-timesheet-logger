@@ -537,62 +537,99 @@ $TS export --config "$CFG" --date "$DATE"
 This step is **optional and non-blocking**. It records token usage for the day so
 the 3.5 optimization can be measured (3.6). A failure here prints a warning and
 **does not** change any workflow exit code and **never** triggers a submission or a
-replay. Skip it entirely if no harness transcript is available. `$PI_SESSION` is the
-pi location; use the same command with another harness's transcript path in its
-place.
+replay. Skip it entirely if no harness transcript is available.
+
+**No harness is privileged.** The transcript location comes from the `metrics.transcripts`
+map in the `--config` document (harness name → its transcript root). If that key is
+unset, ASK THE USER for the path; never assume a harness and never fall back to
+another harness's convention.
 
 ```bash
-$TS metrics import --transcript "$PI_SESSION" --date "$DATE" && $TS metrics report --date "$DATE"
+$TS metrics import --transcript "<path>" --date "$DATE" && $TS metrics aggregate --date "$DATE" && $TS metrics report --date "$DATE"
 ```
 
-Locate the transcript by harness: pi uses `$PI_SESSION`; Claude Code keeps sessions
-at `~/.claude/projects/<project-slug>/<session-id>.jsonl`; Antigravity keeps a
-conversation's log at
+For reference, here is where each observed harness keeps its transcripts: Claude
+Code at `~/.claude/projects/<project-slug>/<session-id>.jsonl`; Antigravity at
 `~/.gemini/antigravity/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`
-(the fuller `transcript_full.jsonl` sits beside it). `metrics import` reads any of
+(the fuller `transcript_full.jsonl` sits beside it); and pi writes a JSONL session
+file whose path the harness supplies in `$PI_SESSION`. `metrics import` reads any of
 these through `--provider auto`, or explicitly with `--provider pi`,
 `--provider claude`, or `--provider antigravity`.
 
 - `import` reads the harness transcript and writes one run file; a reimport of an
   unchanged transcript is a no-op (content hash match). It also writes ONE session
-  record (the harness session's tokens) and prints a one-line session summary.
-- `import` takes `--model-catalog FILE` (the runtime `models-store.json`; default
-  `$PI_MODEL_CATALOG`, else `~/.pi/agent/models-store.json`) to price the session,
-  and `--timezone TZ` (an IANA zone; default the process local zone) for its
-  local-date association. A missing or unparseable catalog only **warns** and
-  continues with an unknown price — it never changes an exit code.
-- `import --date D` keeps its meaning (it overrides the run's date) AND records
-  **which day** the session logged: the session's logged date (the association key)
-  is set to `D` with association `import_flag`. Only this operator-stated value is
-  used; no transcript tool-argument value is decoded.
-- Without `--date`, the association falls back to the **local date of the session's
-  own workflow-step calls** (association `local_step_date`). That is the date the
-  session RAN, which equals the logged day only when the run happens on the day it
-  logs: **when you log a past day, pass `--date`, or the session is associated with
-  the run date instead of the day you logged.** Zero such dates, or more than one,
-  is `unknown`, and an `unknown` session is never folded into a day's totals.
+  record (the harness session's tokens) and prints a one-line session summary
+  (`model_source=… total_source=…`, so a declared or synthesized value is never
+  read as observed).
+- `import` prices the session from `--model-catalog FILE`, else the config
+  document's `metrics.model_catalog`. With neither there is NO catalog: prices are
+  `unknown` (never `0`). There is no environment variable and no built-in default
+  path. A config value may be written as `~/…` — it is expanded when read, and the
+  document is never rewritten. A missing or unparseable catalog only **warns** and
+  continues with an unknown price — it never changes an exit code. `--timezone TZ`
+  (an IANA zone; default the process local zone) sets the local-date association.
+- `import --model M` declares the session's model when the transcript carries none
+  (labelled `model_source=declared`); an observed model always outranks it.
+  `import --declare-total` is a BOOLEAN flag (no value; a positional after it is a
+  usage error) that stamps a **synthesized lower-bound total** for a transcript whose
+  components cannot yield one. The figure is exactly the sum of the four CONSUMED
+  components (input, output, cache read, cache write — reasoning is excluded, as in
+  `ConsumedTokens`), labelled `total_source=synthesized` and never presented as
+  observed. The component counters are unchanged: a declaration fills the total field
+  only and is never decomposed into components. A run with no known consumed
+  component is still refused rather than written as a synthesized `0`.
+- Declarations PERSIST across re-imports: a bare re-import of the same transcript
+  (no `--model`/`--declare-total` repeated) keeps the STORED `model`/`model_source`
+  and `total`/`total_source` instead of replacing them with the declaration-free
+  build, and prints one `preserved stored <id> declarations: …` note. Observed always
+  outranks declared and synthesized, so a stored observed value is never downgraded.
+  A catalog PRICE fix does not re-write an already-imported session (the content hash
+  governs). To refresh a stored price: `ls` `<metrics-dir>/sessions/` and remove the
+  file for that session — the file name is the session id with characters such as
+  `:` replaced by `_`, e.g. `sha256_<hex>.json` — then import again with the
+  corrected catalog and re-run `metrics aggregate --date D`.
+- `import --date D` is REQUIRED and records **which day** the import counts for: it
+  sets the run's date AND the session's logged date (the association key) to `D` with
+  association `import_flag`. No day is inferred from the transcript or the clock, and
+  no transcript tool-argument value is decoded. The `local_step_date` fallback below
+  survives only for records assembled WITHOUT an explicit day (legacy stored
+  sessions), not for new imports.
+- On the legacy path (no explicit day), the association falls back to the **local
+  date of the session's own workflow-step calls** (association `local_step_date`).
+  That is the date the session RAN, which equals the logged day only when the run
+  happens on the day it logs. Zero such dates, or more than one, is `unknown`, and an
+  `unknown` session is never folded into a day's totals.
 - `sessions` lists the stored session records: per session its id, provider, model,
   logged date, association, calls, input, output, cache read, cache write,
   cache-hit %, total tokens, price source, and cost. `--session ID` shows one
-  session, `--date D` filters by logged date, and `--format json` emits the records.
+  session, `--date D` filters by logged date, and `--format json` emits the records —
+  including each session's `model_source` and `total_source`, which is where a
+  per-session declaration label is authoritative.
 - `aggregate` is required before `report` if the day's runs changed:
   `$TS metrics aggregate --date "$DATE"`. Its one-line summary and its
   `--format json` output carry the session lane (session count, session cache-hit %,
   session cost, unassociated sessions).
 - `report --format json` prints the `DailyAggregate` verbatim; the default table
   prints fixed ASCII columns (including `SESSIONS`, `SESS-CACHEHIT`, `SESS-COST`,
-  and `UNASSOC`). Over `--from/--to`, `--format json` emits ONE JSON array of
-  aggregates.
-- **The honesty rule.** An unknown price or model prints `unknown` and is never
-  shown as `0` (a nil cache-hit or cost is `unknown`, never `0`). A session whose
-  day cannot be established is `unknown` (association `unknown`) and is NOT counted
-  into any day's totals: its day is never guessed, and it is never folded into a
-  day. It is surfaced **per-day and touch-scoped**: a day's `unassociated_sessions`
-  counts it ONLY when the queried date is one of its workflow-step `LocalDates`, so
-  a session straddling local midnight is reported on each day it actually touched
-  while its tokens are folded into none of them. An unassociated session with NO
-  dated workflow-step calls is counted in no day's aggregate at all; it stays
-  visible only through `metrics sessions`.
+  `SESS-TOKENS` and `UNASSOC`). `SESS-TOKENS` is the DAY's summed session lane — the
+  same figure the benchmark chart draws — and it is unknown-propagating: one unknown
+  session total makes the day's cell `unknown`, never a partial sum; the honest `0`
+  appears only for a day with zero sessions. Because that day sum can include a
+  synthesized lower bound, the table prints ONE footnote after the batch when it does
+  (`[synthesized] N session total(s) on this day include synthesized lower bounds …`);
+  the per-session label itself lives in `metrics sessions --format json`. Over
+  `--from/--to`, `--format json` emits ONE JSON array of aggregates.
+- **The honesty rule.** An unknown price, model or total prints `unknown` and is
+  never shown as `0` (a nil cache-hit or cost is `unknown`, never `0`). A declared
+  value is labelled declared/synthesized and never presented as observed; an observed
+  value outranks a declaration. A session whose day cannot be established is
+  `unknown` (association `unknown`) and is NOT counted into any day's totals: its day
+  is never guessed, and it is never folded into a day. It is surfaced **per-day and
+  touch-scoped**: a day's `unassociated_sessions` counts it ONLY when the queried date
+  is one of its workflow-step `LocalDates`, so a session straddling local midnight is
+  reported on each day it actually touched while its tokens are folded into none of
+  them. An unassociated session with NO dated workflow-step calls is counted in no
+  day's aggregate at all; it stays visible only through `metrics sessions`.
 - `compare --base D --target D` shows the base→target delta/percentage per metric
   (a percentage only when the base is Known and non-zero; otherwise `n/a`).
 - `run -- <command...>` records a live monotonic run for a command and derives its
@@ -602,6 +639,10 @@ these through `--provider auto`, or explicitly with `--provider pi`,
 - `--provider` selects the transcript adapter explicitly when auto-detection is not
   wanted, and `--metrics-dir` overrides the metrics store location. `import`,
   `report` and `compare` all accept `--metrics-dir`.
+- `import` also accepts `--config FILE` so it reads the config document's
+  `metrics.model_catalog` and `metrics.transcripts` without repeating them on the
+  command line. With no readable config document it **warns and continues** — a
+  missing metrics section never changes an exit code.
 - The transcript adapter extracts only counters, ids, timestamps, the `timesheet`
   subcommand token, and provider-native numeric cost; message text, tool arguments,
   and tool results are never persisted. A claude-schema run is marked

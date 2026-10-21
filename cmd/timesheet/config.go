@@ -474,6 +474,12 @@ func validateConfigDraft(ctx context.Context, cfg cliConfig) []string {
 		problems = append(problems, err.Error())
 	}
 
+	// Metrics: the harness-agnostic section (model catalog path + per-harness
+	// transcript locations) is validated OFFLINE, in isolation from any provider.
+	if err := cfg.Metrics.Validate(); err != nil {
+		problems = append(problems, err.Error())
+	}
+
 	// The managed-export daily_dir must stay relative to the vault.
 	if dd := strings.TrimSpace(cfg.DailyDir); dd != "" {
 		if err := checkRelativeDir(dd); err != nil {

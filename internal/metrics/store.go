@@ -148,13 +148,19 @@ func (s *Store) ListRuns(date string) ([]RunRecord, error) {
 }
 
 // WriteSession persists a session file. It mirrors WriteRun's content-hash
-// idempotence but ADDS the association fields to the decision: it writes when the
-// session file is absent, OR the ContentHash differs, OR LoggedDate differs, OR
-// Association differs. The extra terms make a re-import of the SAME transcript
-// with a corrected day (`--date D`, association `import_flag`) apply the
-// operator's explicit day instead of being silently dropped as a no-op. An
+// idempotence but ADDS the association AND declaration fields to the decision: it
+// writes when the session file is absent, OR the ContentHash differs, OR LoggedDate
+// differs, OR Association differs, OR Model differs, OR ModelSource differs, OR
+// TotalTokens differs, OR TotalTokensSource differs. The extra terms make a
+// re-import of the SAME transcript with a corrected day (`--date D`, association
+// `import_flag`) or with a new declaration (`--model`, `--declare-total`) apply the
+// operator's explicit values instead of being silently dropped as a no-op, while an
 // otherwise byte-identical repeat write is still a no-op. It returns whether a
 // write occurred.
+//
+// Callers that may build a record WITHOUT declarations must preserve the stored
+// declaration first (see cmd/timesheet's preserveStoredDeclarations); this method
+// applies no such policy — it only compares and writes.
 func (s *Store) WriteSession(rec SessionRecord) (bool, error) {
 	id, err := sanitizeRunID(rec.SessionID)
 	if err != nil {
@@ -168,7 +174,11 @@ func (s *Store) WriteSession(rec SessionRecord) (bool, error) {
 		if existing.ContentHash != "" &&
 			existing.ContentHash == rec.ContentHash &&
 			existing.LoggedDate == rec.LoggedDate &&
-			existing.Association == rec.Association {
+			existing.Association == rec.Association &&
+			existing.Model == rec.Model &&
+			existing.ModelSource == rec.ModelSource &&
+			existing.TotalTokens == rec.TotalTokens &&
+			existing.TotalTokensSource == rec.TotalTokensSource {
 			return false, nil
 		}
 	case errors.Is(rerr, os.ErrNotExist):
@@ -253,10 +263,17 @@ func (s *Store) WriteAggregate(agg DailyAggregate) (bool, error) {
 
 // ReadAggregate reads the daily aggregate file.
 func (s *Store) ReadAggregate(date string) (DailyAggregate, error) {
+	return ReadAggregateFile(s.dir, date)
+}
+
+// ReadAggregateFile reads <dir>/<date>.json. It CREATES nothing: a read of a
+// store that does not exist must not materialize one. A missing file is
+// ErrAggregateNotFound; an unparseable one is an error NAMING the date.
+func ReadAggregateFile(dir, date string) (DailyAggregate, error) {
 	if err := workflow.ValidateDate(date); err != nil {
 		return DailyAggregate{}, fmt.Errorf("metrics: invalid date: %w", err)
 	}
-	data, err := os.ReadFile(s.aggregatePath(date))
+	data, err := os.ReadFile(filepath.Join(dir, date+".json"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return DailyAggregate{}, ErrAggregateNotFound
@@ -268,6 +285,39 @@ func (s *Store) ReadAggregate(date string) (DailyAggregate, error) {
 		return DailyAggregate{}, fmt.Errorf("metrics: corrupt aggregate %s: %w", date, err)
 	}
 	return agg, nil
+}
+
+// ListAggregateDates returns the sorted dates that have a daily aggregate file in
+// dir. A missing directory yields zero dates and NO error, and the directory is
+// never created: a read-only consumer (the benchmark chart) cannot materialize a
+// store as a side effect of reading one.
+func ListAggregateDates(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("metrics: read metrics directory: %w", err)
+	}
+	dates := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		date := strings.TrimSuffix(name, ".json")
+		if err := workflow.ValidateDate(date); err != nil {
+			// Not a day aggregate (e.g. some other *.json artifact): skipped, never
+			// guessed into a day.
+			continue
+		}
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+	return dates, nil
 }
 
 // Aggregate lists the day's runs, builds the daily aggregate, and persists it. It

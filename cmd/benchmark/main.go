@@ -63,19 +63,21 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		entries     int
 		storageDir  string
 		ceiling     int64
+		metricsDir  string
 	)
 
 	fs.BoolVar(&recordMode, "record", false, "Record a new benchmark metric row")
-	fs.BoolVar(&chartMode, "chart", false, "Output terminal ASCII bar chart of daily token consumption")
+	fs.BoolVar(&chartMode, "chart", false, "Output terminal ASCII bar chart of the metrics store's daily session tokens")
 	fs.BoolVar(&reportMode, "report", false, "Output summary report and statistics of recorded benchmarks")
 	fs.StringVar(&targetDate, "date", "", "Date of the benchmark row in YYYY-MM-DD format (REQUIRED with -record; no day is inferred from the clock)")
-	fs.StringVar(&csvPath, "csv", benchmark.DefaultCSVPath, "Path to benchmarks metrics.csv file")
+	fs.StringVar(&csvPath, "csv", benchmark.DefaultCSVPath, "Path to benchmarks metrics.csv file (-record/-report only; -chart reads the metrics store)")
 	fs.StringVar(&runCmd, "run", "", "Optional shell command to execute and measure wall clock and peak RSS")
 	fs.Int64Var(&wallClockMS, "wall-clock-ms", 0, "Manual wall clock execution time in milliseconds")
 	fs.Float64Var(&peakRSSMB, "peak-rss-mb", 0.0, "Manual peak RSS memory in megabytes")
 	fs.IntVar(&entries, "entries", 0, "Number of timesheet entries logged (defaults to the day's workflow record)")
 	fs.StringVar(&storageDir, "storage-dir", "", "Directory of the workflow record store holding the day's entries and editorial tokens")
-	fs.Int64Var(&ceiling, "ceiling", workflow.EditorialTokenCeiling, "Daily editorial-child token ceiling for chart and compliance check")
+	fs.Int64Var(&ceiling, "ceiling", workflow.EditorialTokenCeiling, "Chart REFERENCE line in tokens: the editorial-child 1,000 (which governs a different lane) drawn against the day's harness session total")
+	fs.StringVar(&metricsDir, "metrics-dir", "", "Directory of the metrics store -chart reads the day aggregates from (default: ~/.timesheet/metrics)")
 
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
@@ -164,15 +166,14 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 		)
 	}
 
-	// 2. Chart Mode
+	// 2. Chart Mode. The source is the METRICS STORE's day aggregates, not the CSV:
+	// this reverses #69's record-fed CSV chart (owner decision, #126) and is carried
+	// by ADR-0006's 2026-10-21 amendment. The figure per day is the SESSION total —
+	// the same number `metrics report`'s SESS-TOKENS column shows — so there is one
+	// harness-token figure with two surfaces. The CSV stays the pipeline store for
+	// -record/-report, whose behavior is unchanged.
 	if chartMode {
-		metrics, err := benchmark.ReadMetrics(csvPath)
-		if err != nil {
-			fmt.Fprintf(errOut, "error: reading metrics from %s: %v\n", csvPath, err)
-			return ExitErr
-		}
-		if err := benchmark.RenderASCIIChart(out, metrics, ceiling); err != nil {
-			fmt.Fprintf(errOut, "error: rendering chart: %v\n", err)
+		if err := renderMetricsChart(out, errOut, resolveMetricsDir(metricsDir), ceiling); err != nil {
 			return ExitErr
 		}
 	}
@@ -191,6 +192,121 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	}
 
 	return ExitOK
+}
+
+// renderMetricsChart draws the day-by-day chart from the metrics store's day
+// aggregates. Three honest outcomes, none of which invents a number:
+//
+//   - no store or no aggregate yet: exit 0 with ONE line naming the command that
+//     creates one (an empty chart is not an error);
+//   - a corrupt aggregate: an error naming the date (exit 1), never a skipped day;
+//   - a day with no sessions or any unknown session total: a nil (UNKNOWN) figure,
+//     so internal/benchmark's own nil path omits the bar and prints `unknown`.
+//     A day nobody measured is never drawn as a 0 bar.
+//
+// internal/benchmark is byte-identical: the source mapping lives here, and the
+// aggregation row is handed to its unchanged RenderASCIIChart.
+func renderMetricsChart(out, errOut io.Writer, dir string, ceiling int64) error {
+	dates, err := metrics.ListAggregateDates(dir)
+	if err != nil {
+		fmt.Fprintf(errOut, "error: reading metrics day aggregates from %s: %v\n", dir, err)
+		return err
+	}
+	if len(dates) == 0 {
+		fmt.Fprintf(out, "no metrics day aggregates in %s yet (run: timesheet metrics aggregate --date YYYY-MM-DD)\n", dir)
+		return nil
+	}
+
+	rows := make([]benchmark.DailyMetric, 0, len(dates))
+	for _, date := range dates {
+		agg, err := metrics.ReadAggregateFile(dir, date)
+		if err != nil {
+			fmt.Fprintf(errOut, "error: metrics day aggregate %s: %v\n", date, err)
+			return err
+		}
+		rows = append(rows, benchmark.DailyMetric{Date: date, TotalTokens: sessionTotalCell(agg)})
+	}
+	if err := benchmark.RenderASCIIChart(out, rows, ceiling); err != nil {
+		fmt.Fprintf(errOut, "error: rendering chart: %v\n", err)
+		return err
+	}
+	// One printed line naming the source, so the figure is never mistaken for the
+	// editorial-child lane the CSV carries. The second clause keeps the day-level
+	// honesty: a day's total may be a lower bound, and the label for it lives on the
+	// session record.
+	fmt.Fprintf(out, "source: %s day aggregates (harness session tokens, reasoning excluded; day totals may include synthesized lower bounds; see: timesheet metrics sessions --format json -> total_source)\n", dir)
+	// And one printed line stating what the ceiling tick MEANS here, because the
+	// chart's verdict could otherwise read as a harness budget it is not.
+	fmt.Fprintln(out, chartReferenceLine(rows, ceiling))
+	return nil
+}
+
+// chartReferenceLine renders the chart's reference note. The verdict is stated
+// ONLY over the days that carry a known total: a chart of unmeasured days makes no
+// claim, and it says so in its own words rather than borrowing the comparison
+// clause. 1,000 stays the editorial-child soft target; the comparison here is a
+// REFERENCE against harness session tokens, not a harness budget.
+func chartReferenceLine(rows []benchmark.DailyMetric, ceiling int64) string {
+	known, over := 0, false
+	for _, r := range rows {
+		if r.TotalTokens == nil {
+			continue
+		}
+		known++
+		if *r.TotalTokens > ceiling {
+			over = true
+		}
+	}
+	prefix := fmt.Sprintf("reference: %s/day is the editorial-child soft target; ", formatThousands(ceiling))
+	if known == 0 {
+		return prefix + "[n/a] — no charted day carries a known total. This is not a harness budget. (use -ceiling to change)"
+	}
+	verdict := "[PASS]"
+	if over {
+		verdict = "[OVER]"
+	}
+	return prefix + verdict + " compares harness session tokens against it — it is not a harness budget. (use -ceiling to change)"
+}
+
+// formatThousands renders an integer with comma separators (1000 -> "1,000").
+func formatThousands(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	sign := ""
+	if strings.HasPrefix(s, "-") {
+		sign, s = "-", s[1:]
+	}
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	return sign + b.String()
+}
+
+// sessionTotalCell maps a day's session lane to the chart's nil-vs-value cell. A
+// day with ZERO sessions, or one whose session total is unknown, is nil (UNKNOWN):
+// the chart then omits the bar rather than printing a 0 it never measured.
+func sessionTotalCell(agg metrics.DailyAggregate) *int64 {
+	if agg.SessionCount == 0 || !agg.SessionTotalTokens.Known {
+		return nil
+	}
+	total := agg.SessionTotalTokens.Value
+	return &total
+}
+
+// resolveMetricsDir defaults -metrics-dir to ~/.timesheet/metrics, the same
+// resolution idiom cmd/timesheet uses (no shared package, deliberately: the two
+// binaries stay independently buildable).
+func resolveMetricsDir(dir string) string {
+	if d := strings.TrimSpace(dir); d != "" {
+		return d
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".timesheet", "metrics")
+	}
+	return ".timesheet/metrics"
 }
 
 // readDayColumns fills the token columns and the entry count from the day's
