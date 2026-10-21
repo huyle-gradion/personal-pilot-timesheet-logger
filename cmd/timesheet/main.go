@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -57,7 +58,7 @@ func main() {
 
 // cliConfig is the CLI's non-secret configuration document (stdlib JSON). It
 // embeds run.Config (the evidence config + optional date) and adds the storage,
-// vault, Gradion MCP, editorial, and classification settings.
+// vault, Gradion MCP, editorial, classification, and metrics settings.
 type cliConfig struct {
 	run.Config
 	StorageDir      string            `json:"storage_dir,omitempty"`
@@ -66,6 +67,62 @@ type cliConfig struct {
 	Gradion         gradionConfig     `json:"gradion,omitempty"`
 	Editorial       editorial.Config  `json:"editorial,omitempty"`
 	Classifications map[string]string `json:"classifications,omitempty"`
+	Metrics         metricsConfig     `json:"metrics,omitempty"`
+}
+
+// metricsConfig is the harness-AGNOSTIC metrics section. No harness is privileged:
+// the model catalog has no built-in default (a flag or this section, else NO
+// catalog and unknown prices), and each harness's transcript location root is a
+// free-form key in Transcripts. The keys are deliberately NOT validated against the
+// registered adapter names: a catalog of harnesses is not the adapter registry.
+type metricsConfig struct {
+	// ModelCatalog is the model catalog path used to price a session.
+	ModelCatalog string `json:"model_catalog,omitempty"`
+	// Transcripts maps a harness name to its transcript location root. The name is
+	// free-form documentation, never an adapter selector.
+	Transcripts map[string]string `json:"transcripts,omitempty"`
+}
+
+// Validate checks the metrics section OFFLINE and in ISOLATION from any provider:
+// every configured value must be non-blank after trimming, must contain neither a
+// URL scheme (`://`) nor a NUL byte, and is NEVER checked for existence. A missing
+// file is not a configuration error (a catalog problem only ever warns at import).
+func (m metricsConfig) Validate() error {
+	if raw := m.ModelCatalog; raw != "" {
+		if err := validateMetricsValue("metrics.model_catalog", raw); err != nil {
+			return err
+		}
+	}
+	names := make([]string, 0, len(m.Transcripts))
+	for name := range m.Transcripts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("metrics.transcripts: a harness key must not be blank")
+		}
+		if err := validateMetricsValue("metrics.transcripts."+name, m.Transcripts[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateMetricsValue applies the offline value rules shared by the metrics
+// section's keys: trimmed non-empty, no URL scheme, no NUL.
+func validateMetricsValue(field, raw string) error {
+	if strings.ContainsRune(raw, 0) {
+		return fmt.Errorf("%s must not contain a NUL byte", field)
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fmt.Errorf("%s must not be blank", field)
+	}
+	if strings.Contains(value, "://") {
+		return fmt.Errorf("%s must be a path or location, not a URL", field)
+	}
+	return nil
 }
 
 // gradionConfig points at the Gradion MCP endpoint and a keychain reference for
@@ -295,6 +352,12 @@ func loadConfig(path string) (cliConfig, error) {
 		return cliConfig{}, fmt.Errorf("parse config: %w", err)
 	}
 	if err := cfg.Editorial.Validate(); err != nil {
+		return cliConfig{}, err
+	}
+	// The metrics section is validated OFFLINE, beside editorial: a bad catalog
+	// path or a blank transcript value is a configuration error, never a silent
+	// unknown-price import.
+	if err := cfg.Metrics.Validate(); err != nil {
 		return cliConfig{}, err
 	}
 	return cfg, nil

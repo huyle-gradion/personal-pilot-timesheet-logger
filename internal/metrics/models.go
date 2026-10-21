@@ -55,6 +55,45 @@ const (
 	ProvenanceUnknown Provenance = "unknown"
 )
 
+// ModelSource labels HOW a session's model identifier was established. It is a
+// DIFFERENT axis from Provenance, which labels how the run's measurements were
+// obtained: a run-level `[declared schema]` provenance is never changed by a
+// caller-declared model.
+type ModelSource string
+
+const (
+	// ModelSourceObserved is a model identifier the transcript itself carried. It
+	// OUTRANKS a declared model: an observed value is never overridden by a
+	// `metrics import --model` declaration.
+	ModelSourceObserved ModelSource = "observed"
+	// ModelSourceDeclared is an owner-declared model (`metrics import --model`)
+	// for a transcript that carries no model identifier.
+	ModelSourceDeclared ModelSource = "declared"
+	// ModelSourceUnknown is an unavailable model source. It is never guessed, and
+	// an empty value in a legacy record reads as unknown.
+	ModelSourceUnknown ModelSource = "unknown"
+)
+
+// TotalTokensSource labels WHERE a session's TotalTokens came from, so a
+// LOWER-BOUND figure is never presented as an observed total.
+type TotalTokensSource string
+
+const (
+	// TotalTokensSourceObserved is a total derived from the transcript's own call
+	// counters (`Usage.ConsumedTokens`). It OUTRANKS a synthesized total.
+	TotalTokensSourceObserved TotalTokensSource = "observed"
+	// TotalTokensSourceSynthesized is the LOWER-BOUND total stamped by
+	// `metrics import --declare-total`: the sum of each call's KNOWN usage
+	// components. Components the provider did not report contribute nothing, so
+	// the figure can only understate the session. It is never presented as
+	// observed, and an observed total always wins.
+	TotalTokensSourceSynthesized TotalTokensSource = "synthesized"
+	// TotalTokensSourceUnknown is an unavailable total source. An empty value in a
+	// legacy record is NORMALIZED by EffectiveTotalTokensSource (observed when the
+	// total is known, unknown otherwise), which is the one place that rule lives.
+	TotalTokensSourceUnknown TotalTokensSource = "unknown"
+)
+
 // Category classifies a call's accounting lane. Editorial and orchestration are
 // reported SEPARATELY and are never summed.
 type Category string
@@ -392,6 +431,14 @@ type SessionRecord struct {
 	Cost        *float64             `json:"cost"`
 	PriceSource PriceSource          `json:"price_source"`
 	Provenance  Provenance           `json:"provenance"`
+	// ModelSource labels where Model came from (observed transcript evidence vs an
+	// owner declaration). It is APPENDED, so every pre-existing key keeps its
+	// position. It is NOT a `metrics sessions` table column.
+	ModelSource ModelSource `json:"model_source"`
+	// TotalTokensSource labels where TotalTokens came from. A synthesized
+	// (`--declare-total`) total is a LOWER-BOUND figure and is never mixed with an
+	// observed one in PRECEDENCE: observed wins.
+	TotalTokensSource TotalTokensSource `json:"total_source"`
 }
 
 // BudgetReport is the soft daily editorial budget report. Spent is the editorial

@@ -804,3 +804,111 @@ func TestConfig_EditMissingConfigErrors(t *testing.T) {
 		t.Fatalf("the error should point at `config init`:\n%s", stderr)
 	}
 }
+
+// --- GAP-13 (#126): the metrics section is validated at LOAD and at AUTHORING ---
+
+// TestConfig_RejectsInvalidMetricsSectionAtAuthoring (D3/AC3) asserts the metrics
+// section is validated OFFLINE at authoring time: a URL catalog and a blank
+// transcript value are both rejected with no file written.
+func TestConfig_RejectsInvalidMetricsSectionAtAuthoring(t *testing.T) {
+	cases := []struct {
+		name    string
+		metrics metricsConfig
+		want    string
+	}{
+		{
+			name:    "url-catalog",
+			metrics: metricsConfig{ModelCatalog: "https://example.com/models-store.json"},
+			want:    "metrics.model_catalog",
+		},
+		{
+			name:    "blank-transcript-value",
+			metrics: metricsConfig{Transcripts: map[string]string{"pi": "   "}},
+			want:    "metrics.transcripts.pi",
+		},
+		{
+			name:    "nul-in-transcript-value",
+			metrics: metricsConfig{Transcripts: map[string]string{"claude": "~/.claude\x00/projects"}},
+			want:    "NUL",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := gitLocalConfig()
+			cfg.Metrics = tc.metrics
+			answers := filepath.Join(dir, "answers.json")
+			writeConfigDoc(t, answers, cfg)
+			out := filepath.Join(dir, "timesheet.json")
+
+			code, _, stderr := runConfigArgs(t, strings.NewReader(""), false, false,
+				"config", "init", "--answers", answers, "--out", out)
+			if code != exitError {
+				t.Fatalf("an invalid metrics section must be rejected, got %d (%s)", code, stderr)
+			}
+			if !strings.Contains(stderr, tc.want) {
+				t.Fatalf("the error must name the field %q:\n%s", tc.want, stderr)
+			}
+			if _, err := os.Stat(out); err == nil {
+				t.Fatalf("a rejected config must write nothing")
+			}
+		})
+	}
+}
+
+// TestConfig_AcceptsMetricsSection (D3/AC3) asserts a valid, harness-AGNOSTIC metrics
+// section is authored as written: free-form harness keys are NOT validated against
+// the adapter registry, and no existence check runs on the paths.
+func TestConfig_AcceptsMetricsSection(t *testing.T) {
+	dir := t.TempDir()
+	cfg := gitLocalConfig()
+	cfg.Metrics = metricsConfig{
+		ModelCatalog: "/nowhere/models-store.json",
+		Transcripts: map[string]string{
+			"pi":                   "~/.pi/agent/sessions",
+			"claude":               "~/.claude/projects",
+			"antigravity":          "~/.gemini/antigravity/brain",
+			"unknown-harness-name": "/somewhere/else",
+		},
+	}
+	answers := filepath.Join(dir, "answers.json")
+	writeConfigDoc(t, answers, cfg)
+	out := filepath.Join(dir, "timesheet.json")
+
+	code, _, stderr := runConfigArgs(t, strings.NewReader(""), false, false,
+		"config", "init", "--answers", answers, "--out", out)
+	if code != exitOK {
+		t.Fatalf("a valid metrics section must be accepted, got %d:\n%s", code, stderr)
+	}
+	written := string(mustReadFile(t, out))
+	for _, want := range []string{`"model_catalog": "/nowhere/models-store.json"`, `"unknown-harness-name": "/somewhere/else"`} {
+		if !strings.Contains(written, want) {
+			t.Fatalf("written config missing %s:\n%s", want, written)
+		}
+	}
+}
+
+// TestLoadConfig_RejectsInvalidMetricsSection (D3/AC3) asserts the SAME validator
+// runs on the fatal load path, beside editorial.
+func TestLoadConfig_RejectsInvalidMetricsSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "timesheet.json")
+	if err := os.WriteFile(path, []byte(`{"metrics":{"model_catalog":"https://example.com/store.json"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "metrics.model_catalog") {
+		t.Fatalf("loadConfig error = %v, want a metrics.model_catalog rejection", err)
+	}
+
+	ok := filepath.Join(dir, "ok.json")
+	if err := os.WriteFile(ok, []byte(`{"metrics":{"transcripts":{"pi":"~/.pi/agent/sessions"}}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := loadConfig(ok)
+	if err != nil {
+		t.Fatalf("a valid metrics section must load: %v", err)
+	}
+	if cfg.Metrics.Transcripts["pi"] != "~/.pi/agent/sessions" {
+		t.Fatalf("metrics section not loaded: %+v", cfg.Metrics)
+	}
+}

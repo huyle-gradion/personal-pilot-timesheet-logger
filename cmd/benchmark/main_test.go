@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/benchmark"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/metrics"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -66,12 +67,47 @@ func TestCLI_Record_RequiresDate(t *testing.T) {
 		t.Fatalf("a refused record must write no row, stat err = %v", err)
 	}
 
-	// -chart and -report do not read the date, so they are NOT gated.
-	if code := run(context.Background(), []string{"-chart", "-csv=" + csvPath}, strings.NewReader(""), &out, &errOut); code != ExitOK {
+	// -chart and -report do not read the date, so they are NOT gated. -chart reads
+	// the metrics store, so it gets an explicit (empty) -metrics-dir: the test never
+	// reads the developer's real ~/.timesheet/metrics.
+	emptyMetricsDir := filepath.Join(tempDir, "metrics")
+	if code := run(context.Background(), []string{"-chart", "-csv=" + csvPath, "-metrics-dir=" + emptyMetricsDir}, strings.NewReader(""), &out, &errOut); code != ExitOK {
 		t.Fatalf("-chart must not require -date, got code %d (err: %s)", code, errOut.String())
 	}
 	if code := run(context.Background(), []string{"-report", "-csv=" + csvPath}, strings.NewReader(""), &out, &errOut); code != ExitOK {
 		t.Fatalf("-report must not require -date, got code %d (err: %s)", code, errOut.String())
+	}
+}
+
+// seedMetricsDay writes ONE daily aggregate into dir for date, with the given
+// session lane. It is the chart's input now that -chart reads the metrics store
+// instead of the CSV.
+func seedMetricsDay(t *testing.T, dir, date string, sessionCount int, total *int64) {
+	t.Helper()
+	store, err := metrics.NewStore(dir)
+	if err != nil {
+		t.Fatalf("metrics store: %v", err)
+	}
+	agg := metrics.DailyAggregate{
+		SchemaVersion: metrics.SchemaVersion,
+		Date:          date,
+		RunIDs:        []string{},
+		SessionIDs:    []string{},
+		SessionCount:  sessionCount,
+		Budget: metrics.BudgetReport{
+			Target: workflow.EditorialTokenCeiling,
+			Spent:  workflow.UnknownMeasurement(),
+			State:  metrics.BudgetUnknownState,
+		},
+	}
+	if sessionCount > 0 {
+		agg.SessionIDs = []string{"s-" + date}
+	}
+	if total != nil {
+		agg.SessionTotalTokens = workflow.KnownMeasurement(*total)
+	}
+	if _, err := store.WriteAggregate(agg); err != nil {
+		t.Fatalf("write aggregate: %v", err)
 	}
 }
 
@@ -308,8 +344,10 @@ func TestCLI_Record_RunCommandError(t *testing.T) {
 func TestCLI_ChartAndReportModes(t *testing.T) {
 	tempDir := t.TempDir()
 	csvPath := filepath.Join(tempDir, "metrics.csv")
+	metricsDir := filepath.Join(tempDir, "metrics")
 
 	total := int64(420)
+	seedMetricsDay(t, metricsDir, "2026-10-08", 1, &total)
 	m := benchmark.DailyMetric{
 		Date:        "2026-10-08",
 		TotalTokens: &total,
@@ -320,12 +358,15 @@ func TestCLI_ChartAndReportModes(t *testing.T) {
 
 	// 1. Chart mode
 	var out1, errOut1 bytes.Buffer
-	code1 := run(context.Background(), []string{"-chart", "-csv=" + csvPath}, strings.NewReader(""), &out1, &errOut1)
+	code1 := run(context.Background(), []string{"-chart", "-metrics-dir=" + metricsDir, "-csv=" + csvPath}, strings.NewReader(""), &out1, &errOut1)
 	if code1 != ExitOK {
 		t.Fatalf("expected ExitOK for chart, got %d (err: %s)", code1, errOut1.String())
 	}
 	if !strings.Contains(out1.String(), "Token Consumption Trend") {
 		t.Errorf("expected chart header in stdout, got: %s", out1.String())
+	}
+	if !strings.Contains(out1.String(), "source: "+metricsDir+" day aggregates") {
+		t.Errorf("expected the chart source line, got: %s", out1.String())
 	}
 
 	// 2. Report mode
@@ -355,8 +396,10 @@ func TestCLI_ChartAndReportModes(t *testing.T) {
 func TestCLI_CeilingReachesBothRenderers(t *testing.T) {
 	tempDir := t.TempDir()
 	csvPath := filepath.Join(tempDir, "metrics.csv")
+	metricsDir := filepath.Join(tempDir, "metrics")
 
 	total := int64(900)
+	seedMetricsDay(t, metricsDir, "2026-10-08", 1, &total)
 	if err := benchmark.UpsertMetric(csvPath, benchmark.DailyMetric{Date: "2026-10-08", TotalTokens: &total}); err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +407,9 @@ func TestCLI_CeilingReachesBothRenderers(t *testing.T) {
 	runMode := func(args ...string) (string, string) {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		code := run(context.Background(), append(args, "-csv="+csvPath), strings.NewReader(""), &out, &errOut)
+		full := append([]string{}, args...)
+		full = append(full, "-csv="+csvPath, "-metrics-dir="+metricsDir)
+		code := run(context.Background(), full, strings.NewReader(""), &out, &errOut)
 		if code != ExitOK {
 			t.Fatalf("run %v: code=%d err=%s", args, code, errOut.String())
 		}
@@ -406,14 +451,23 @@ func TestCLI_ChartAndReport_ReadErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Chart read error
-	var out1, errOut1 bytes.Buffer
-	code1 := run(context.Background(), []string{"-chart", "-csv=" + dirAsCSV}, strings.NewReader(""), &out1, &errOut1)
-	if code1 != ExitErr {
-		t.Errorf("expected ExitErr (1) when reading metrics for chart fails, got %d", code1)
+	// 1. Chart read error: a CORRUPT aggregate is a typed error naming the date. The
+	// chart reads the metrics store, so its failure surface is a bad aggregate, not a
+	// bad CSV.
+	corruptMetricsDir := filepath.Join(tempDir, "corrupt-metrics")
+	if err := os.MkdirAll(corruptMetricsDir, 0o750); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(errOut1.String(), "error: reading metrics") {
-		t.Errorf("expected reading metrics error in errOut, got: %s", errOut1.String())
+	if err := os.WriteFile(filepath.Join(corruptMetricsDir, "2026-10-08.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out1, errOut1 bytes.Buffer
+	code1 := run(context.Background(), []string{"-chart", "-metrics-dir=" + corruptMetricsDir}, strings.NewReader(""), &out1, &errOut1)
+	if code1 != ExitErr {
+		t.Errorf("expected ExitErr (1) on a corrupt aggregate, got %d", code1)
+	}
+	if !strings.Contains(errOut1.String(), "2026-10-08") {
+		t.Errorf("the corrupt-aggregate error must name the date, got: %s", errOut1.String())
 	}
 
 	// 2. Report read error
@@ -424,6 +478,164 @@ func TestCLI_ChartAndReport_ReadErrors(t *testing.T) {
 	}
 	if !strings.Contains(errOut2.String(), "error: reading metrics") {
 		t.Errorf("expected reading metrics error in errOut, got: %s", errOut2.String())
+	}
+}
+
+// TestCLI_Chart_ReadsMetricsStoreDayAggregates (D2/AC2) asserts the chart's bar is
+// the day's SESSION total from the metrics store — the same number `metrics report`
+// shows in SESS-TOKENS — and that the CSV's editorial token column NO LONGER
+// reaches the chart. It also asserts the source line names the store.
+func TestCLI_Chart_ReadsMetricsStoreDayAggregates(t *testing.T) {
+	tempDir := t.TempDir()
+	metricsDir := filepath.Join(tempDir, "metrics")
+	csvPath := filepath.Join(tempDir, "metrics.csv")
+
+	sessionTotal := int64(730)
+	seedMetricsDay(t, metricsDir, "2026-10-08", 1, &sessionTotal)
+
+	// A DIFFERENT editorial figure in the CSV proves which source the chart reads.
+	csvTotal := int64(28)
+	if err := benchmark.UpsertMetric(csvPath, benchmark.DailyMetric{Date: "2026-10-08", TotalTokens: &csvTotal}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"-chart", "-metrics-dir=" + metricsDir, "-csv=" + csvPath}, strings.NewReader(""), &out, &errOut)
+	if code != ExitOK {
+		t.Fatalf("chart: code=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "730") {
+		t.Fatalf("the chart must draw the metrics store's session total (730):\n%s", out.String())
+	}
+	if strings.Contains(out.String(), " 28 ") {
+		t.Fatalf("the chart must NOT read the CSV's editorial column:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "source: "+metricsDir+" day aggregates (harness session tokens, reasoning excluded; day totals may include synthesized lower bounds; see: timesheet metrics sessions --format json -> total_source)") {
+		t.Fatalf("missing the honest source line:\n%s", out.String())
+	}
+	// The ceiling tick is a REFERENCE, never a harness budget, and the verdict is
+	// printed beside the chart.
+	if !strings.Contains(out.String(), "reference: 1,000/day is the editorial-child soft target; [PASS] compares harness session tokens against it — it is not a harness budget. (use -ceiling to change)") {
+		t.Fatalf("missing the reference/verdict line:\n%s", out.String())
+	}
+}
+
+// TestCLI_Chart_ReferenceVerdict (F5) asserts the verdict follows the ceiling and is
+// never claimed over unmeasured days: OVER above it, PASS at/below it, and [n/a]
+// when no day carries a known total.
+func TestCLI_Chart_ReferenceVerdict(t *testing.T) {
+	runChart := func(t *testing.T, dir string, extra ...string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		args := append([]string{"-chart", "-metrics-dir=" + dir}, extra...)
+		if code := run(context.Background(), args, strings.NewReader(""), &out, &errOut); code != ExitOK {
+			t.Fatalf("chart: code=%d err=%s", code, errOut.String())
+		}
+		return out.String()
+	}
+
+	// 1. A day over the default ceiling: [OVER], and the ceiling is comma-formatted.
+	overDir := filepath.Join(t.TempDir(), "metrics")
+	over := int64(1500)
+	seedMetricsDay(t, overDir, "2026-10-08", 1, &over)
+	out := runChart(t, overDir)
+	if !strings.Contains(out, "reference: 1,000/day is the editorial-child soft target; [OVER] compares harness session tokens against it") {
+		t.Fatalf("a day above the ceiling must read [OVER]:\n%s", out)
+	}
+
+	// 2. -ceiling reaches the reference line too, and a day under it reads [PASS].
+	passDir := filepath.Join(t.TempDir(), "metrics")
+	low := int64(730)
+	seedMetricsDay(t, passDir, "2026-10-09", 1, &low)
+	out = runChart(t, passDir, "-ceiling=2000")
+	if !strings.Contains(out, "reference: 2,000/day is the editorial-child soft target; [PASS]") {
+		t.Fatalf("the flag must reach the reference line and a day under it must read [PASS]:\n%s", out)
+	}
+
+	// 3. No known total anywhere: no PASS is claimed, and the comparison clause is
+	// not borrowed for a chart that measured nothing.
+	unknownDir := filepath.Join(t.TempDir(), "metrics")
+	seedMetricsDay(t, unknownDir, "2026-10-10", 1, nil)
+	out = runChart(t, unknownDir)
+	if !strings.Contains(out, "reference: 1,000/day is the editorial-child soft target; [n/a] — no charted day carries a known total. This is not a harness budget. (use -ceiling to change)") {
+		t.Fatalf("unmeasured days must state [n/a] in their own words, not a comparison:\n%s", out)
+	}
+	if strings.Contains(out, "[n/a] compares harness session tokens") {
+		t.Fatalf("the unmeasured arm must not borrow the comparison clause:\n%s", out)
+	}
+}
+
+// TestCLI_Chart_NoSessionsOrUnknownIsUnknown (D2/AC2) asserts a no-session day and
+// an unknown session total both render `unknown` with NO bar: never a 0 bar.
+func TestCLI_Chart_NoSessionsOrUnknownIsUnknown(t *testing.T) {
+	tempDir := t.TempDir()
+	metricsDir := filepath.Join(tempDir, "metrics")
+
+	// 2026-10-08 has no sessions at all; 2026-10-09 has one whose total is unknown.
+	seedMetricsDay(t, metricsDir, "2026-10-08", 0, nil)
+	seedMetricsDay(t, metricsDir, "2026-10-09", 1, nil)
+
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"-chart", "-metrics-dir=" + metricsDir}, strings.NewReader(""), &out, &errOut)
+	if code != ExitOK {
+		t.Fatalf("chart: code=%d err=%s", code, errOut.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.Contains(line, "2026-10-08") && !strings.Contains(line, "2026-10-09") {
+			continue
+		}
+		if !strings.Contains(line, "unknown") {
+			t.Fatalf("an unmeasured day must read unknown: %q", line)
+		}
+		if strings.Contains(line, "█") || strings.Contains(line, "░") {
+			t.Fatalf("an unmeasured day must draw NO bar: %q", line)
+		}
+		if strings.Contains(line, " 0 ") {
+			t.Fatalf("an unmeasured day must never render 0 as its token count: %q", line)
+		}
+	}
+}
+
+// TestCLI_Chart_EmptyStoreIsOneHonestLine (D2/AC2) asserts an absent store is exit 0
+// with ONE line naming the aggregating command, and that reading it CREATES no
+// directory.
+func TestCLI_Chart_EmptyStoreIsOneHonestLine(t *testing.T) {
+	tempDir := t.TempDir()
+	absent := filepath.Join(tempDir, "not-created", "metrics")
+
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"-chart", "-metrics-dir=" + absent}, strings.NewReader(""), &out, &errOut)
+	if code != ExitOK {
+		t.Fatalf("an empty store is not an error: code=%d err=%s", code, errOut.String())
+	}
+	want := "no metrics day aggregates in " + absent + " yet (run: timesheet metrics aggregate --date YYYY-MM-DD)\n"
+	if out.String() != want {
+		t.Fatalf("expected exactly one honest line:\n got: %q\nwant: %q", out.String(), want)
+	}
+	if _, err := os.Stat(absent); !os.IsNotExist(err) {
+		t.Fatalf("reading the chart source must NEVER create the store directory, stat err = %v", err)
+	}
+}
+
+// TestCLI_Chart_CorruptAggregateNamesDateAndFails (D2/AC2) asserts a corrupt day
+// aggregate is exit 1 with the date named — never a silently skipped day.
+func TestCLI_Chart_CorruptAggregateNamesDateAndFails(t *testing.T) {
+	tempDir := t.TempDir()
+	metricsDir := filepath.Join(tempDir, "metrics")
+	if err := os.MkdirAll(metricsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(metricsDir, "2026-10-08.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"-chart", "-metrics-dir=" + metricsDir}, strings.NewReader(""), &out, &errOut)
+	if code != ExitErr {
+		t.Fatalf("a corrupt aggregate must exit %d, got %d (out=%q)", ExitErr, code, out.String())
+	}
+	if !strings.Contains(errOut.String(), "2026-10-08") || !strings.Contains(errOut.String(), "corrupt aggregate") {
+		t.Fatalf("the error must be typed and name the date, got: %s", errOut.String())
 	}
 }
 

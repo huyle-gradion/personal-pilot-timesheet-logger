@@ -30,6 +30,7 @@ import (
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/benchmark"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/evidence"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/metrics"
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/workflow"
 )
 
@@ -270,6 +271,9 @@ func TestE2E_FullHeadlessPipeline(t *testing.T) {
 		"-storage-dir", benchRecords,
 		"-wall-clock-ms", "420",
 		"-chart",
+		// -chart reads the metrics store and this suite does not isolate $HOME: the
+		// flag is REQUIRED on every -chart invocation so the real store is never read.
+		"-metrics-dir", filepath.Join(baseTemp, "benchmark-metrics"),
 	)
 	if err != nil || code != 0 {
 		t.Fatalf("benchmark failed with code %d: %v\nstderr: %s", code, err, benchErrOut)
@@ -490,15 +494,64 @@ func TestE2E_BenchmarkMetrics(t *testing.T) {
 		t.Errorf("report output missing expected summary: %s", reportOut)
 	}
 
-	// 3. Verify chart mode
+	// 3. Verify chart mode. The chart reads the METRICS STORE's day aggregates (a
+	// reversal of #69's CSV-fed chart, carried by ADR-0006's 2026-10-21 amendment),
+	// so one session is seeded for the last day and aggregated through the real
+	// store. -metrics-dir is REQUIRED: this suite does not isolate $HOME.
+	metricsDir := filepath.Join(baseTemp, "metrics-store")
+	mstore, err := metrics.NewStore(metricsDir)
+	if err != nil {
+		t.Fatalf("metrics store: %v", err)
+	}
+	lastDay := days[len(days)-1].date
+	sessionTS := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	session := metrics.BuildSession(metrics.RunRecord{
+		RunID:      "e2e-chart-session",
+		SessionID:  "e2e-chart-session",
+		Provider:   "pi",
+		Date:       lastDay,
+		Provenance: metrics.ProvenanceObserved,
+		Usage:      metrics.KnownUsage(100, 20, 5, 1, 0),
+		Calls: []metrics.CallRecord{{
+			RunID:     "e2e-chart-session",
+			Provider:  "pi",
+			Model:     "e2e-model",
+			Usage:     metrics.KnownUsage(100, 20, 5, 1, 0),
+			Category:  metrics.CategoryOrchestration,
+			Step:      metrics.StepCollect,
+			Timestamp: sessionTS,
+		}},
+	}, nil, time.UTC)
+	session.LoggedDate = lastDay
+	session.Association = metrics.AssociationImportFlag
+	if _, err := mstore.WriteSession(session); err != nil {
+		t.Fatalf("writing session: %v", err)
+	}
+	if _, err := mstore.Aggregate(ctx, lastDay, nil); err != nil {
+		t.Fatalf("aggregating %s: %v", lastDay, err)
+	}
+
 	chartOut, chartErr, code, err := runCmd(ctx, "", binBenchmark, nil,
 		"-chart",
 		"-csv", csvPath,
+		"-metrics-dir", metricsDir,
 	)
 	if err != nil || code != 0 {
 		t.Fatalf("benchmark -chart failed: %v\nstderr: %s", err, chartErr)
 	}
 	if !strings.Contains(chartOut, "Daily LLM Token Consumption") {
 		t.Errorf("chart output missing header: %s", chartOut)
+	}
+	// The bar's figure is the day's SESSION total (100+20+5+1 = 126), not the CSV's
+	// editorial column.
+	if !strings.Contains(chartOut, "126") {
+		t.Errorf("chart must draw the metrics store's session total 126: %s", chartOut)
+	}
+	if !strings.Contains(chartOut, "source: "+metricsDir+" day aggregates (harness session tokens, reasoning excluded; day totals may include synthesized lower bounds; see: timesheet metrics sessions --format json -> total_source)") {
+		t.Errorf("chart output missing the honest source line: %s", chartOut)
+	}
+	// The ceiling tick is a REFERENCE against harness session tokens, not a budget.
+	if !strings.Contains(chartOut, "reference: 1,000/day is the editorial-child soft target; [PASS] compares harness session tokens against it — it is not a harness budget. (use -ceiling to change)") {
+		t.Errorf("chart output missing the reference line: %s", chartOut)
 	}
 }

@@ -460,3 +460,363 @@ func TestAggregate_UnassociatedSessionNotFoldedIntoDay(t *testing.T) {
 	// 100+10+5+1 = 116; the straddle's 7+3 must not appear.
 	assertKnown(t, "day session total tokens", agg.SessionTotalTokens, 116)
 }
+
+// TestSession_ModelSourceObservedOnlyWhenCarried (D3/AC3) asserts the model source
+// label: a transcript that carries a model is observed; an empty model is NEVER
+// observed (antigravity carries none).
+func TestSession_ModelSourceObservedOnlyWhenCarried(t *testing.T) {
+	ts := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+
+	carried := BuildSession(sessionCallRun("pi", "m1", KnownUsage(10, 1, 0, 0, 0), StepCollect, ts), nil, time.UTC)
+	if carried.ModelSource != ModelSourceObserved {
+		t.Fatalf("model source = %q, want observed", carried.ModelSource)
+	}
+
+	// A resumed session whose model appears only on its calls is still observed.
+	callOnly := sessionCallRun("pi", "m1", KnownUsage(10, 1, 0, 0, 0), StepCollect, ts)
+	callOnly.Model = ""
+	if got := BuildSession(callOnly, nil, time.UTC).ModelSource; got != ModelSourceObserved {
+		t.Fatalf("call-level model source = %q, want observed", got)
+	}
+
+	modeless := sessionCallRun("antigravity", "", KnownUsage(10, 1, 0, 0, 0), StepCollect, ts)
+	modeless.Model = ""
+	if got := BuildSession(modeless, nil, time.UTC).ModelSource; got != ModelSourceUnknown {
+		t.Fatalf("model-less session source = %q, want unknown (an empty model is never observed)", got)
+	}
+}
+
+// TestDeclareSessionModel_DeclaredStampsPriceByProviderAndModel (D3/AC3) asserts a
+// declaration stamps the model, re-resolves the price by (provider, model) ONLY, and
+// labels the source declared.
+func TestDeclareSessionModel_DeclaredStampsPriceByProviderAndModel(t *testing.T) {
+	ts := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	cat, err := ParseModelCatalog([]byte(`{
+		"pi":   {"models":[{"id":"costed","cost":{"input":1,"output":2,"cacheRead":0.5,"cacheWrite":0}}]},
+		"other":{"models":[{"id":"costed","cost":{"input":9,"output":9,"cacheRead":9,"cacheWrite":9}}]}
+	}`))
+	if err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	modeless := sessionCallRun("pi", "", KnownUsage(100, 10, 5, 1, 0), StepCollect, ts)
+	modeless.Model = ""
+	sess := BuildSession(modeless, cat, time.UTC)
+	if sess.ModelSource != ModelSourceUnknown || sess.PriceSource != PriceSourceUnknown {
+		t.Fatalf("pre-declaration = %q/%q, want unknown/unknown", sess.ModelSource, sess.PriceSource)
+	}
+
+	if !DeclareSessionModel(&sess, "costed", cat) {
+		t.Fatal("declaration was refused")
+	}
+	if sess.Model != "costed" || sess.ModelSource != ModelSourceDeclared {
+		t.Fatalf("declared model = %q/%q", sess.Model, sess.ModelSource)
+	}
+	if sess.PriceSource != PriceSourceCatalog {
+		t.Fatalf("price source = %q, want catalog", sess.PriceSource)
+	}
+	// The pi-provider price (1/2/0.5/0), NOT the same model id under "other".
+	if sess.Price.Input == nil || *sess.Price.Input != 1 {
+		t.Fatalf("price input = %v, want the pi entry's 1 (provider-keyed lookup)", sess.Price.Input)
+	}
+	// 100*1 + 10*2 + 5*0.5 + 1*0 = 122.5 / 1e6
+	if sess.Cost == nil || *sess.Cost != 0.0001225 {
+		t.Fatalf("cost = %v, want 0.0001225", sess.Cost)
+	}
+	if len(sess.Models) != 1 || sess.Models[0].Model != "costed" || sess.Models[0].PriceSource != PriceSourceCatalog {
+		t.Fatalf("per-model declaration not applied: %+v", sess.Models)
+	}
+}
+
+// TestDeclareSessionModel_NoModelOnlyFallback (D3/AC3) asserts the lookup is
+// (provider, model): a model listed only under ANOTHER provider is unknown, and the
+// cost is nil — never 0.
+func TestDeclareSessionModel_NoModelOnlyFallback(t *testing.T) {
+	ts := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	cat, err := ParseModelCatalog([]byte(`{"other":{"models":[{"id":"costed","cost":{"input":1,"output":1,"cacheRead":1,"cacheWrite":1}}]}}`))
+	if err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	modeless := sessionCallRun("pi", "", KnownUsage(10, 1, 0, 0, 0), StepCollect, ts)
+	modeless.Model = ""
+	sess := BuildSession(modeless, cat, time.UTC)
+	if !DeclareSessionModel(&sess, "costed", cat) {
+		t.Fatal("declaration was refused")
+	}
+	if sess.PriceSource != PriceSourceUnknown || sess.Cost != nil {
+		t.Fatalf("price/cost = %q/%v, want unknown/nil (no model-only fallback)", sess.PriceSource, sess.Cost)
+	}
+	if sess.Price.Input != nil {
+		t.Fatalf("price input = %v, want nil", *sess.Price.Input)
+	}
+}
+
+// TestDeclareSessionModel_ObservedOutranksDeclared (D3/AC3) asserts a transcript's
+// own model is NEVER overridden by a declaration, AND that the run-level Provenance
+// (the `[declared schema]` axis) is untouched by a model declaration.
+func TestDeclareSessionModel_ObservedOutranksDeclared(t *testing.T) {
+	ts := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	observed := BuildSession(sessionCallRun("pi", "observed-model", KnownUsage(10, 1, 0, 0, 0), StepCollect, ts), nil, time.UTC)
+	if DeclareSessionModel(&observed, "declared-model", nil) {
+		t.Fatal("a declaration must NOT override an observed model")
+	}
+	if observed.Model != "observed-model" || observed.ModelSource != ModelSourceObserved {
+		t.Fatalf("observed model changed: %q/%q", observed.Model, observed.ModelSource)
+	}
+
+	// Blank declarations are refused too.
+	if DeclareSessionModel(&observed, "   ", nil) {
+		t.Fatal("a blank declaration must be refused")
+	}
+
+	// The run-level provenance is a DIFFERENT axis: a declared-schema (claude) run
+	// stays declared after a model declaration, so the report still prints the marker.
+	claude := sessionCallRun("claude", "", KnownUsage(10, 1, 0, 0, 0), StepCollect, ts)
+	claude.Model = ""
+	claude.Provenance = ProvenanceDeclared
+	sess := BuildSession(claude, nil, time.UTC)
+	if !DeclareSessionModel(&sess, "declared-model", nil) {
+		t.Fatal("declaration on a declared-schema run was refused")
+	}
+	if sess.Provenance != ProvenanceDeclared {
+		t.Fatalf("run-level provenance = %q, want declared (a DIFFERENT axis, never changed)", sess.Provenance)
+	}
+}
+
+// TestDeclareSessionTotal_SynthesizedLowerBound (D3 owner extension) asserts the
+// declared total is the sum of each call's KNOWN components — a lower bound — while
+// the call records keep their per-component unknowns exactly as parsed.
+func TestDeclareSessionTotal_SynthesizedLowerBound(t *testing.T) {
+	ts := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	// The antigravity shape: no cache-write counter, no reasoning count.
+	u := KnownUsage(2740, 730, 1550, 0, 0)
+	u.CacheWrite = workflow.UnknownMeasurement()
+	u.Reasoning = workflow.UnknownMeasurement()
+	run := sessionCallRun("antigravity", "", u, StepCollect, ts)
+	run.Model = ""
+	run.Usage = u
+
+	sess := BuildSession(run, nil, time.UTC)
+	if sess.TotalTokens.Known {
+		t.Fatalf("pre-declaration total = %+v, want UNKNOWN", sess.TotalTokens)
+	}
+	if sess.TotalTokensSource != TotalTokensSourceUnknown {
+		t.Fatalf("pre-declaration total source = %q, want unknown", sess.TotalTokensSource)
+	}
+	if !DeclareSessionTotal(&sess, run) {
+		t.Fatal("declared total was refused")
+	}
+	assertKnown(t, "synthesized total", sess.TotalTokens, 2740+730+1550)
+	if sess.TotalTokensSource != TotalTokensSourceSynthesized {
+		t.Fatalf("total source = %q, want synthesized", sess.TotalTokensSource)
+	}
+	// The per-call components stay AS PARSED: the synthesis never invents a
+	// cache-write or reasoning counter.
+	if run.Calls[0].Usage.CacheWrite.Known || run.Calls[0].Usage.Reasoning.Known {
+		t.Fatalf("call components were rewritten: %+v", run.Calls[0].Usage)
+	}
+	// ConsumedTokens is UNCHANGED by the declaration: a synthesized session total
+	// never becomes an observed component sum.
+	if run.Calls[0].Usage.ConsumedTokens().Known {
+		t.Fatal("ConsumedTokens must stay UNKNOWN (the components are unchanged)")
+	}
+	// The declared TOTAL never makes the per-model totals observed.
+	for _, m := range sess.Models {
+		if m.TotalTokens.Known {
+			t.Fatalf("per-model total = %+v, want UNKNOWN (only the session total is synthesized)", m.TotalTokens)
+		}
+	}
+}
+
+// TestDeclareSessionTotal_ObservedWins (D3 owner extension) asserts an observed
+// total is never downgraded: the declaration is refused and the figure is unchanged.
+// The same rule makes a re-import with REAL totals win over a stored synthesized one.
+func TestDeclareSessionTotal_ObservedWins(t *testing.T) {
+	ts := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	run := sessionCallRun("pi", "m", KnownUsage(100, 10, 5, 1, 0), StepCollect, ts)
+	sess := BuildSession(run, nil, time.UTC)
+	if sess.TotalTokensSource != TotalTokensSourceObserved {
+		t.Fatalf("total source = %q, want observed", sess.TotalTokensSource)
+	}
+	if DeclareSessionTotal(&sess, run) {
+		t.Fatal("a declaration must NOT downgrade an observed total")
+	}
+	assertKnown(t, "observed total", sess.TotalTokens, 116)
+	if sess.TotalTokensSource != TotalTokensSourceObserved {
+		t.Fatalf("total source = %q, want observed", sess.TotalTokensSource)
+	}
+
+	// Nothing known anywhere: no synthesized 0 is ever stamped.
+	unknown := sessionCallRun("antigravity", "", UnknownUsage(), StepCollect, ts)
+	unknown.Usage = UnknownUsage()
+	us := BuildSession(unknown, nil, time.UTC)
+	if DeclareSessionTotal(&us, unknown) {
+		t.Fatal("a fully unknown run must not be stamped with a synthesized 0")
+	}
+	if us.TotalTokens.Known {
+		t.Fatalf("total = %+v, want UNKNOWN", us.TotalTokens)
+	}
+}
+
+// TestStore_WriteSessionDeclarationTerms (D3/AC3) asserts the idempotency decision
+// carries the four declaration terms: a NEW declaration rewrites ONCE, an identical
+// repeat no-ops, and an OBSERVED build wins over a stored synthesized record.
+func TestStore_WriteSessionDeclarationTerms(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	ts := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	u := KnownUsage(100, 10, 5, 0, 0)
+	u.CacheWrite = workflow.UnknownMeasurement()
+	run := sessionCallRun("antigravity", "", u, StepCollect, ts)
+	run.Model = ""
+	run.Usage = u
+	run.ContentHash = "hash-same"
+
+	// 1. Stored SYNTHESIZED, model declared.
+	declared := BuildSession(run, nil, time.UTC)
+	declared.ContentHash = "hash-same"
+	declared.LoggedDate = "2026-10-16"
+	declared.Association = AssociationImportFlag
+	if !DeclareSessionModel(&declared, "declared-model", nil) {
+		t.Fatal("model declaration refused")
+	}
+	if !DeclareSessionTotal(&declared, run) {
+		t.Fatal("total declaration refused")
+	}
+	if wrote, err := store.WriteSession(declared); err != nil || !wrote {
+		t.Fatalf("first write: wrote=%v err=%v", wrote, err)
+	}
+	if wrote, err := store.WriteSession(declared); err != nil || wrote {
+		t.Fatalf("identical repeat: wrote=%v err=%v (want no-op)", wrote, err)
+	}
+
+	// 2. A NEW declaration rewrites (the terms force it), then no-ops.
+	redeclared := declared
+	if !DeclareSessionModel(&redeclared, "other-model", nil) {
+		t.Fatal("re-declaration refused")
+	}
+	if wrote, err := store.WriteSession(redeclared); err != nil || !wrote {
+		t.Fatalf("re-declaration write: wrote=%v err=%v (want applied)", wrote, err)
+	}
+	if wrote, err := store.WriteSession(redeclared); err != nil || wrote {
+		t.Fatalf("repeat after re-declaration: wrote=%v err=%v (want no-op)", wrote, err)
+	}
+
+	// 3. An OBSERVED build of the same session wins over the stored synthesized one.
+	observedRun := sessionCallRun("pi", "declared-model", KnownUsage(100, 10, 5, 1, 0), StepCollect, ts)
+	observed := BuildSession(observedRun, nil, time.UTC)
+	observed.ContentHash = "hash-new"
+	observed.LoggedDate = "2026-10-16"
+	observed.Association = AssociationImportFlag
+	if observed.TotalTokensSource != TotalTokensSourceObserved {
+		t.Fatalf("observed build source = %q", observed.TotalTokensSource)
+	}
+	wrote, err := store.WriteSession(observed)
+	if err != nil || !wrote {
+		t.Fatalf("observed re-import: wrote=%v err=%v (want applied)", wrote, err)
+	}
+	got, err := store.ReadSession(observed.SessionID)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if got.TotalTokensSource != TotalTokensSourceObserved {
+		t.Fatalf("stored total source = %q, want observed (observed outranks synthesized)", got.TotalTokensSource)
+	}
+	assertKnown(t, "stored observed total", got.TotalTokens, 116)
+}
+
+// TestSynthesizedSessionTotal_ExcludesReasoning (F1) asserts the synthesized total
+// sums EXACTLY the four components ConsumedTokens sums. Reasoning is not a consumed
+// component, so counting it would break the "lower bound" claim. The reviewer's
+// probe: input 1000, output 500, cache-read 0, reasoning 700, cache-write UNKNOWN
+// => 1500, never 2200.
+func TestSynthesizedSessionTotal_ExcludesReasoning(t *testing.T) {
+	u := KnownUsage(1000, 500, 0, 0, 700)
+	u.CacheWrite = workflow.UnknownMeasurement()
+	got := SynthesizedSessionTotal([]CallRecord{{Usage: u}})
+	assertKnown(t, "synthesized total (cache-write unknown)", got, 1500)
+	if got.Value == 2200 {
+		t.Fatal("reasoning (700) was summed into the synthesized total: 2200 is not a lower bound of the consumed total")
+	}
+
+	// With all four consumed components known, the synthesized figure EQUALS
+	// ConsumedTokens — the same quantity, minus the reasoning column.
+	full := KnownUsage(1000, 500, 250, 100, 700)
+	assertKnown(t, "ConsumedTokens", full.ConsumedTokens(), 1850)
+	assertKnown(t, "synthesized total (all four known)", SynthesizedSessionTotal([]CallRecord{{Usage: full}}), 1850)
+
+	// Reasoning ALONE known is not a measurement of consumption: no synthesized 0.
+	reasoningOnly := UnknownUsage()
+	reasoningOnly.Reasoning = workflow.KnownMeasurement(700)
+	if got := SynthesizedSessionTotal([]CallRecord{{Usage: reasoningOnly}}); got.Known {
+		t.Fatalf("reasoning-only usage synthesized %+v, want UNKNOWN (no consumed component is known)", got)
+	}
+}
+
+// TestEffectiveTotalTokensSource_LegacyNormalization (F10) asserts the ONE
+// normalization of a legacy record's EMPTY total_source: observed-when-known, else
+// unknown. A legacy observed total can therefore never be downgraded to synthesized
+// by a later --declare-total.
+func TestEffectiveTotalTokensSource_LegacyNormalization(t *testing.T) {
+	ts := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	run := sessionCallRun("pi", "m", KnownUsage(100, 10, 5, 1, 0), StepCollect, ts)
+
+	legacyObserved := SessionRecord{TotalTokens: workflow.KnownMeasurement(116)}
+	if got := EffectiveTotalTokensSource(legacyObserved); got != TotalTokensSourceObserved {
+		t.Fatalf("legacy known total effective source = %q, want observed", got)
+	}
+	if DeclareSessionTotal(&legacyObserved, run) {
+		t.Fatal("a legacy OBSERVED total was downgraded to synthesized")
+	}
+	assertKnown(t, "legacy observed total after a refused declaration", legacyObserved.TotalTokens, 116)
+	if legacyObserved.TotalTokensSource != "" {
+		t.Fatalf("a refused declaration must change nothing: source = %q", legacyObserved.TotalTokensSource)
+	}
+
+	legacyUnknown := SessionRecord{TotalTokens: workflow.UnknownMeasurement()}
+	if got := EffectiveTotalTokensSource(legacyUnknown); got != TotalTokensSourceUnknown {
+		t.Fatalf("legacy unknown total effective source = %q, want unknown", got)
+	}
+	// A legacy UNKNOWN total stays declarable (it was never a measurement).
+	if !DeclareSessionTotal(&legacyUnknown, run) {
+		t.Fatal("a legacy unknown total was refused a declaration")
+	}
+	if legacyUnknown.TotalTokensSource != TotalTokensSourceSynthesized {
+		t.Fatalf("declared legacy total source = %q, want synthesized", legacyUnknown.TotalTokensSource)
+	}
+
+	// An explicit source is passed through unchanged on every arm.
+	for _, src := range []TotalTokensSource{TotalTokensSourceObserved, TotalTokensSourceSynthesized, TotalTokensSourceUnknown} {
+		if got := EffectiveTotalTokensSource(SessionRecord{TotalTokensSource: src}); got != src {
+			t.Fatalf("explicit source %q normalized to %q", src, got)
+		}
+	}
+}
+
+// TestEffectiveModelSource_LegacyNormalization (R2-5) asserts the model-axis twin of
+// EffectiveTotalTokensSource: an empty source with a real model reads as observed, an
+// empty source with no model reads as unknown, and an explicit source passes through.
+func TestEffectiveModelSource_LegacyNormalization(t *testing.T) {
+	if got := EffectiveModelSource(SessionRecord{Model: "gemini-pro"}); got != ModelSourceObserved {
+		t.Fatalf("legacy record with a model: effective source = %q, want observed", got)
+	}
+	if got := EffectiveModelSource(SessionRecord{}); got != ModelSourceUnknown {
+		t.Fatalf("legacy record with no model: effective source = %q, want unknown", got)
+	}
+	for _, src := range []ModelSource{ModelSourceObserved, ModelSourceDeclared, ModelSourceUnknown} {
+		if got := EffectiveModelSource(SessionRecord{ModelSource: src, Model: "m"}); got != src {
+			t.Fatalf("explicit source %q normalized to %q", src, got)
+		}
+	}
+
+	// The declare glue reads it too: a legacy OBSERVED model is never overwritten.
+	legacy := SessionRecord{Model: "gemini-pro"}
+	if DeclareSessionModel(&legacy, "declared-model", nil) {
+		t.Fatal("a legacy observed model was downgraded by a declaration")
+	}
+	if legacy.Model != "gemini-pro" || legacy.ModelSource != "" {
+		t.Fatalf("a refused declaration must change nothing: %q/%q", legacy.Model, legacy.ModelSource)
+	}
+}

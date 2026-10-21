@@ -8,7 +8,7 @@ import (
 )
 
 // ModelCatalog is the resolved (provider, model) -> TokenPrice lookup from a
-// models-store.json catalog (~/.pi/agent/models-store.json). The lookup key is
+// models-store.json-format catalog. The lookup key is
 // (provider, model): the same model id can carry different prices under different
 // providers, so a model-only lookup is deliberately NOT offered.
 type ModelCatalog struct {

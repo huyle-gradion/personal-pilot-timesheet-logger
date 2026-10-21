@@ -24,7 +24,10 @@ Add one additive package, `internal/metrics`, as the token/duration accounting
 surface for the review-first workflow. The legacy `internal/benchmark` extractor
 (its own CSV chart path) and the S7 editorial usage report remain for their own
 purposes; this package is the accounting surface for the review-first workflow,
-not a replacement for those unrelated code paths.
+not a replacement for those unrelated code paths. *(Amended 2026-10-21 by #126:
+the extractor's CSV chart path no longer charts. `cmd/benchmark -chart` reads the
+METRICS STORE's day aggregates; the CSV stays the pipeline store for `-record` and
+`-report`, whose behavior is unchanged. See [Amendments](#amendments).)*
 
 - **One measurement type.** Every counter is a `workflow.Measurement`; there is no
   second unknown-vs-zero type. An unavailable value is UNKNOWN, never zero.
@@ -153,7 +156,12 @@ aliases of it: no mirror, no second number. It governs the EDITORIAL-CHILD token
 lane only (the lane the benchmark CSV's token columns carry); harness-session tokens
 have no ceiling and no number is invented for them. The legacy
 `benchmark.DefaultTokenCeiling=600` is DELETED, not re-pointed: a formatter package
-states no budget. See [Amendments](#amendments).
+states no budget. *(Amended 2026-10-21 by #126: the ceiling's home and single value
+are unchanged, and the number still governs the editorial-child lane only — but the
+CHART no longer charts that lane. It now compares the day's `session_total_tokens`
+as a REFERENCE line against the same 1,000, labelled as a harness-session reference;
+no harness budget is claimed and no number is invented for harness tokens. See
+[Amendments](#amendments).)*
 
 ## Amendments
 
@@ -261,3 +269,94 @@ rest of this ADR stands as written.
   and the equivalent pi and Claude Code locations; `metrics import --transcript
   <path> --date "$DATE"` reads any of them through `--provider auto` or an explicit
   provider name.
+
+### 2026-10-21 — harness-agnostic token record: chart source, ceiling reference, de-pi defaults (#126)
+
+The adaptation target is a harness-agnostic skill, so this amendment removes the
+last harness-specific defaults and makes the session token record honest on its own
+terms. It records one reversal and four additions; everything not named here stands
+as written.
+
+- **The chart's source moves to the metrics store.** `cmd/benchmark -chart` no
+  longer charts the CSV's editorial-child token columns. It reads the metrics
+  store's day aggregates (`metrics.ListAggregateDates` / `metrics.ReadAggregateFile`
+  — non-creating reads, so charting never mkdirs a store) and maps each day's
+  `session_total_tokens` onto the unchanged `benchmark.RenderASCIIChart`. The output
+  names its source on one line (`source: … day aggregates (harness session tokens,
+  reasoning excluded; day totals may include synthesized lower bounds; …)`) so the
+  number is never mistaken for the retired lane. An empty store
+  prints one line, not an empty axis; a corrupt aggregate exits 1 naming the date
+  rather than charting around it. `-record` and `-report` are untouched: the CSV
+  remains the pipeline store for those, and `internal/benchmark` gains no import and
+  no provider name (the mapping lives in `cmd/benchmark`).
+- **`metrics report` gains `SESS-TOKENS`, the DAY's summed session lane.** The
+  column is the day's sum over its sessions' totals — the same figure the chart
+  draws — printed through the existing unknown rule: `unknown` when any session
+  total is not established (the sum is unknown-propagating, never a partial sum),
+  and the honest `0` only for a day with zero sessions. `SESS-TOKENS` is the SESSION
+  lane, never the editorial or the step-attributed lane.
+  **The DAY sum can contain a lower bound**, because a session total stamped by
+  `metrics import --declare-total` is `total_source=synthesized`. The per-session
+  label is NOT rendered as a column: it is carried per session on the import summary
+  line and in `metrics sessions --format json` (field `total_source`), which is the
+  authoritative place to look up one session. The day-level figure is labelled where
+  it is RENDERED: the report table prints a `[synthesized] N session total(s) …`
+  footnote after the batch when the day includes such sessions, and the chart's
+  source line names the same caveat. No JSON key is added, so the aggregate schema is
+  unchanged.
+- **The ceiling becomes a REFERENCE for the chart, reversing the previous
+  clause.** This supersedes the sentence above that harness-session tokens have "no
+  ceiling" and `docs/timesheet-redesign.md:147` ("no ceiling for harness tokens"):
+  the chart now draws the day's session total against the same single 1,000. The
+  label is PRINTED, not implied — after the chart the command emits one line:
+
+      reference: 1,000/day is the editorial-child soft target; [PASS] compares harness
+      session tokens against it — it is not a harness budget. (use -ceiling to change)
+
+  The verdict token is `[PASS]` when every charted day with a KNOWN total is at or
+  below the ceiling, `[OVER]` when any is above it. When NO charted day carries a
+  known total the comparison clause is not borrowed: the line reads
+  `… [n/a] — no charted day carries a known total. This is not a harness budget.
+  (use -ceiling to change)`, so an unmeasured chart is never called a pass and the
+  `[n/a]` sentence claims nothing about harness tokens. `-ceiling`
+  changes the number in the line and in the chart alike. This is a REFERENCE, not a
+  budget and not a claim about any harness: the number's home and value are
+  unchanged, it still governs the editorial-child lane as a soft target, and no
+  harness budget is asserted in the report or the ADR.
+- **No harness has a default catalog, and no transcript path is privileged.**
+  `pi` was the implicit default three ways and all three are removed: the
+  `$PI_MODEL_CATALOG` environment variable, the `~/.pi/agent/models-store.json`
+  fallback, and the pi-transcript default in the skill. Price resolution is
+  `--model-catalog` flag > the config document's `metrics.model_catalog` > no
+  catalog, which means prices are UNKNOWN (never 0). A config value may be written
+  as `~/…`: it is home-expanded when READ and the document is never rewritten.
+  Transcript locations come from `metrics.transcripts` in the config document — no
+  harness is privileged; when it is unset the skill asks the user. The `--config`
+  document is therefore the single place a harness is configured, which is what
+  makes the skill harness-agnostic rather than pi-shaped. An explicit `--config`
+  path that cannot be read WARNS; an absent default document stays silent; neither
+  changes an exit code.
+- **Declared model and declared total, labelled.** `metrics import` gains `--model`
+  (the session's model when the transcript carries none; recorded as
+  `model_source=declared` and losing to an observed model) and the BOOLEAN
+  `--declare-total` (no value; it stamps an operator-declared session total for a
+  transcript whose components cannot yield one, recorded as
+  `total_source=synthesized` and presented as a LOWER BOUND, never as observed). An
+  observed total outranks either declaration, and a positional left after
+  `--declare-total` is a usage error rather than a silently ignored number.
+  `ConsumedTokens()` and the component counters are unchanged: a declaration fills
+  the total field only, the synthesized figure is exactly the sum of the four
+  CONSUMED components (input, output, cache-read, cache-write; reasoning is excluded,
+  as in `ConsumedTokens`), and a run with no known consumed component is still
+  refused rather than written as a synthesized 0. The provider-native field mapping
+  in the antigravity subsection ("Counter semantics") remains exactly as recorded — a
+  declaration never re-derives a component from a total. Declarations also PERSIST:
+  a bare re-import of the same transcript keeps the stored `model`/`model_source` and
+  `total`/`total_source` rather than replacing them with the declaration-free build,
+  printing one `preserved stored <id> declarations: …` note. A preserved model is an
+  ID-only preservation when the content hash DIFFERS (the transcript was reparsed,
+  e.g. it grew): the per-model usage/price/cost come from the CURRENT parse, so
+  `sum(Models[].TotalTokens)` still equals the session total and the cost reflects the
+  tokens actually seen; only when the hash matches is the stored evidence itself
+  reused. A catalog price fix
+  still does not rewrite the session (the content hash governs).
