@@ -57,6 +57,18 @@ total_source)`. Costs, stated:
 - The `-metrics-dir` flag is new and names the store; it is distinct from `-storage-dir`,
   which keeps its workflow-store meaning.
 
+*(2026-10-22, #128.)* The ceiling bullet above is **superseded**: the chart's fixed
+1,000 — and every budget word around it (`[PASS]`/`[OVER]`/`[n/a]`, `[░] Available
+budget`, `[!] Ceiling overage`, the `reference: … editorial-child soft target …`
+line) — is gone. The chart's ceiling is now DERIVED: the largest charted day with a
+known total, snapped UP to the next multiple of 1,000 (4,757,111 → 4,758,000), with
+bars scaled proportionally, the peak day as the full 40-char bar (a marker, not a
+proportion — the title carries the real ceiling), and a single line
+`ceiling: largest charted day rounded up to the next 1,000 — not a harness budget.`
+A range with no known total states `(Ceiling: unknown)` and draws no bars. `-ceiling`
+remains an explicit FIXED override (a day over it is a full bar, never an overage
+marker); `-report`, the CSV and the `source:` line from #126 are unchanged.
+
 ### Corrections to anchors as filed
 
 - **`internal/benchmark/parser.go:16-40` is stale.** The invented union is `rawTokenRecord` at

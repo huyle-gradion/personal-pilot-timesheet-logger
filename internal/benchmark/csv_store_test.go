@@ -90,9 +90,9 @@ func TestCSVStore_RoundTripUnknownCells(t *testing.T) {
 		t.Fatalf("report must aggregate only the known day:\n%s", report.String())
 	}
 
-	// Chart: the nil path (bar omitted, status unknown, never `0 <= ceiling`).
+	// Chart: the nil path (bar omitted, Tokens cell unknown, never `0 <= ceiling`).
 	var chart bytes.Buffer
-	if err := RenderASCIIChart(&chart, rows, 1000); err != nil {
+	if err := RenderASCIIChart(&chart, rows, 0); err != nil {
 		t.Fatalf("chart: %v", err)
 	}
 	for _, line := range strings.Split(chart.String(), "\n") {
@@ -100,8 +100,8 @@ func TestCSVStore_RoundTripUnknownCells(t *testing.T) {
 			if !strings.Contains(line, "unknown") {
 				t.Fatalf("chart row must print unknown: %q", line)
 			}
-			if strings.Contains(line, "[PASS]") || strings.Contains(line, "[OVER]") {
-				t.Fatalf("chart must omit the bar and the status badge for an unknown day: %q", line)
+			if strings.Contains(line, "[PASS]") || strings.Contains(line, "[OVER]") || strings.Contains(line, "budget") {
+				t.Fatalf("chart must carry no verdict or budget language for an unknown day: %q", line)
 			}
 			if strings.Contains(line, "█") || strings.Contains(line, "░") {
 				t.Fatalf("chart must omit the bar for an unknown day: %q", line)

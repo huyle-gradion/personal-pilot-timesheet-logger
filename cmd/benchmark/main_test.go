@@ -390,9 +390,9 @@ func TestCLI_ChartAndReportModes(t *testing.T) {
 	}
 }
 
-// TestCLI_CeilingReachesBothRenderers (R4) asserts -ceiling governs the chart AND
+// TestCLI_CeilingReachesBothRenderers (R4) asserts -ceiling governs the chart and
 // the report's compliance line, and that the untouched invocation keeps the
-// owner's 1000 from the one workflow constant.
+// report's owner 1000 while the chart derives its ceiling from the data.
 func TestCLI_CeilingReachesBothRenderers(t *testing.T) {
 	tempDir := t.TempDir()
 	csvPath := filepath.Join(tempDir, "metrics.csv")
@@ -420,8 +420,14 @@ func TestCLI_CeilingReachesBothRenderers(t *testing.T) {
 	if !strings.Contains(chart, "Ceiling: 500 tokens") {
 		t.Errorf("chart must use -ceiling, got: %s", chart)
 	}
-	if !strings.Contains(chart, "[OVER]") {
-		t.Errorf("chart must flag 900 > 500, got: %s", chart)
+	// 900 is over the fixed 500: a full bar, never an overage marker.
+	for _, line := range strings.Split(chart, "\n") {
+		if strings.HasPrefix(line, "2026-10-08") && strings.Count(line, "█") != 40 {
+			t.Errorf("an over-ceiling day must render one full bar: %q", line)
+		}
+	}
+	if strings.Contains(chart, "[OVER]") || strings.Contains(chart, "(!)") || strings.Contains(chart, "░") {
+		t.Errorf("no overage marker may return in fixed-ceiling mode, got: %s", chart)
 	}
 
 	report, _ := runMode("-report", "-ceiling=500")
@@ -432,14 +438,15 @@ func TestCLI_CeilingReachesBothRenderers(t *testing.T) {
 		t.Errorf("report must count 900 > 500 as over budget, got: %s", report)
 	}
 
-	// The untouched invocation defaults to the owner's 1000 (one workflow constant).
+	// The untouched invocation: the chart derives 900 -> 1,000 from the data,
+	// while -report keeps the owner's 1000 (one workflow constant).
 	chartDefault, _ := runMode("-chart")
-	if !strings.Contains(chartDefault, "Ceiling: 1000 tokens") || !strings.Contains(chartDefault, "[PASS]") {
-		t.Errorf("the default ceiling must be 1000, got: %s", chartDefault)
+	if !strings.Contains(chartDefault, "Ceiling: 1,000 tokens") || strings.Contains(chartDefault, "[PASS]") {
+		t.Errorf("the default chart ceiling must be the snapped 1,000 with no verdict, got: %s", chartDefault)
 	}
 	reportDefault, _ := runMode("-report")
 	if !strings.Contains(reportDefault, "<= 1000 tokens") || !strings.Contains(reportDefault, "1/1 known days") {
-		t.Errorf("the default ceiling must be 1000, got: %s", reportDefault)
+		t.Errorf("the default report ceiling must be 1000, got: %s", reportDefault)
 	}
 }
 
@@ -513,55 +520,143 @@ func TestCLI_Chart_ReadsMetricsStoreDayAggregates(t *testing.T) {
 	if !strings.Contains(out.String(), "source: "+metricsDir+" day aggregates (harness session tokens, reasoning excluded; day totals may include synthesized lower bounds; see: timesheet metrics sessions --format json -> total_source)") {
 		t.Fatalf("missing the honest source line:\n%s", out.String())
 	}
-	// The ceiling tick is a REFERENCE, never a harness budget, and the verdict is
-	// printed beside the chart.
-	if !strings.Contains(out.String(), "reference: 1,000/day is the editorial-child soft target; [PASS] compares harness session tokens against it — it is not a harness budget. (use -ceiling to change)") {
-		t.Fatalf("missing the reference/verdict line:\n%s", out.String())
+	// The ceiling is data-derived (730 snaps to 1,000) and the rule is stated on
+	// one line; no budget verdict is rendered.
+	if !strings.Contains(out.String(), "ceiling: largest charted day rounded up to the next 1,000 — not a harness budget.") {
+		t.Fatalf("missing the ceiling-rule line:\n%s", out.String())
 	}
 }
 
-// TestCLI_Chart_ReferenceVerdict (F5) asserts the verdict follows the ceiling and is
-// never claimed over unmeasured days: OVER above it, PASS at/below it, and [n/a]
-// when no day carries a known total.
-func TestCLI_Chart_ReferenceVerdict(t *testing.T) {
-	runChart := func(t *testing.T, dir string, extra ...string) string {
-		t.Helper()
-		var out, errOut bytes.Buffer
-		args := append([]string{"-chart", "-metrics-dir=" + dir}, extra...)
-		if code := run(context.Background(), args, strings.NewReader(""), &out, &errOut); code != ExitOK {
-			t.Fatalf("chart: code=%d err=%s", code, errOut.String())
+// TestCLI_Chart_PeakSnapCeiling pins the owner's recorded case: a 4,757,111 peak
+// charts against a 4,758,000 ceiling (snapped up to the next 1,000) and the peak
+// day is the full bar.
+func TestCLI_Chart_PeakSnapCeiling(t *testing.T) {
+	metricsDir := filepath.Join(t.TempDir(), "metrics")
+	peak := int64(4757111)
+	half := int64(2379000)
+	seedMetricsDay(t, metricsDir, "2026-10-11", 1, &half)
+	seedMetricsDay(t, metricsDir, "2026-10-12", 1, &peak)
+
+	var out, errOut bytes.Buffer
+	if code := run(context.Background(), []string{"-chart", "-metrics-dir=" + metricsDir}, strings.NewReader(""), &out, &errOut); code != ExitOK {
+		t.Fatalf("chart: code=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "(Ceiling: 4,758,000 tokens)") {
+		t.Fatalf("the snapped ceiling must be 4,758,000:\n%s", out.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "2026-10-12") && strings.Count(line, "█") != 40 {
+			t.Errorf("the peak day must be the full 40-char bar: %q", line)
 		}
-		return out.String()
+		if strings.HasPrefix(line, "2026-10-11") && strings.Count(line, "█") != 20 {
+			t.Errorf("half the peak must be 20 chars: %q", line)
+		}
 	}
+}
 
-	// 1. A day over the default ceiling: [OVER], and the ceiling is comma-formatted.
-	overDir := filepath.Join(t.TempDir(), "metrics")
+// TestCLI_Chart_ReferenceVerdict is RETIRED; TestCLI_Chart_NoBudgetLanguage
+// asserts its successor: no verdict, no overage marker, no reference wording
+// survives anywhere in the chart output.
+func TestCLI_Chart_NoBudgetLanguage(t *testing.T) {
+	metricsDir := filepath.Join(t.TempDir(), "metrics")
 	over := int64(1500)
-	seedMetricsDay(t, overDir, "2026-10-08", 1, &over)
-	out := runChart(t, overDir)
-	if !strings.Contains(out, "reference: 1,000/day is the editorial-child soft target; [OVER] compares harness session tokens against it") {
-		t.Fatalf("a day above the ceiling must read [OVER]:\n%s", out)
-	}
+	under := int64(730)
+	seedMetricsDay(t, metricsDir, "2026-10-08", 1, &over)
+	seedMetricsDay(t, metricsDir, "2026-10-09", 1, &under)
 
-	// 2. -ceiling reaches the reference line too, and a day under it reads [PASS].
-	passDir := filepath.Join(t.TempDir(), "metrics")
+	var out, errOut bytes.Buffer
+	if code := run(context.Background(), []string{"-chart", "-metrics-dir=" + metricsDir}, strings.NewReader(""), &out, &errOut); code != ExitOK {
+		t.Fatalf("chart: code=%d err=%s", code, errOut.String())
+	}
+	for _, forbidden := range []string{
+		"[PASS]", "[OVER]", "[n/a]",
+		"Budget Usage", "Available budget", "Ceiling overage",
+		"editorial-child soft target", "reference:", "harness budget. (use -ceiling to change)",
+		"░", "!",
+	} {
+		if strings.Contains(out.String(), forbidden) {
+			t.Errorf("chart output must not contain %q:\n%s", forbidden, out.String())
+		}
+	}
+}
+
+// TestCLI_Chart_CeilingOverride pins the -ceiling pass-through: a user value is
+// the FIXED ceiling verbatim, bars scale to it, and an over-ceiling day is a full
+// bar rather than an overage marker.
+func TestCLI_Chart_CeilingOverride(t *testing.T) {
+	metricsDir := filepath.Join(t.TempDir(), "metrics")
+	high := int64(900)
 	low := int64(730)
-	seedMetricsDay(t, passDir, "2026-10-09", 1, &low)
-	out = runChart(t, passDir, "-ceiling=2000")
-	if !strings.Contains(out, "reference: 2,000/day is the editorial-child soft target; [PASS]") {
-		t.Fatalf("the flag must reach the reference line and a day under it must read [PASS]:\n%s", out)
-	}
+	seedMetricsDay(t, metricsDir, "2026-10-08", 1, &high)
+	seedMetricsDay(t, metricsDir, "2026-10-09", 1, &low)
 
-	// 3. No known total anywhere: no PASS is claimed, and the comparison clause is
-	// not borrowed for a chart that measured nothing.
-	unknownDir := filepath.Join(t.TempDir(), "metrics")
-	seedMetricsDay(t, unknownDir, "2026-10-10", 1, nil)
-	out = runChart(t, unknownDir)
-	if !strings.Contains(out, "reference: 1,000/day is the editorial-child soft target; [n/a] — no charted day carries a known total. This is not a harness budget. (use -ceiling to change)") {
-		t.Fatalf("unmeasured days must state [n/a] in their own words, not a comparison:\n%s", out)
+	var out, errOut bytes.Buffer
+	if code := run(context.Background(), []string{"-chart", "-metrics-dir=" + metricsDir, "-ceiling=500"}, strings.NewReader(""), &out, &errOut); code != ExitOK {
+		t.Fatalf("chart: code=%d err=%s", code, errOut.String())
 	}
-	if strings.Contains(out, "[n/a] compares harness session tokens") {
-		t.Fatalf("the unmeasured arm must not borrow the comparison clause:\n%s", out)
+	if !strings.Contains(out.String(), "(Ceiling: 500 tokens)") {
+		t.Fatalf("the user's ceiling must be used verbatim:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "ceiling: fixed at 500 by -ceiling (overrides the peak-snap default) — not a harness budget.") {
+		t.Fatalf("fixed mode must say the ceiling is the operator's:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "[OVER]") || strings.Contains(out.String(), "░") {
+		t.Fatalf("fixed mode must render no overage marker:\n%s", out.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "2026-10-08") && strings.Count(line, "█") != 40 {
+			t.Errorf("a 900 day over a 500 ceiling must be a full bar: %q", line)
+		}
+		if strings.HasPrefix(line, "2026-10-09") && strings.Count(line, "█") != 40 {
+			t.Errorf("730 over a 500 ceiling must also clamp to a full bar: %q", line)
+		}
+	}
+}
+
+// TestCLI_Chart_UnknownOnlyCeilingNote pins the honest no-known-total arm: the
+// ceiling is stated unknown, the rows keep printing unknown with no bar, and the
+// command still exits 0.
+func TestCLI_Chart_UnknownOnlyCeilingNote(t *testing.T) {
+	metricsDir := filepath.Join(t.TempDir(), "metrics")
+	seedMetricsDay(t, metricsDir, "2026-10-10", 1, nil)
+
+	var out, errOut bytes.Buffer
+	if code := run(context.Background(), []string{"-chart", "-metrics-dir=" + metricsDir}, strings.NewReader(""), &out, &errOut); code != ExitOK {
+		t.Fatalf("an unmeasured chart is not an error: code=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "(Ceiling: unknown)") {
+		t.Fatalf("an unknown ceiling must be stated in the title:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "ceiling: unknown — no charted day carries a known total; nothing is scaled. Not a harness budget.") {
+		t.Fatalf("missing the unknown-ceiling note:\n%s", out.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "2026-10-10") && (strings.Contains(line, "█") || strings.Contains(line, "░")) {
+			t.Fatalf("an unknown-only chart must draw no bar: %q", line)
+		}
+	}
+}
+
+// TestCLI_Chart_KnownZeroDay pins the measured-zero edge end to end: a known 0
+// session total is a 0 ceiling, a bar-less 0 row, and exit 0.
+func TestCLI_Chart_KnownZeroDay(t *testing.T) {
+	metricsDir := filepath.Join(t.TempDir(), "metrics")
+	zero := int64(0)
+	seedMetricsDay(t, metricsDir, "2026-10-08", 1, &zero)
+
+	var out, errOut bytes.Buffer
+	if code := run(context.Background(), []string{"-chart", "-metrics-dir=" + metricsDir}, strings.NewReader(""), &out, &errOut); code != ExitOK {
+		t.Fatalf("a known zero day is exit 0: code=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "(Ceiling: 0 tokens)") {
+		t.Fatalf("the title must state the 0 ceiling:\n%s", out.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "2026-10-08") {
+			if strings.Contains(line, "█") || strings.Contains(line, "unknown") {
+				t.Fatalf("a measured 0 draws no bar and is never unknown: %q", line)
+			}
+		}
 	}
 }
 
