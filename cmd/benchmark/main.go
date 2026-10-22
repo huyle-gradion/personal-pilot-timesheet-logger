@@ -76,16 +76,24 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	fs.Float64Var(&peakRSSMB, "peak-rss-mb", 0.0, "Manual peak RSS memory in megabytes")
 	fs.IntVar(&entries, "entries", 0, "Number of timesheet entries logged (defaults to the day's workflow record)")
 	fs.StringVar(&storageDir, "storage-dir", "", "Directory of the workflow record store holding the day's entries and editorial tokens")
-	fs.Int64Var(&ceiling, "ceiling", workflow.EditorialTokenCeiling, "Chart REFERENCE line in tokens: the editorial-child 1,000 (which governs a different lane) drawn against the day's harness session total")
+	fs.Int64Var(&ceiling, "ceiling", 0, "Chart ceiling in tokens: when set, a FIXED ceiling the bars scale to, overriding the default (largest charted day rounded up to the next 1,000); -report keeps the editorial-child 1,000 when unset")
 	fs.StringVar(&metricsDir, "metrics-dir", "", "Directory of the metrics store -chart reads the day aggregates from (default: ~/.timesheet/metrics)")
 
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
 
-	// The ceiling has one home (workflow.EditorialTokenCeiling); a non-positive
-	// value is a usage error rather than a silently-defaulted chart.
-	if ceiling <= 0 {
+	// -ceiling is now an EXPLICIT override: unset means the chart derives its
+	// ceiling from the data (largest known day snapped up to 1,000), while -report
+	// keeps the editorial-child 1,000. A supplied non-positive value is a usage
+	// error rather than a silently-defaulted chart.
+	ceilingSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "ceiling" {
+			ceilingSet = true
+		}
+	})
+	if ceilingSet && ceiling <= 0 {
 		fmt.Fprintf(errOut, "error: invalid -ceiling %d: must be positive\n", ceiling)
 		return ExitUsage
 	}
@@ -173,7 +181,7 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 	// harness-token figure with two surfaces. The CSV stays the pipeline store for
 	// -record/-report, whose behavior is unchanged.
 	if chartMode {
-		if err := renderMetricsChart(out, errOut, resolveMetricsDir(metricsDir), ceiling); err != nil {
+		if err := renderMetricsChart(out, errOut, resolveMetricsDir(metricsDir), ceiling, ceilingSet); err != nil {
 			return ExitErr
 		}
 	}
@@ -185,7 +193,7 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 			fmt.Fprintf(errOut, "error: reading metrics from %s: %v\n", csvPath, err)
 			return ExitErr
 		}
-		if err := benchmark.RenderReport(out, metrics, ceiling); err != nil {
+		if err := benchmark.RenderReport(out, metrics, reportCeiling(ceiling, ceilingSet)); err != nil {
 			fmt.Fprintf(errOut, "error: rendering report: %v\n", err)
 			return ExitErr
 		}
@@ -204,9 +212,10 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer, errOut
 //     so internal/benchmark's own nil path omits the bar and prints `unknown`.
 //     A day nobody measured is never drawn as a 0 bar.
 //
-// internal/benchmark is byte-identical: the source mapping lives here, and the
-// aggregation row is handed to its unchanged RenderASCIIChart.
-func renderMetricsChart(out, errOut io.Writer, dir string, ceiling int64) error {
+// The ceiling is passed through unchanged: 0 asks the renderer to derive it from
+// the largest known charted day (snapped up to the next 1,000), while a positive
+// value is the operator's fixed -ceiling override.
+func renderMetricsChart(out, errOut io.Writer, dir string, ceiling int64, ceilingFixed bool) error {
 	dates, err := metrics.ListAggregateDates(dir)
 	if err != nil {
 		fmt.Fprintf(errOut, "error: reading metrics day aggregates from %s: %v\n", dir, err)
@@ -235,54 +244,35 @@ func renderMetricsChart(out, errOut io.Writer, dir string, ceiling int64) error 
 	// honesty: a day's total may be a lower bound, and the label for it lives on the
 	// session record.
 	fmt.Fprintf(out, "source: %s day aggregates (harness session tokens, reasoning excluded; day totals may include synthesized lower bounds; see: timesheet metrics sessions --format json -> total_source)\n", dir)
-	// And one printed line stating what the ceiling tick MEANS here, because the
-	// chart's verdict could otherwise read as a harness budget it is not.
-	fmt.Fprintln(out, chartReferenceLine(rows, ceiling))
+	// And ONE line stating the ceiling rule the bar length follows, so the chart
+	// can never read as a harness budget.
+	fmt.Fprintln(out, chartCeilingLine(rows, ceiling, ceilingFixed))
 	return nil
 }
 
-// chartReferenceLine renders the chart's reference note. The verdict is stated
-// ONLY over the days that carry a known total: a chart of unmeasured days makes no
-// claim, and it says so in its own words rather than borrowing the comparison
-// clause. 1,000 stays the editorial-child soft target; the comparison here is a
-// REFERENCE against harness session tokens, not a harness budget.
-func chartReferenceLine(rows []benchmark.DailyMetric, ceiling int64) string {
-	known, over := 0, false
-	for _, r := range rows {
-		if r.TotalTokens == nil {
-			continue
-		}
-		known++
-		if *r.TotalTokens > ceiling {
-			over = true
-		}
+// chartCeilingLine renders the chart's ceiling note — one line, no verdict and no
+// budget claim. In fixed mode the operator's -ceiling supplied the number; in the
+// default mode it is the largest known charted day snapped up to the next 1,000.
+// With no known charted total there is no ceiling to state, and the line says so
+// rather than borrowing a number.
+func chartCeilingLine(rows []benchmark.DailyMetric, ceiling int64, fixed bool) string {
+	if fixed {
+		return fmt.Sprintf("ceiling: fixed at %s by -ceiling (overrides the peak-snap default) — not a harness budget.", benchmark.FormatTokens(ceiling))
 	}
-	prefix := fmt.Sprintf("reference: %s/day is the editorial-child soft target; ", formatThousands(ceiling))
-	if known == 0 {
-		return prefix + "[n/a] — no charted day carries a known total. This is not a harness budget. (use -ceiling to change)"
+	if _, hasKnown := benchmark.ChartCeiling(rows); !hasKnown {
+		return "ceiling: unknown — no charted day carries a known total; nothing is scaled. Not a harness budget."
 	}
-	verdict := "[PASS]"
-	if over {
-		verdict = "[OVER]"
-	}
-	return prefix + verdict + " compares harness session tokens against it — it is not a harness budget. (use -ceiling to change)"
+	return "ceiling: largest charted day rounded up to the next 1,000 — not a harness budget."
 }
 
-// formatThousands renders an integer with comma separators (1000 -> "1,000").
-func formatThousands(n int64) string {
-	s := fmt.Sprintf("%d", n)
-	sign := ""
-	if strings.HasPrefix(s, "-") {
-		sign, s = "-", s[1:]
+// reportCeiling keeps -report's behavior byte-identical: its compliance line still
+// compares the editorial-child lane against the shared 1,000, and only an explicit
+// -ceiling changes that number. The chart's data-derived default never leaks here.
+func reportCeiling(ceiling int64, ceilingSet bool) int64 {
+	if ceilingSet {
+		return ceiling
 	}
-	var b strings.Builder
-	for i, r := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			b.WriteByte(',')
-		}
-		b.WriteRune(r)
-	}
-	return sign + b.String()
+	return workflow.EditorialTokenCeiling
 }
 
 // sessionTotalCell maps a day's session lane to the chart's nil-vs-value cell. A

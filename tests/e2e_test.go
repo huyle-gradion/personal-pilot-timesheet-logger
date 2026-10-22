@@ -550,8 +550,12 @@ func TestE2E_BenchmarkMetrics(t *testing.T) {
 	if !strings.Contains(chartOut, "source: "+metricsDir+" day aggregates (harness session tokens, reasoning excluded; day totals may include synthesized lower bounds; see: timesheet metrics sessions --format json -> total_source)") {
 		t.Errorf("chart output missing the honest source line: %s", chartOut)
 	}
-	// The ceiling tick is a REFERENCE against harness session tokens, not a budget.
-	if !strings.Contains(chartOut, "reference: 1,000/day is the editorial-child soft target; [PASS] compares harness session tokens against it — it is not a harness budget. (use -ceiling to change)") {
-		t.Errorf("chart output missing the reference line: %s", chartOut)
+	// The ceiling is data-derived: the 126 peak snaps up to 1,000, and the chart
+	// states the rule on one line with no budget verdict.
+	if !strings.Contains(chartOut, "(Ceiling: 1,000 tokens)") {
+		t.Errorf("chart output missing the snapped ceiling: %s", chartOut)
+	}
+	if !strings.Contains(chartOut, "ceiling: largest charted day rounded up to the next 1,000 — not a harness budget.") {
+		t.Errorf("chart output missing the ceiling-rule line: %s", chartOut)
 	}
 }

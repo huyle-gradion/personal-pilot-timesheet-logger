@@ -161,6 +161,12 @@ are unchanged, and the number still governs the editorial-child lane only — bu
 CHART no longer charts that lane. It now compares the day's `session_total_tokens`
 as a REFERENCE line against the same 1,000, labelled as a harness-session reference;
 no harness budget is claimed and no number is invented for harness tokens. See
+[Amendments](#amendments).)* *(Amended 2026-10-22 by #128: the CHART's ceiling is no
+longer the 1,000 at all. It is DERIVED from the data — the largest charted day with
+a known total, snapped UP to the next multiple of 1,000 — and every budget word
+(`[PASS]`/`[OVER]`/`[n/a]`, `[░] Available budget`, `[!] Ceiling overage`) is
+removed from the chart. The 1,000 keeps its home and its editorial-child meaning;
+`-ceiling` stays an explicit FIXED override and `-report` is untouched. See
 [Amendments](#amendments).)*
 
 ## Amendments
@@ -281,7 +287,9 @@ as written.
   longer charts the CSV's editorial-child token columns. It reads the metrics
   store's day aggregates (`metrics.ListAggregateDates` / `metrics.ReadAggregateFile`
   — non-creating reads, so charting never mkdirs a store) and maps each day's
-  `session_total_tokens` onto the unchanged `benchmark.RenderASCIIChart`. The output
+  `session_total_tokens` onto the unchanged `benchmark.RenderASCIIChart`. *(Superseded
+  2026-10-22 by #128: RenderASCIIChart is no longer unchanged; it derives the ceiling
+  and drops the verdicts. See the 2026-10-22 amendment.)* The output
   names its source on one line (`source: … day aggregates (harness session tokens,
   reasoning excluded; day totals may include synthesized lower bounds; …)`) so the
   number is never mistaken for the retired lane. An empty store
@@ -322,7 +330,10 @@ as written.
   changes the number in the line and in the chart alike. This is a REFERENCE, not a
   budget and not a claim about any harness: the number's home and value are
   unchanged, it still governs the editorial-child lane as a soft target, and no
-  harness budget is asserted in the report or the ADR.
+  harness budget is asserted in the report or the ADR. *(Superseded 2026-10-22 by
+  #128: the chart's 1,000 reference line, its `[PASS]`/`[OVER]`/`[n/a]` verdict and
+  the editorial-child soft-target wording are all removed. The ceiling is now
+  data-derived. See the 2026-10-22 amendment below.)*
 - **No harness has a default catalog, and no transcript path is privileged.**
   `pi` was the implicit default three ways and all three are removed: the
   `$PI_MODEL_CATALOG` environment variable, the `~/.pi/agent/models-store.json`
@@ -360,3 +371,45 @@ as written.
   tokens actually seen; only when the hash matches is the stored evidence itself
   reused. A catalog price fix
   still does not rewrite the session (the content hash governs).
+
+### 2026-10-22 — the chart ceiling follows the data, and the budget vocabulary goes (#128)
+
+The chart is an instrument for comparing days, not for scoring them against a
+fixed number. This amendment supersedes the 2026-10-21 "ceiling becomes a
+REFERENCE for the chart" clause in full, plus the *unchanged RenderASCIIChart*
+note at :290 above (marked inline); everything else in that amendment stands.
+
+- **The ceiling is DERIVED from the charted data.** `cmd/benchmark -chart` takes
+  the LARGEST day total with a KNOWN session figure in the charted range and snaps
+  it UP to the next multiple of 1,000; a peak already on the grid stays. The
+  2026-10-12 peak of 4,757,111 therefore charts against `(Ceiling: 4,758,000
+  tokens)`. Bars scale proportionally to that ceiling, rounded half up and clamped
+  to 0–40 chars (a tiny day may bottom out at 0), and the peak day is the full
+  40-char bar (a marker, not a proportion — the title carries the real ceiling). A
+  range with no known total has no ceiling: the title reads
+  `(Ceiling: unknown)`, every unknown day keeps its honest no-bar `unknown` row,
+  one line says nothing is scaled, and the command still exits 0.
+- **No budget vocabulary survives in the chart.** `Budget Usage Bar`,
+  `[░] Available budget`, `[!] Ceiling overage`, the `[PASS]`/`[OVER]`/`[n/a]`
+  verdicts, and the `reference: 1,000/day is the editorial-child soft target …`
+  line are REMOVED, together with the Status column; nothing in the rendered chart
+  compares a day to a budget. The single replacement line is
+  `ceiling: largest charted day rounded up to the next 1,000 — not a harness
+  budget.` (and its unknown-ceiling variant), so the rule is stated and no claim
+  about any harness is implied. The `source:` line from #126 is byte-identical.
+- **`-ceiling` stays an explicit FIXED override.** When given, its value is used
+  verbatim as the ceiling the bars scale to, overriding the peak-snap default; the
+  help text says so, and the printed line becomes `ceiling: fixed at N by -ceiling
+  (overrides the peak-snap default) — not a harness budget.` No overage marker
+  returns in that mode: a day over a fixed ceiling renders a full bar.
+- **`-report` and the CSV/record editorial rules are UNTOUCHED.** `-report` keeps
+  the 1,000 editorial-child compliance line and the CSV stays the pipeline store
+  for `-record`/`-report`; `-ceiling` still reaches the report when explicitly
+  given. Unknown is never 0 (a day with no sessions or an unknown session total
+  draws no bar), and the synthesized-lower-bound disclosure chain from #126 stands.
+- **The keep-out is lifted for exactly this rendering change.** The 2026-10-21
+  clause that maps each day's `session_total_tokens` onto the *unchanged*
+  `benchmark.RenderASCIIChart` (`docs/adr/0006-metrics-contract.md:290`) is
+  superseded: the renderer now derives the ceiling and drops the verdicts.
+  `internal/metrics/*`, the CSV store/upsert rules and `-report` behavior stay
+  byte-identical.

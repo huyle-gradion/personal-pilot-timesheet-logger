@@ -10,7 +10,7 @@ func TestChartRenderer(t *testing.T) {
 	var buf bytes.Buffer
 
 	// Empty metrics
-	if err := RenderASCIIChart(&buf, nil, 1000); err != nil {
+	if err := RenderASCIIChart(&buf, nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "No benchmark metrics recorded yet") {
@@ -29,26 +29,37 @@ func TestChartRenderer(t *testing.T) {
 		},
 	}
 
-	if err := RenderASCIIChart(&buf, metrics, 1000); err != nil {
+	// ceiling 0 DERIVES the ceiling: the 1,050 peak snaps up to 2,000, and the peak
+	// day is the full bar.
+	if err := RenderASCIIChart(&buf, metrics, 0); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "[PASS]") {
-		t.Errorf("expected PASS badge in chart, got: %s", out)
+	if !strings.Contains(out, "Ceiling: 2,000 tokens") {
+		t.Errorf("expected the snapped ceiling in the chart header, got: %s", out)
 	}
-	if !strings.Contains(out, "[OVER]") {
-		t.Errorf("expected OVER badge in chart, got: %s", out)
+	if strings.Contains(out, "[PASS]") || strings.Contains(out, "[OVER]") || strings.Contains(out, "budget") {
+		t.Errorf("the chart must carry no verdict or budget language, got: %s", out)
 	}
-	if !strings.Contains(out, "+50 tokens") {
-		t.Errorf("expected +50 tokens overage notice, got: %s", out)
+	if !strings.Contains(out, "2026-10-08    1050      "+strings.Repeat("█", 40)) {
+		t.Errorf("the peak day must be the full 40-char bar, got: %s", out)
 	}
-	if !strings.Contains(out, "Ceiling: 1000 tokens") {
-		t.Errorf("expected the ceiling in the chart header, got: %s", out)
+	if !strings.Contains(out, "2026-10-07    995       "+strings.Repeat("█", 20)) {
+		t.Errorf("other days must scale proportionally (995/2000 -> 20), got: %s", out)
 	}
 
-	// A non-positive ceiling is refused, never silently defaulted.
-	if err := RenderASCIIChart(&buf, metrics, 0); err == nil {
-		t.Error("a non-positive ceiling must be refused")
+	// A fixed ceiling scales to the caller's number instead of the data.
+	buf.Reset()
+	if err := RenderASCIIChart(&buf, metrics, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "Ceiling: 1,000 tokens") {
+		t.Errorf("expected the fixed ceiling in the chart header, got: %s", buf.String())
+	}
+
+	// A NEGATIVE ceiling is refused, never silently defaulted.
+	if err := RenderASCIIChart(&buf, metrics, -1); err == nil {
+		t.Error("a negative ceiling must be refused")
 	}
 }
 
