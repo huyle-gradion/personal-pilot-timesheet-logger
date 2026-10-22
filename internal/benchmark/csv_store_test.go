@@ -2,7 +2,6 @@ package benchmark
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -200,31 +199,63 @@ func TestCSVStore_MalformedRowFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestCSVStore_RecordedRowsReadBack (R7) asserts the three historical rows still
-// read back: no migration breakage.
+// newIntPtr is a test helper for optional-entry literals.
+func newIntPtr(v int) *int { return &v }
+
+// TestCSVStore_RecordedRowsReadBack (R7) asserts the historical rows still
+// read back with their exact figures, and the later day rows the owner recorded
+// read back with UNKNOWN token columns (never coerced 0). The row count is not
+// pinned: the store grows by design whenever a day is recorded.
 func TestCSVStore_RecordedRowsReadBack(t *testing.T) {
 	rows, err := ReadMetrics(filepath.Join("..", "..", "benchmarks", "metrics.csv"))
 	if err != nil {
 		t.Fatalf("read the recorded store: %v", err)
 	}
-	want := map[string]int64{
+	byDate := make(map[string]DailyMetric, len(rows))
+	for _, m := range rows {
+		byDate[m.Date] = m
+	}
+	wantKnown := map[string]int64{
 		"2026-10-06": 180,
 		"2026-10-07": 295,
 		"2026-10-08": 287,
 	}
-	if len(rows) != len(want) {
-		t.Fatalf("expected %d recorded rows, got %d: %s", len(want), len(rows), fmt.Sprint(rows))
-	}
-	for _, m := range rows {
-		total, ok := want[m.Date]
+	for date, total := range wantKnown {
+		m, ok := byDate[date]
 		if !ok {
-			t.Fatalf("unexpected recorded date %q", m.Date)
+			t.Fatalf("recorded %s dropped from the store", date)
 		}
 		if m.TotalTokens == nil || *m.TotalTokens != total {
-			t.Fatalf("%s total = %v, want %d", m.Date, m.TotalTokens, total)
+			t.Fatalf("%s total = %v, want %d", date, m.TotalTokens, total)
 		}
 		if m.CacheTokens == nil || *m.CacheTokens != 0 {
-			t.Fatalf("%s cache = %v, want a recorded 0", m.Date, m.CacheTokens)
+			t.Fatalf("%s cache = %v, want a recorded 0", date, m.CacheTokens)
+		}
+	}
+	wantUnknown := []struct {
+		date    string
+		entries *int // nil means the day's entries column is also unknown
+	}{
+		{"2026-10-09", newIntPtr(5)},
+		{"2026-10-13", nil},
+		{"2026-10-14", newIntPtr(10)},
+		{"2026-10-15", newIntPtr(8)},
+		{"2026-10-16", newIntPtr(6)},
+	}
+	for _, w := range wantUnknown {
+		m, ok := byDate[w.date]
+		if !ok {
+			t.Fatalf("recorded %s dropped from the store", w.date)
+		}
+		if m.InputTokens != nil || m.OutputTokens != nil || m.CacheTokens != nil || m.TotalTokens != nil {
+			t.Fatalf("%s token columns = (%v/%v/%v/%v), want all unknown", w.date,
+				m.InputTokens, m.OutputTokens, m.CacheTokens, m.TotalTokens)
+		}
+		if (m.Entries == nil) != (w.entries == nil) {
+			t.Fatalf("%s entries presence = %v, want %v", w.date, m.Entries != nil, w.entries != nil)
+		}
+		if m.Entries != nil && w.entries != nil && *m.Entries != *w.entries {
+			t.Fatalf("%s entries = %d, want %d", w.date, *m.Entries, *w.entries)
 		}
 	}
 }
