@@ -68,8 +68,11 @@ type ResolutionReceipt struct {
 	Complete      bool   `json:"observation_complete"`
 }
 
-// PlanPreview is the exact rendered plan. Approved is always false and
-// ApprovalAvailable is always false in R3.
+// PlanPreview is the exact rendered plan. Approved and approval_available are
+// DERIVED approval-ledger facts (R4): approved reports whether an unconsumed,
+// unrevoked native approval currently binds this exact plan_id;
+// approval_available reports whether the plan is ready to be approved. They are
+// never durable authorization flags on a plan record.
 type PlanPreview struct {
 	Date               string            `json:"date"`
 	PlanID             string            `json:"plan_id"`
@@ -131,6 +134,42 @@ func collectContributions(st *State, date string) ([]contributingInterval, error
 		}
 	}
 	return out, nil
+}
+
+// selectedChoiceFor resolves one interval's explicit selection reference into
+// the semantic choice it bound (R4F1). The referenced STORED catalog is only
+// the historical rendering the operator selected from; it binds what was
+// selected, never current truth. Stored/live metadata alone is a retrieval
+// hint, so a missing or semantically incomplete reference fails closed and
+// requires explicit reselection instead of a name/code/default substitution.
+// A nil result without a blocker means the interval carries no selection and
+// the caller's own classification check already skips it.
+func selectedChoiceFor(st *State, iv Interval) (*ClassificationChoice, *Blocker) {
+	if strings.TrimSpace(iv.RemoteClassificationID) == "" {
+		return nil, nil
+	}
+	bad := func(detail string) *Blocker {
+		return &Blocker{Code: CodeSelectionUnverifiable, Date: iv.Date, LocalID: iv.ID,
+			Detail: detail}
+	}
+	if st.Remote == nil || strings.TrimSpace(iv.RemoteCatalogID) == "" {
+		return nil, bad("no stored selection catalog backs this interval's classification; select_classification again")
+	}
+	cat := st.Remote.Catalogs[iv.RemoteCatalogID]
+	if cat == nil {
+		return nil, bad("the stored selection reference is gone (pruned or unknown catalog); select_classification again")
+	}
+	for _, opt := range cat.Options {
+		if opt.ID != iv.RemoteClassificationID {
+			continue
+		}
+		choice := choiceFromOption(opt)
+		if choice.Name == "" || choice.Code == "" || choice.ActivityType == "" {
+			return nil, bad("the selected option's stored semantics (name/code/activity type) cannot be established; select_classification again")
+		}
+		return &choice, nil
+	}
+	return nil, bad("the selected classification is not part of the referenced stored catalog; select_classification again")
 }
 
 func confirmedIntervalByID(st *State, id string) (Interval, string, int, bool) {
@@ -286,23 +325,113 @@ func hasResolution(r *RemoteState, observationID, decision, remoteID string) boo
 }
 
 func unresolvedOutcomesFor(st *State, dates map[string]bool) []Blocker {
-	if st.Remote == nil {
-		return nil
-	}
 	var out []Blocker
-	for _, o := range st.Remote.Outcomes {
-		if !outcomeBlocks(o) {
+	if st.Remote != nil {
+		for _, o := range st.Remote.Outcomes {
+			if !outcomeBlocks(o) {
+				continue
+			}
+			if !outcomeRelevant(st, o, dates) {
+				continue
+			}
+			out = append(out, Blocker{
+				Code: "unresolved_write", Date: o.Date, LocalID: o.LocalID, RemoteID: o.RemoteID,
+				Detail: unresolvedOutcomeDetail(o),
+			})
+		}
+	}
+	// R4 native interrupted submissions block the same way: a durable
+	// in_flight/uncertain/unidentified write whose allocation date or any
+	// contributing origin date touches a relevant date is unresolved replay
+	// risk until an explicit resolve_write decision. Never replayed, never
+	// auto-cleared.
+	for _, it := range st.Intents {
+		if !it.unresolved() {
 			continue
 		}
-		if o.Date != "" && !dates[o.Date] {
+		if len(dates) > 0 && !intentRelevant(it, dates) {
 			continue
 		}
 		out = append(out, Blocker{
-			Code: "unresolved_write", Date: o.Date, LocalID: o.LocalID, RemoteID: o.RemoteID,
-			Detail: unresolvedOutcomeDetail(o),
+			Code: "unresolved_write", Date: it.Date, LocalID: it.LocalID, RemoteID: it.RemoteID,
+			Detail: "a native submission write is unresolved (" + it.ErrorCode + "); use submission_status and resolve_write; writes are never replayed",
 		})
 	}
 	return out
+}
+
+// intentTouchesDates reports whether an unresolved intent's original
+// contribution origins intersect the given date set.
+func intentTouchesDates(it WriteIntent, dates map[string]bool) bool {
+	for _, d := range it.Operation.OriginDates {
+		if dates[d] {
+			return true
+		}
+	}
+	return false
+}
+
+// intentRelevant scopes one native unresolved write by its ALLOCATION date and
+// every contributing origin date, not only the durable contributor row (R4F2).
+func intentRelevant(it WriteIntent, dates map[string]bool) bool {
+	if dates[it.Date] || intentTouchesDates(it, dates) {
+		return true
+	}
+	return false
+}
+
+// outcomeAllocationDates resolves the actual (origin interval ID, allocation
+// date) footprint a migrated outcome's local identity renders on, through the
+// shared contribution helpers. A legacy row may carry its origin's date while
+// its write actually targets a later spill day (R4F5/R4F6).
+func outcomeAllocationDates(st *State, o WriteOutcome) map[string]bool {
+	out := map[string]bool{}
+	if st == nil || strings.TrimSpace(o.LocalID) == "" {
+		return out
+	}
+	for _, dy := range st.Days {
+		if dy == nil {
+			continue
+		}
+		for _, cand := range dy.Confirmed {
+			if cand.ID != o.LocalID {
+				continue
+			}
+			loc, err := dayLocation(dy.Timezone)
+			if err != nil {
+				continue
+			}
+			allocs, err := cand.ResolvedAllocations(loc)
+			if err != nil {
+				continue
+			}
+			for _, a := range allocs {
+				out[a.Date] = true
+			}
+		}
+	}
+	return out
+}
+
+// outcomeRelevant reports whether a pending migrated outcome can touch the
+// given date set: by its recorded write date, by its actual allocation dates
+// resolved through the local interval, or conservatively when the recorded
+// date is unknown. An unrelated dirty or plan date never inherits this block.
+func outcomeRelevant(st *State, o WriteOutcome, dates map[string]bool) bool {
+	if o.Date == "" {
+		// Unknown pending provenance stays blocking wherever any date is asked.
+		return true
+	}
+	if dates[o.Date] {
+		return true
+	}
+	alloc := outcomeAllocationDates(st, o)
+	for d := range alloc {
+		if dates[d] {
+			return true
+		}
+	}
+	return false
 }
 
 // allocationRemoteSpan renders one local allocation as the exact same-day remote
@@ -685,24 +814,11 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 	if len(contributions) == 0 {
 		return PlanPreview{}, newError(CodeNoConfirmedWork, "there is no saved confirmed work that renders on this date")
 	}
-	// Never plan from an unsaved origin/day.
-	for _, c := range contributions {
-		if open, ok := s.days[c.OriginDate]; ok {
-			if open.Revision != open.SavedRevision || !intervalsEqual(open.Staged, open.Confirmed) {
-				return PlanPreview{}, newError(CodeDirtySession, "the origin day has unsaved changes; save or cancel it before previewing a plan")
-			}
-		}
-	}
 
 	origins := map[string]bool{}
 	for _, c := range contributions {
 		origins[c.OriginDate] = true
 	}
-	originDates := make([]string, 0, len(origins))
-	for d := range origins {
-		originDates = append(originDates, d)
-	}
-	sort.Strings(originDates)
 
 	// Every plan operation is one ALLOCATION, so the dates that must be observed
 	// are the allocation dates, not merely the origin dates. A spill-day preview
@@ -716,6 +832,69 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 		relevantDates = append(relevantDates, d)
 	}
 	sort.Strings(relevantDates)
+
+	// R4F2: guard every open session whose durable saved OR current (staged /
+	// unsaved-confirmed) allocation footprint touches the plan's affected
+	// allocation dates. Prior-day spill additions, changed timezone-resolved
+	// allocations, removals/moves of old contributions and unsaved
+	// confirmations are all dirty footprints of this kind; the guarded plan
+	// stays blocked until the session is saved or cancelled, and unrelated
+	// dirty dates never block this preview. The guard covers both approval and
+	// consumption because both re-render this exact preview.
+	affected := make(map[string]bool, len(relevant)+len(origins))
+	for d := range relevant {
+		affected[d] = true
+	}
+	for d := range origins {
+		affected[d] = true
+	}
+	for openDate, open := range s.days {
+		if open == nil || (open.Revision == open.SavedRevision && intervalsEqual(open.Staged, open.Confirmed)) {
+			continue
+		}
+		loc, err := dayLocation(open.Timezone)
+		if err != nil {
+			return PlanPreview{}, err
+		}
+		touchedIn := func(list []Interval, listDate string, loc *time.Location) bool {
+			for _, iv := range list {
+				if iv.Date != listDate {
+					continue
+				}
+				allocs, err := iv.ResolvedAllocations(loc)
+				if err != nil {
+					continue
+				}
+				for _, a := range allocs {
+					if affected[a.Date] {
+						return true
+					}
+				}
+			}
+			return false
+		}
+		dirty := touchedIn(open.Confirmed, openDate, loc) || touchedIn(open.Staged, openDate, loc)
+		// R4F2 continuation: an unsaved confirmation can empty BOTH current
+		// session lists (staged and confirmed) while this plan still renders
+		// the durable saved work. The saved origin's footprint is therefore
+		// part of the dirty session's footprint: a final removal that was
+		// confirmed but not saved must never authorize the stale saved view.
+		// The saved view is resolved with its own timezone, and this read never
+		// mutates the durable snapshot or persists the draft.
+		if !dirty {
+			if saved := st.Days[openDate]; saved != nil {
+				savedLoc, err := dayLocation(saved.Timezone)
+				if err != nil {
+					return PlanPreview{}, err
+				}
+				dirty = touchedIn(saved.Confirmed, openDate, savedLoc)
+			}
+		}
+		if dirty {
+			return PlanPreview{}, newError(CodeDirtySession,
+				"an open session on "+openDate+" has unsaved changes whose saved or staged allocation footprint touches this plan's affected date(s); save or cancel it before previewing a plan")
+		}
+	}
 
 	reader, err := NewGradionReader(s.cfg, s.env)
 	if err != nil {
@@ -751,7 +930,7 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 	preview := PlanPreview{
 		Date: date, Operations: []PlanOperation{}, Blockers: []Blocker{},
 		SurfacedRemotes: []RemoteEntry{}, SourceRevisions: map[string]int{},
-		RemoteComplete: allComplete, Approved: false, ApprovalAvailable: false,
+		RemoteComplete:     allComplete,
 		RemoteObservations: map[string]string{},
 	}
 	seenBlocker := map[string]bool{}
@@ -763,7 +942,7 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 		seenBlocker[key] = true
 		preview.Blockers = append(preview.Blockers, b)
 	}
-	for _, d := range originDates {
+	for _, d := range sortedKeys(origins) {
 		if day, ok := st.Days[d]; ok {
 			preview.SourceRevisions[d] = day.Revision
 		}
@@ -803,8 +982,13 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 			preview.SurfacedRemotes = append(preview.SurfacedRemotes, e)
 		}
 	}
-	// Preserved unresolved write history blocks readiness.
-	preview.UnresolvedOutcomes = unresolvedOutcomesFor(st, origins)
+	// Preserved unresolved write history blocks readiness. The dates asked are
+	// the plan's affected allocation dates plus its contributing origin dates
+	// (R4F5): a pending migrated outcome may record its origin's date while its
+	// write targets a later spill allocation, and that row must gate this
+	// plan's approval and submission even when the spill day currently reads
+	// empty.
+	preview.UnresolvedOutcomes = unresolvedOutcomesFor(st, affected)
 	for _, b := range preview.UnresolvedOutcomes {
 		block(b)
 	}
@@ -861,6 +1045,11 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 			if strings.TrimSpace(iv.RemoteClassificationID) == "" {
 				continue
 			}
+			choice, bad := selectedChoiceFor(st, iv)
+			if bad != nil {
+				block(*bad)
+				continue
+			}
 			ops = append(ops, plannedOp{op: PlanOperation{
 				LocalID: iv.ID, Kind: "edit", RemoteID: b.RemoteID, Date: allocDate,
 				StartTime: startText, EndTime: endText, Minutes: alloc.Minutes,
@@ -871,6 +1060,11 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 				OriginRevisions:    map[string]int{origin: c.OriginRevision},
 				ExpectedRemote:     cloneEntry(&e),
 				PreserveRemoteOnly: []string{"task", "billable"},
+				// The bounded deterministic audit reason is part of the edit's
+				// exact approved body and therefore of the canonical plan
+				// content: a change to the reason changes the plan identity.
+				Reason:         planEditReason(allocDate, iv.ID),
+				SelectedChoice: choice,
 			}, order: []string{allocDate, startText, iv.ID}})
 			continue
 		}
@@ -914,12 +1108,18 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 		if ambiguous || strings.TrimSpace(iv.RemoteClassificationID) == "" {
 			continue
 		}
+		choice, bad := selectedChoiceFor(st, iv)
+		if bad != nil {
+			block(*bad)
+			continue
+		}
 		ops = append(ops, plannedOp{op: PlanOperation{
 			LocalID: iv.ID, Kind: "create", Date: allocDate,
 			StartTime: startText, EndTime: endText, Minutes: alloc.Minutes,
 			ClassificationID: iv.RemoteClassificationID, Description: iv.Description,
 			CatalogID: iv.RemoteCatalogID, CrossesMidnight: iv.CrossesMidnight(),
 			OriginDates: []string{origin}, OriginRevisions: map[string]int{origin: c.OriginRevision},
+			SelectedChoice: choice,
 		}, order: []string{allocDate, startText, iv.ID}})
 	}
 
@@ -954,7 +1154,6 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 		RemoteFingerprint: preview.RemoteFingerprint, SourceRevisions: preview.SourceRevisions,
 		Operations: preview.Operations, Blockers: preview.Blockers,
 		SurfacedRemotes: preview.SurfacedRemotes, CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		Approved: false, ApprovalAvailable: false,
 	}
 	if existing, exists := st.Plans[preview.PlanID]; exists {
 		// Immutable history under an existing ID is never overwritten. The
@@ -971,7 +1170,21 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 	if err := s.store.CommitState(st); err != nil {
 		return PlanPreview{}, err
 	}
+	// Derived ledger facts, not durable flags: whether this exact plan already
+	// has a live native approval, and whether it may be approved now.
+	preview.ApprovalAvailable = preview.State == PlanReady
+	preview.Approved = s.approvalBoundFor(preview.PlanID)
 	return preview, nil
+}
+
+// sortedKeys returns the map keys in deterministic sorted order.
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func prunePlans(plans map[string]*PlanRecord) {
@@ -1022,17 +1235,26 @@ func remoteFingerprint(dates []string, observations map[string]*RemoteObservatio
 // fields (catalog identity, created/observed timestamps) are deliberately absent
 // so a fresh identical observation does not change the plan identity.
 type canonicalOperation struct {
-	LocalID            string       `json:"local_id"`
-	Kind               string       `json:"kind"`
-	RemoteID           string       `json:"remote_id,omitempty"`
-	Date               string       `json:"date"`
-	StartTime          string       `json:"start_time"`
-	EndTime            string       `json:"end_time"`
-	ClassificationID   string       `json:"classification_id"`
-	Description        string       `json:"description"`
-	CrossesMidnight    bool         `json:"crosses_midnight,omitempty"`
-	PreserveRemoteOnly []string     `json:"preserve_remote_only,omitempty"`
-	ExpectedRemote     *RemoteEntry `json:"expected_remote,omitempty"`
+	LocalID            string   `json:"local_id"`
+	Kind               string   `json:"kind"`
+	RemoteID           string   `json:"remote_id,omitempty"`
+	Date               string   `json:"date"`
+	StartTime          string   `json:"start_time"`
+	EndTime            string   `json:"end_time"`
+	ClassificationID   string   `json:"classification_id"`
+	Description        string   `json:"description"`
+	CrossesMidnight    bool     `json:"crosses_midnight,omitempty"`
+	PreserveRemoteOnly []string `json:"preserve_remote_only,omitempty"`
+	// Reason is a previewed edit's audit reason, inside the exact approved
+	// body. It is canonical content, not an audit-only timestamp.
+	Reason         string       `json:"reason,omitempty"`
+	ExpectedRemote *RemoteEntry `json:"expected_remote,omitempty"`
+	// SelectedChoice is the explicitly selected classification's relevant
+	// semantic identity (id/code/name/activity type) as rendered from the
+	// stored selection reference (R4F1). It is canonical plan content: a
+	// changed or unverifiable selection produces a different or blocked
+	// preview, never a silently swapped body.
+	SelectedChoice *ClassificationChoice `json:"selected_choice,omitempty"`
 }
 
 // planID is the canonical content identity of one preview. It includes the
@@ -1053,7 +1275,7 @@ func planID(date string, revisions map[string]int, ops []PlanOperation, remoteFP
 			StartTime: op.StartTime, EndTime: op.EndTime,
 			ClassificationID: op.ClassificationID, Description: op.Description,
 			CrossesMidnight: op.CrossesMidnight, PreserveRemoteOnly: op.PreserveRemoteOnly,
-			ExpectedRemote: expected,
+			Reason: op.Reason, ExpectedRemote: expected, SelectedChoice: op.SelectedChoice,
 		})
 	}
 	canonBlockers := append([]Blocker(nil), blockers...)
@@ -1107,9 +1329,33 @@ func planRecordMatches(p *PlanRecord, preview PlanPreview) bool {
 		if a.LocalID != b.LocalID || a.Kind != b.Kind || a.RemoteID != b.RemoteID ||
 			a.Date != b.Date || a.StartTime != b.StartTime || a.EndTime != b.EndTime ||
 			a.Minutes != b.Minutes || a.ClassificationID != b.ClassificationID ||
-			a.Description != b.Description {
+			a.Description != b.Description || a.Reason != b.Reason {
+			return false
+		}
+		// Choice binding compares by semantic value, never by pointer.
+		if (a.SelectedChoice == nil) != (b.SelectedChoice == nil) {
+			return false
+		}
+		if a.SelectedChoice != nil && *a.SelectedChoice != *b.SelectedChoice {
 			return false
 		}
 	}
 	return true
+}
+
+// planEditReason is the bounded deterministic audit reason for a previewed
+// edit. It follows the legacy convention's honest machine-readable phrasing
+// ("timesheet review update <date>") and is deliberately revision-independent,
+// so a revision bump does not change the plan's content hash and cannot
+// invalidate an otherwise-identical plan.
+func planEditReason(date, localID string) string {
+	date = strings.TrimSpace(date)
+	if date == "" {
+		date = "unknown"
+	}
+	localID = strings.TrimSpace(localID)
+	if localID == "" {
+		localID = "unknown"
+	}
+	return "timesheet review update " + date + " " + localID
 }

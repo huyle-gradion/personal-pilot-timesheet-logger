@@ -40,6 +40,13 @@ type Request struct {
 	ObservationID    string   `json:"observation_id,omitempty"`
 	LocalID          string   `json:"local_id,omitempty"`
 	RemoteID         string   `json:"remote_id,omitempty"`
+
+	// R4 native approval/verified-submission fields. plan_id, approval_id and
+	// write_ref identify one exact immutable thing; a request can never point
+	// at "the current plan" or a fuzzy date.
+	PlanID     string `json:"plan_id,omitempty"`
+	ApprovalID string `json:"approval_id,omitempty"`
+	WriteRef   string `json:"write_ref,omitempty"`
 }
 
 // ProtocolError is a stable, compact error. It never carries stack traces,
@@ -173,6 +180,8 @@ type StatusResult struct {
 	RemoteBindings      int         `json:"remote_bindings"`
 	UnresolvedWrites    int         `json:"unresolved_writes"`
 	Plans               int         `json:"plans"`
+	Approvals           int         `json:"approvals"`
+	NativeUnresolved    int         `json:"native_unresolved_writes"`
 	Days                []DayStatus `json:"days"`
 }
 
@@ -469,6 +478,56 @@ func (s *Session) HandleLine(line []byte) (Response, bool) {
 			return errorResponse(req.ID, err), false
 		}
 		result, err := s.previewPlan(date)
+		if err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		return successResponse(req.ID, result), false
+
+	case "approve_plan":
+		if err := rejectFields(req, "day", "plan_id"); err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		result, err := s.approvePlan(req)
+		if err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		return successResponse(req.ID, result), false
+
+	case "revoke_approval":
+		if err := rejectFields(req, "day", "approval_id"); err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		result, err := s.revokeApproval(req)
+		if err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		return successResponse(req.ID, result), false
+
+	case "submit_plan":
+		if err := rejectFields(req, "day", "approval_id"); err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		result, err := s.submitPlan(req)
+		if err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		return successResponse(req.ID, result), false
+
+	case "submission_status":
+		if err := rejectFields(req, "day"); err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		result, err := s.submissionStatus(req)
+		if err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		return successResponse(req.ID, result), false
+
+	case "resolve_write":
+		if err := rejectFields(req, "write_ref", "observation_id", "decision", "remote_id"); err != nil {
+			return errorResponse(req.ID, err), false
+		}
+		result, err := s.resolveWrite(req)
 		if err != nil {
 			return errorResponse(req.ID, err), false
 		}
@@ -1021,7 +1080,7 @@ func (s *Session) status() (StatusResult, error) {
 			StagedMinutes:      staged.TotalMinutes,
 		})
 	}
-	migrationReceipts, remoteBindings, unresolvedWrites := 0, 0, 0
+	migrationReceipts, remoteBindings, unresolvedWrites, approvals, nativeUnresolved := 0, 0, 0, 0, 0
 	st := s.store.State()
 	if st.Migration != nil {
 		migrationReceipts = len(st.Migration.Receipts)
@@ -1034,6 +1093,12 @@ func (s *Session) status() (StatusResult, error) {
 			}
 		}
 	}
+	approvals = len(st.Approvals)
+	for i := range st.Intents {
+		if st.Intents[i].unresolved() {
+			nativeUnresolved++
+		}
+	}
 	return StatusResult{
 		AppVersion:          AppVersion,
 		ProtocolSchema:      ProtocolSchema,
@@ -1044,6 +1109,8 @@ func (s *Session) status() (StatusResult, error) {
 		RemoteBindings:      remoteBindings,
 		UnresolvedWrites:    unresolvedWrites,
 		Plans:               len(st.Plans),
+		Approvals:           approvals,
+		NativeUnresolved:    nativeUnresolved,
 		Days:                days,
 	}, nil
 }

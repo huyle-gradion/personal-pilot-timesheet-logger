@@ -8,7 +8,7 @@ VERIFICATION: compiled persistent binary against stateful loopback MCP; explicit
 
 # R4 owner-mediated packet
 
-Status: **owner-released for owner-mediated implementation** by the request to create GitHub tracking/PRs and then move to the next step. R1-R3 have qualified acceptance. Implement only R4 after the accepted baseline is published; return review-ready for independent review. No direct child dispatch, R5/Pi work or live account access. Track R4 in GitHub issue #135; this release does not authorize worker commits or publication.
+Status: **implemented through dev.12 and independently accepted within Linux/hermetic scope**. See `timesheet-rewrite-r4-acceptance.md`. This original requirements packet and the two repair packets are historical, not instructions to rerun implementation. R4 remains uncommitted pending its separate publication gate/PR; acceptance does not grant R5, child dispatch, merge, release or live access. Track issue #135; preserve PR #138's R1-R3 baseline.
 
 ## Authority and baseline
 
