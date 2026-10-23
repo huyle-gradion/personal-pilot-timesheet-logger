@@ -1,22 +1,24 @@
 # Orchestrator entry point
 
-Coordinate workers, evaluate their evidence, commit accepted slices, and keep ai-database current. The orchestrator owns integration and records; workers own bounded code changes. This documentation creates no running agent service and grants no production-write permission.
+Coordinate workers, evaluate their evidence, and integrate accepted slices. The orchestrator owns integration and records; workers own bounded code changes. The accepted 2026-10-22 rewrite removes ai-database/vault integration. This documentation creates no running agent service and grants no production-write permission.
 
 ## Start here
 
 1. Read [control policy](control-policy.md) for authority and lifecycle gates.
-2. Reconcile [current state](state.md) with Git and the latest worker reports.
-3. Select a dependency-ready slice from [implementation plan](implementation-plan.md).
-4. Fill a task packet from [handoff contracts](handoffs.md), then use [worker prompts](prompts.md).
-5. After independent acceptance, follow [commit and vault protocol](commit-and-vault.md).
+2. For the active rewrite, use the accepted [rewrite specification](../timesheet-rewrite-spec.md) and [execution plan](../../.omo/plans/timesheet-rewrite.md).
+3. [R1](timesheet-rewrite-r1-acceptance.md), [R2](timesheet-rewrite-r2-acceptance.md) and [R3 dev.9](timesheet-rewrite-r3-acceptance.md) have qualified acceptance; the R3 second repair converged. The owner authorized GitHub tracking/publication of this accepted baseline and then owner-mediated [R4 exact-approval/verified-submission implementation](timesheet-rewrite-r4-handoff.md). Track the rewrite in [epic #131](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/131), accepted R1-R3 in #132-#134, next R4 in #135, and dependent R5/R6 in #136/#137. No merge, child dispatch, release or live submission authority; workers still stop review-ready without commits/publication.
+4. Reconcile the packet's base and current ownership before implementation. Use [handoff contracts](handoffs.md) for implementation and independent review reports.
+5. Commit, publication, live access, release tags, and production writes require their own authority. Do not synchronize this rewrite to ai-database.
 
-Read `AGENTS.md`, `GLOSSARY.md`, `docs/timesheet-redesign.md`, and repo ADR 0005 when first taking over or when their contents change. Load credentials, issue-tracker, and engineering references only when the task needs them. Product requirements remain in the redesign specification, not this operating guide.
+`GLOSSARY.md` remains the canonical domain vocabulary. The older [implementation plan](implementation-plan.md), [state ledger](state.md), redesign specification, and ADR 0005 are historical context where the new specification supersedes them. Do not load the full historical ledger into routine rewrite workers or daily-agent context.
 
 ## Default mode
 
 Owner-mediated execution is the default. Produce a complete worker prompt and stop. The owner runs the worker and returns its report. If the owner explicitly enables direct dispatch, use available child-agent tools with the same packets and gates. Tool availability never implies permission.
 
-Separate permissions for implementation, local commits, GitHub publication, live reads, and production writes. Ask for missing authority before acting. This documentation session permits documentation and vault updates only.
+Every task packet and report records observed capabilities, delegation permission, and the reason to work inline or use specialists. Tool availability does not imply permission. Do not force child agents on trivial or coherent work; when authorized, prefer them for substantial independent slices and fresh review. State the decision once rather than adding repeated capability checks or filesystem discovery.
+
+Separate permissions for implementation, local commits, GitHub publication, live reads, and production writes. Documentation and design acceptance do not grant those scopes. Credentials are in `.env.local`, loaded only by the binary; never read or print them through agent tools. The kickoff adds no vault-write authority.
 
 ## Roles
 
@@ -24,9 +26,9 @@ Separate permissions for implementation, local commits, GitHub publication, live
 | --- | --- | --- |
 | Owner | Authorizes scope and exceptions; decides product trade-offs | Approves each remote timesheet plan separately |
 | Orchestrator | Chooses slices, dispatches, reconciles findings, commits accepted work, updates records | Does not silently implement worker code or waive safety blockers |
-| Implementer | Implements the assigned slice and tests | Stops for independent review; no commit or vault writes |
+| Implementer | Implements the bounded slice and demonstrates behavior; tests optional under the rewrite spec | Stops for independent review; no commit or vault writes |
 | Reviewer | Independently checks the exact snapshot and evidence | Read-only; does not retrieve credentials or alter files |
-| Fixer | Repairs accepted findings with regression tests | Does not expand scope or commit |
+| Fixer | Repairs accepted findings and demonstrates corrected behavior; tests optional under the rewrite spec | Does not expand scope or commit |
 | Researcher | Resolves named facts with bounded, authorized access | No changes or live mutations unless separately authorized |
 
 An implementer's self-review is useful evidence, not independent acceptance. Reviewers and fixers can use fresh agents or separate sessions; record which happened.
