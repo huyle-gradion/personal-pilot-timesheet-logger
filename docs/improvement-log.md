@@ -5,6 +5,16 @@ The assignment's log → review what broke → improve → log again record
 
 ## 2026-10-25 — first owner-run loop on macOS; two defects found and fixed
 
+**Owner decision:** no Claude account is available. **Pi and manual
+terminal runs are the demonstrated runners**; the skill folder stays
+runner-agnostic (Claude pickup link kept, unused). Token capture follows
+suit: `tokens.py` now reads Pi's usage fields (`input`/`output`/
+`cacheRead`/`cacheWrite` under `~/.pi/agent/sessions`) alongside Claude's.
+AGENTS.md points agents working in this repo at `workflow.md`, so a
+normal Pi session executes the daily log by following repo instructions.
+Manual terminal runs consume zero model tokens — an honest §3.6 data
+point, not a gap.
+
 **Ran:** the owner executed the full loop manually on macOS (collect →
 draft → judgment in an editor → record → status) for 2026-10-20 and
 2026-10-27 with the real config and env file. The whole path works
