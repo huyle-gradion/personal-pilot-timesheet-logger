@@ -1,9 +1,9 @@
-# Rewrite interface (`0.1.0-dev.17`: single-product cutover)
+# Timesheet interface (`0.1.0`)
 
-Application version: `0.1.0-dev.17` (unreleased development build, not a release tag).
+Application version: `0.1.0`.
 Protocol schema: `1`. State schema: `3`.
 
-This document is the public interface for the current development build. The
+This document is the public interface for the current release. The
 implemented surface is the accepted R1-R5 slices: the local review-first
 workflow, R2 verification-only evidence collection, the R3 migration/read-only
 boundary, the R4 native approval ledger and ONE verified submission path, and
@@ -11,6 +11,12 @@ the R5 pinned Pi consumer. R6 changes no protocol, schema or store behavior: it
 retires the legacy CLI, moves the one entry point to `cmd/timesheet` and makes
 `bin/timesheet` the production-named child. The stage descriptions below remain
 accurate as historical slices.
+
+Release `0.1.0` promotes the verified dev.17 behavior without changing protocol,
+schemas or dependency pins. The owner explicitly accepted the known upstream
+Pi/Undici risk for this release; R6 remains open for improvements. See the root
+README for current verification and limitations. Historical stage notes below
+describe their original snapshots, not new runtime evidence.
 
 The R4 slice adds a native approval ledger (an approval authorizes exactly ONE
 rendered plan), durable pre-write intent records, and ONE verified submission
@@ -42,8 +48,11 @@ and are sanitized. The process never launches a shell.
 fields for paths, executable names, or arbitrary operations. Both flags are
 required.
 
-Exit codes: `0` normal close/EOF, `1` startup or stream failure (for example an
-invalid config, locked state, or unreadable stream), `2` usage error.
+Exit codes: `0` for a normal `version` run, a normal `serve` close/EOF and
+`serve` help; `2` for a missing or unknown top-level command and extra
+`version` arguments; `1` for `serve` argument validation (unknown flag, extra
+positional, missing required flag), startup failure (for example an invalid
+config or locked state) and stream failure (for example an unreadable stream).
 
 Only one process may open a given state file. A second `serve` against the same
 state fails with `store_locked`; it does not race or overwrite the first.

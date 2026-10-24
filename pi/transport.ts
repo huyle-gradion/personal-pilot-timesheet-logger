@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 /** Application identity this adapter is compiled against. Negotiated with the
  *  child before any action; a mismatch fails closed. Must keep matching
  *  internal/rewrite/model.go AppVersion. */
-export const APP_VERSION = "0.1.0-dev.17";
+export const APP_VERSION = "0.1.0";
 /** Public protocol schema negotiated with the child (docs/agents/rewrite-interface.md). */
 export const PROTOCOL_SCHEMA = 1;
 /** Durable store schema the running build must report. */

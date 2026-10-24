@@ -4,6 +4,25 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
 
 ## Unreleased
 
+R6 improvements and upstream Pi dependency remediation remain tracked in
+[issue #137](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/137).
+
+## 0.1.0
+
+- Release the rewrite as the main product: one compiled timesheet server and
+  one pinned Pi consumer; legacy CLI and vault integration are retired.
+- Promote dev.17 to `0.1.0` with no workflow, protocol, state-schema or dependency
+  change. Local logging/migration/lifecycle have Linux and actual Darwin evidence;
+  the owner supplied the final Darwin runner pass.
+- Include the reviewed restart-durability and CLI exit-code documentation fixes.
+- The owner explicitly accepted the known upstream Pi/Undici dependency risk for
+  this release. The vulnerable bundle is unchanged; remediation remains open.
+  This release is not claimed to be vulnerability-free or live-provider verified.
+- Live credentials, model authentication and real Gradion submission remain
+  unverified. Exact human approval is still required for every remote write plan.
+
+Historical prerelease notes below retain their original evidence qualifications.
+
 ### Source cutover (`0.1.0-dev.17`)
 
 R6 is the single-product cutover. It changes no `serve` protocol field, state
@@ -42,11 +61,18 @@ package stamp move to `0.1.0-dev.17` with dependency pins
   line (stale R4/dev.11 heading corrected; R1-R5 stage text marked historical),
   `docs/agents/credentials.md` (active `.env.local` policy replaces the retired
   Keychain-only guidance) and this changelog were updated.
+- Documentation correction. The README no longer implies that unsaved staged
+  interval edits survive a restart: staged and confirmed-but-unsaved interval
+  changes are session-only, only committed state and durable ledgers reload, and
+  startup never submits or replays anything on its own. Both the README and the
+  rewrite interface now separate top-level/`version` usage errors (exit `2`)
+  from `serve` argument validation, startup and stream failures (exit `1`).
+  No application, protocol, schema, dependency or release-identity change.
 - Evidence. Linux, real pinned Pi 1.4.0 TUI through the unchanged
   `pi/launch.mjs` with `--binary` pointing at the built `bin/timesheet`, an
   isolated generated HOME/profile/config/env/state and synthetic loopback
   GitHub/ICS/MCP/model fixtures. `timesheet version` exits 0 with no resource
-  files; extra arguments and retired commands exit 2 with no remote call.
+  files; extra `version` arguments and retired commands exit 2 with no remote call.
   Darwin arm64/amd64 cross-builds are compile-only. macOS runtime migration
   and local flow, live accounts/credentials and authenticated model
   readiness remain unverified prerequisites for full R6 acceptance. This

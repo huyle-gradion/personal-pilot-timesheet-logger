@@ -1,7 +1,6 @@
 # Timesheet (rewrite line)
 
-Application version: `0.1.0-dev.17` (unreleased development build, **not** a
-release tag). Protocol schema `1`, state schema `3`.
+Application version: **`0.1.0`**. Protocol schema `1`, state schema `3`.
 
 This repository is one timesheet product: a single compiled Go binary owns all
 accounting, validation and persistence, and one pinned Pi consumer renders the
@@ -21,8 +20,12 @@ bin/timesheet version   # prints the application version and protocol schema, ex
 ```
 
 `bin/timesheet` is the production-named executable. It has exactly two
-commands: `version` and `serve --config <path> --env-file <path>`. Extra
-arguments and every other command exit `2` without any remote call.
+commands: `version` and `serve --config <path> --env-file <path>`. A normal
+`version` run, a normal `serve` close/EOF and `serve` help exit `0`. No
+top-level command, an unknown top-level command, or extra `version` arguments
+exit `2`. `serve` argument validation (an unknown flag, an extra positional, a
+missing required flag), startup failure and stream failure exit `1`. Usage
+errors make no remote call.
 
 ## Launch
 
@@ -94,23 +97,30 @@ Never write before the day is reconciled; never plan from an unsaved draft.
   with `resolve_write` against the *current complete* observation: `adopt`
   binds an observed remote identity, `not_applied` is a human attestation and
   is refused when a matching effect is visible.
-- Restart never resumes an approval, a submission or a draft. Only staging and
-  durable saves survive; unsaved session drafts do not.
+- Restart never resumes an approval, a submission or a draft. Unsaved staged
+  interval edits and confirmed-but-unsaved interval changes are session-only;
+  only successfully committed state and durable ledgers reload. Startup never
+  submits or replays anything on its own.
 - A transport failure after dispatch is an unknown remote outcome, never proof
   of zero writes.
 
 ## Readiness
 
-- Verified in this snapshot: Linux source cutover and hermetic runtime proof
-  with the real pinned Pi TUI, synthetic loopback GitHub/ICS/MCP/model fixtures
-  and an isolated generated HOME/profile/config/env/state; Darwin arm64/amd64
-  cross-builds are compile-only proof.
-- **Not** verified: macOS runtime (a mandatory, separate gate for full R6
-  acceptance), live accounts/credentials, and authenticated model/subscription
-  readiness. These are prerequisites, not passed criteria.
-- No RC/stable/production claim follows from source review. `durability_uncertain`
-  UI behavior remains source-reviewed plus accepted backend coverage, not a
-  newly TUI-fault-proven case.
+- Verified: Linux hermetic workflows and actual macOS native migration,
+  local Pi logging, confirm/save/cancel, saved-versus-staged restart, edit/cancel,
+  reload, normal shutdown and lock release. The Darwin runner result was supplied
+  by the owner; its remote capsule was not independently downloaded here.
+- **Known dependency risk, owner-accepted for this release:** pinned Pi `1.4.0`
+  embeds Undici `8.10.2`, affected by a high-severity fetch process-crash advisory
+  and two moderate EventSource/integrity advisories. No patched Pi bundle has
+  been selected. [R6 / issue #137](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/137)
+  remains open for remediation and further improvements. This release is not
+  claimed to be vulnerability-free.
+- **Not verified:** live accounts/credentials, authenticated model/subscription
+  readiness or real Gradion submission. Local logging does not require a model
+  request; remote submission still requires an exact human-approved plan.
+- `durability_uncertain` UI behavior remains source-reviewed plus accepted
+  backend coverage, not a newly TUI-fault-proven case.
 
 ## Documentation
 

@@ -1,4 +1,4 @@
-# Timesheet Pi profile (R6, `0.1.0-dev.17`)
+# Timesheet Pi profile (`0.1.0`)
 
 This directory is the ONLY supported Pi integration for the timesheet rewrite:
 a restricted launcher plus one trusted adapter extension that renders the
@@ -9,6 +9,9 @@ R6 retires the legacy CLI and its temporary rewrite entry point: the one child
 is the production-named `bin/timesheet` built from `cmd/timesheet`, with the
 same `version` / `serve --config --env-file` surface. The launcher, adapter,
 transport and view code are unchanged from the accepted R5 lifecycle repair.
+
+The owner authorized this release with the known Pi/Undici dependency risk
+documented in the root README. Pins remain unchanged; R6 remediation stays open.
 
 ## What runs
 
@@ -198,5 +201,7 @@ ships in the adapter or launcher.
   selection and the UTF-8/byte-bound transport paths were not rerun because
   their source is unchanged from the verified dev.15 review; `durability_uncertain`
   UI behavior remains source-reviewed plus accepted backend evidence, not a
-  newly driven case. macOS, live accounts/credentials and authenticated
-  subscription readiness remain unverified.
+  newly driven case. Subsequent dev.17 Darwin native migration and local
+  workflow/lifecycle checks passed, including the owner-run one-command verifier.
+  Release `0.1.0` changes identity only, not those behaviors. Live accounts,
+  credentials and authenticated subscription readiness remain unverified.
