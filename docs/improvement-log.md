@@ -3,6 +3,27 @@
 The assignment's log → review what broke → improve → log again record
 (§3.5). Date-keyed; newest first. The Friday review reads this file.
 
+## 2026-10-25 — first full agent-run of the skill (Pi) ✅
+
+**Ran:** the owner asked a normal Pi session (repo cwd) to *"log today's
+work"*. The agent read `SKILL.md`/`workflow.md`, ran `collect` → `draft`,
+authored the block descriptions (judgment step), `record`ed the day
+(`entries/2026-10-25.json`, 1 entry), verified with `status`, and ran
+`tokens.py` on its own session — the full six-step loop, zero manual help.
+
+**Measured (first agent-run data point):** session input 14,957 / output
+950 / cache 97,280 (total 113,187) — recorded in `benchmarks/tokens.csv`
+by the agent itself. Honest read against the ≤ 1,000 tokens/day target:
+the *output* side fits, but the input includes the agent's system prompt,
+skill files and exploration — the judgment step's actual input (the draft
+JSON) is a fraction of that. Improvement candidate: a focused invocation
+that passes only the draft into the judgment step.
+
+**Lesson:** `tokens.py` printing "no new skill sessions to record" after
+the run confused the owner — it means the row was already captured
+(idempotency), not that nothing was found. Improvement: print the CSV
+tail so the recorded row is visible.
+
 ## 2026-10-25 — first owner-run loop on macOS; two defects found and fixed
 
 **Owner decision:** no Claude account is available. **Pi and manual

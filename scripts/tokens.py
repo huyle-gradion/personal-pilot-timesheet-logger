@@ -149,6 +149,11 @@ def main():
 
     if not rows:
         print("tokens.py: no new skill sessions to record")
+        if out_path.exists():
+            with out_path.open("r", encoding="utf-8") as fh:
+                tail = fh.read().splitlines()[-3:]
+            for line in tail:
+                print("  " + line)
         return 0
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
