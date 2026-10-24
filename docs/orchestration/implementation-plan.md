@@ -10,7 +10,7 @@ S1 (durable store) is committed at `d471b46`; S2 (crash-safe lifecycle) at `d4d6
 
 Orchestrator first-hand baseline (2026-10-10, snapshot `faec6a4`): `go build ./...` and `go vet ./...` clean; `go test -count=1 ./...` passes for `internal/workflow` and `cmd/sync-timesheet`. One pre-existing, environment-dependent failure in `internal/git` (`TestResolveAuthToken_KeychainMissFallsThrough`) is on untouched code at `356c680` and is not an S1 regression.
 
-Start each slice by inspecting existing ownership and reusable code. Avoid a wholesale rewrite. Keep production writes outside ordinary verification. For each row, run an implement/review/fix/accept cycle using the control policy.
+Start each slice by inspecting existing ownership and reusable code. Avoid a wholesale implementation. Keep production writes outside ordinary verification. For each row, run an implement/review/fix/accept cycle using the control policy.
 
 ## S0. Credential and temporary safety baseline
 

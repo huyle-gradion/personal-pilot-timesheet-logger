@@ -1,6 +1,4 @@
-// Command timesheet is the local timesheet rewrite binary. It is an
-// unreleased development build, not a release artifact, and it is not a
-// compatibility alias for the retired legacy CLI.
+// Command timesheet runs the local timesheet server.
 package main
 
 import (
@@ -9,11 +7,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/rewrite"
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
 )
 
 func usage() {
-	fmt.Fprint(os.Stderr, `timesheet `+rewrite.AppVersion+`
+	fmt.Fprint(os.Stderr, `timesheet `+timesheet.AppVersion+`
 
 Usage:
   timesheet version
@@ -29,7 +27,7 @@ durable unresolved references resolved only by explicit 'resolve_write'
 decisions; they never auto-retry, never replay across restarts, and never block
 silently. Migrated legacy approvals remain inert audit data. The R1-R3 local
 workflow, migration and read boundary are unchanged. The serve protocol in
-docs/agents/rewrite-interface.md is the authoritative interface.
+the protocol reference linked in README.md is the authoritative interface.
 
 Fixed configuration and environment-file paths are launcher inputs. They are
 never accepted as protocol request fields.
@@ -47,7 +45,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "version takes no arguments")
 			os.Exit(2)
 		}
-		fmt.Printf("timesheet %s (protocol schema %d)\n", rewrite.AppVersion, rewrite.ProtocolSchema)
+		fmt.Printf("timesheet %s (protocol schema %d)\n", timesheet.AppVersion, timesheet.ProtocolSchema)
 	case "serve":
 		if err := runServe(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -79,21 +77,21 @@ func runServe(args []string) error {
 		return fmt.Errorf("serve requires --config and --env-file")
 	}
 
-	cfg, err := rewrite.LoadConfig(*configPath)
+	cfg, err := timesheet.LoadConfig(*configPath)
 	if err != nil {
 		return err
 	}
-	fileEnv, err := rewrite.LoadEnvFile(*envFile)
+	fileEnv, err := timesheet.LoadEnvFile(*envFile)
 	if err != nil {
 		return err
 	}
-	env := rewrite.MergeEnv(fileEnv)
-	store, err := rewrite.OpenStore(cfg.StatePath)
+	env := timesheet.MergeEnv(fileEnv)
+	store, err := timesheet.OpenStore(cfg.StatePath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = store.Close() }()
 
-	session := rewrite.NewSession(cfg, env, store)
+	session := timesheet.NewSession(cfg, env, store)
 	return session.Serve(os.Stdin, os.Stdout)
 }

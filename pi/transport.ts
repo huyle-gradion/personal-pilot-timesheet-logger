@@ -1,6 +1,6 @@
 // transport.ts — the single session-scoped compiled-Go child over stdio JSONL.
 //
-// Security contract (docs/agents/rewrite-interface.md, R5 packet §2):
+// Security contract (docs/agents/timesheet-interface.md, R5 packet §2):
 // - Exactly one child process per Pi session. No daemon, no respawn, no
 //   automatic replay of pending operations, especially writes.
 // - The adapter never reads configuration, environment files, records or
@@ -22,9 +22,9 @@ import { randomUUID } from "node:crypto";
 
 /** Application identity this adapter is compiled against. Negotiated with the
  *  child before any action; a mismatch fails closed. Must keep matching
- *  internal/rewrite/model.go AppVersion. */
-export const APP_VERSION = "0.1.0";
-/** Public protocol schema negotiated with the child (docs/agents/rewrite-interface.md). */
+ *  internal/timesheet/model.go AppVersion. */
+export const APP_VERSION = "0.1.1";
+/** Public protocol schema negotiated with the child (docs/agents/timesheet-interface.md). */
 export const PROTOCOL_SCHEMA = 1;
 /** Durable store schema the running build must report. */
 export const STORE_SCHEMA = 3;
@@ -68,7 +68,7 @@ export type OpResult<T = unknown> = OpOk<T> | OpErr;
 
 export type TransportState = "idle" | "starting" | "ready" | "failed" | "closed";
 
-/** Status negotiation result (subset of internal/rewrite session.go). */
+/** Status negotiation result (subset of internal/timesheet session.go). */
 export interface StatusResultShape {
   app_version: string;
   protocol_schema: number;

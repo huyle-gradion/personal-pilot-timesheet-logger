@@ -8,7 +8,7 @@
 4. Create a focused Conventional Commit. Verify its parent, contents, and remaining working-tree changes. Record the hash. A commit hook that changes source requires renewed checks and review of the resulting changes.
 5. Push, publish a PR, or merge only under separately recorded permission. Read `docs/agents/issue-tracker.md` and `triage-labels.md` before tracker changes; use canonical labels. Close a ticket only when its acceptance criteria and required integration state are met.
 
-Keep a dependent branch's ancestry explicit. Do not rewrite other agents' commits, force-push, reset, or delete worktrees as a cleanup shortcut.
+Keep a dependent branch's ancestry explicit. Do not implementation other agents' commits, force-push, reset, or delete worktrees as a cleanup shortcut.
 
 Completion: commit contents match accepted source, final checks are recorded, and publication status is unambiguous. If changes are intentionally uncommitted, say so.
 

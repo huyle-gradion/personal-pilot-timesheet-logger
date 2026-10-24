@@ -146,7 +146,7 @@ existing approval:
   and the run refuses. (The plan content hash, `PlanHash`, is only recomputed when a
   plan is rebuilt — e.g. at the next `preview` — so it is the *rebuilt* plan whose
   hash differs; the stored approval is invalidated via `stale_local`, not by a
-  retroactive hash rewrite.)
+  retroactive hash implementation.)
 - The optional retrieval metadata `classification_code`/`classification_name` is
   **deliberately excluded** from `LocalFingerprint` and `PlanHash` (and never sent
   to the remote): adding it to an existing record does **not** stale an approval.

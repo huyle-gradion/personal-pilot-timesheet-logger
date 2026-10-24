@@ -13,7 +13,7 @@ for at least once.
   authoritative for what is currently submitted.
 - Time overlap is not an identity key. Two overlapping items are reconciled,
   never merged, and identity comes only from an explicit mapping.
-- Do not rewrite another session's commit. An amendment to shared history is
+- Do not implementation another session's commit. An amendment to shared history is
   drift even when the intent is to correct it.
 - A stale sentence in an ADR is drift. Supersede it in place with a dated note
   rather than leaving it to describe a rule the code no longer implements.

@@ -1,11 +1,11 @@
-# Timesheet Pi profile (`0.1.0`)
+# Timesheet Pi profile (`0.1.1`)
 
-This directory is the ONLY supported Pi integration for the timesheet rewrite:
+This directory is the ONLY supported Pi integration for the timesheet:
 a restricted launcher plus one trusted adapter extension that renders the
 compiled Go child's local workflow and exposes exactly one bounded
 preparation tool to the model. It is not a general Pi configuration.
 
-R6 retires the legacy CLI and its temporary rewrite entry point: the one child
+R6 retires the legacy CLI and its temporary implementation entry point: the one child
 is the production-named `bin/timesheet` built from `cmd/timesheet`, with the
 same `version` / `serve --config --env-file` surface. The launcher, adapter,
 transport and view code are unchanged from the accepted R5 lifecycle repair.

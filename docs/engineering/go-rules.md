@@ -167,7 +167,7 @@ declaration and closing delimiter. A longer function needs a recorded exception:
 exact function and measured line count, the correctness/ownership reason
 splitting is less safe, the review owner and the event that ends or renews the
 exception, and positive/negative tests covering the long control flow. Do not
-rewrite an existing function only because it is long — first record a real defect
+implementation an existing function only because it is long — first record a real defect
 and a failing regression test.
 
 ## Verify in this order

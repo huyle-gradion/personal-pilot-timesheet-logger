@@ -1,6 +1,6 @@
-# Timesheet (rewrite line)
+# Timesheet
 
-Application version: **`0.1.0`**. Protocol schema `1`, state schema `3`.
+Application version: **`0.1.1`**. Protocol schema `1`, state schema `3`.
 
 This repository is one timesheet product: a single compiled Go binary owns all
 accounting, validation and persistence, and one pinned Pi consumer renders the
@@ -34,10 +34,14 @@ One path, the trusted launcher:
 ```bash
 node pi/launch.mjs \
   --binary "$PWD/bin/timesheet" \
-  --config "$HOME/.timesheet/rewrite/config.json" \
-  --env-file "$HOME/.timesheet/rewrite/.env.local" \
-  --profile-dir "$HOME/.timesheet/rewrite/pi-profile"
+  --config "$HOME/.timesheet/config.json" \
+  --env-file "$HOME/.timesheet/.env.local" \
+  --profile-dir "$HOME/.timesheet/pi-profile"
 ```
+
+Keep existing configured state and credential paths when updating. These example
+paths are not a migration instruction; do not start with an empty replacement
+store just to change directory names.
 
 The launcher spawns the pinned Pi CLI (`@earendil-works/pi-coding-agent`
 `1.4.0`, `pi-tui` `1.4.0`, `typebox` `1.3.27`, Node `>=22.19.0`, installed with
@@ -124,7 +128,7 @@ Never write before the day is reconciled; never plan from an unsaved draft.
 
 ## Documentation
 
-- `docs/agents/rewrite-interface.md` — authoritative `serve` protocol, config,
+- `docs/agents/timesheet-interface.md` — authoritative `serve` protocol, config,
   environment precedence, error codes and the accepted stage history.
 - `pi/README.md` — launcher/adapter isolation, consumer contract and limits.
 - `cmd/timesheet/timesheet.example.json` — minimal valid configuration with

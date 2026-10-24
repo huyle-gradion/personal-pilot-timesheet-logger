@@ -120,7 +120,7 @@ primary store.
   redesign keeps the vault optional and export-only except for this read.
 - **Infer duration from note prose or timestamps**: rejected; a stated clock is
   not a working duration.
-- **Delete or rewrite superseded journal items**: rejected; history is retained
+- **Delete or implementation superseded journal items**: rejected; history is retained
   and only marked detached.
 
 ## Consequences
