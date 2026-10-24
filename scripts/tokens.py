@@ -78,11 +78,15 @@ def scan_session(path: pathlib.Path):
             if isinstance(ts, str) and len(ts) >= 10:
                 day = ts[:10]
             agg = per_day.setdefault(day, {"input": 0, "output": 0, "cache": 0})
-            agg["input"] += int(usage.get("input_tokens") or 0)
-            agg["output"] += int(usage.get("output_tokens") or 0)
+            # Claude Code usage names (input_tokens, ...) and Pi usage names
+            # (input, output, cacheRead, cacheWrite) both map into one row.
+            agg["input"] += int(usage.get("input_tokens") or usage.get("input") or 0)
+            agg["output"] += int(usage.get("output_tokens") or usage.get("output") or 0)
             agg["cache"] += int(
                 (usage.get("cache_creation_input_tokens") or 0)
                 + (usage.get("cache_read_input_tokens") or 0)
+                + (usage.get("cacheRead") or 0)
+                + (usage.get("cacheWrite") or 0)
             )
     return is_skill, per_day
 

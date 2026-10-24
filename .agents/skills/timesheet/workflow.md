@@ -77,13 +77,14 @@ TS_ENV=<owner .env.local path (may be an empty file for local-only days)>
 6. **[Script] Record the day's token usage.**
 
    ```sh
-   python3 scripts/tokens.py                       # Claude Code transcripts (~/.claude)
-   python3 scripts/tokens.py --pi-dir "$HOME/.timesheet/pi-profile"   # add Pi transcripts
+   python3 scripts/tokens.py --pi-dir "$HOME/.pi/agent/sessions"   # Pi runs (default runner)
+   python3 scripts/tokens.py                                        # Claude Code runs, if any (~/.claude)
    ```
 
    Appends the session's token totals (session id included, prefixed by
-   runtime) to `benchmarks/tokens.csv`. Idempotent per session. Run whichever
-   form matches the runtime that executed this workflow (both when both ran).
+   runtime) to `benchmarks/tokens.csv`. Idempotent per session. Run the
+   form matching the runtime that executed this workflow (both when both
+   ran). Manual terminal runs consume no model tokens and add no row.
 
 ## Token budget
 

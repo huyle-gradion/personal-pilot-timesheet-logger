@@ -45,3 +45,13 @@ iCal URL) stored in the macOS Keychain, with code reading from there. See
 1. **ADR & Architecture checks**: Consult `Project - assignment-1.md` and related ADRs before making major architectural changes. Record formal decisions as ADRs in `05 - Architecture Decisions/`.
 2. **Project tracking**: Keep `Project - assignment-1.md` updated with completed milestones and active tasks formatted as `- [ ] Task [[@Assignee]] [due:: YYYY-MM-DD]`.
 3. **Daily impact logging**: When completing significant features or closing sessions, log standup summary and quantified accomplishment bullets ("Accomplished [X] as measured by [Y] by doing [Z]") into today's log in `02 - Daily & Logs/`.
+
+## Timesheet daily log (skill)
+
+When asked to "log today's work" or "log the timesheet" for a day, follow
+`.agents/skills/timesheet/workflow.md` exactly: run the binary's `collect`,
+`draft`, `record` and `status` subcommands as the [Script] steps, perform
+only the judgment step (per-block grouped-topic descriptions, ambiguous
+events, completeness) on the draft JSON, and record token usage with
+`scripts/tokens.py`. The skill is runner-agnostic (Pi or any agent with
+shell access); it never approves or submits remote timesheet writes.
