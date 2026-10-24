@@ -4,6 +4,231 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
 
 ## Unreleased
 
+### R5 lifecycle repair (`0.1.0-dev.16`)
+
+Narrow lifecycle investigation/fix of the R5 consumer's pending-reload boundary,
+without changing the `serve` protocol, state schema or any R1-R4 Go behavior
+beyond the `AppVersion` bump:
+
+- Root cause, established against the pinned Pi 1.4.0 source before editing.
+  Pi's `AgentSession.reload` awaits `session_shutdown` handlers and then replaces
+  the extension runtime. The dev.15 adapter fired `transport.shutdown()` without
+  awaiting it, so the replacement runtime's `session_start` spawned a child
+  while the interrupted collect's child still held the state store's exclusive
+  `flock`; the new child exited `store_locked` before writing a frame, which the
+  adapter reported as `transport_failed: child closed stdout (EOF)`. The
+  interrupted command's failure continuation then opened a recovery custom
+  screen after Pi had already reset extension UI. Reload's editor restore hid
+  that screen without settling its promise, so the old command handler never
+  returned. Pi's interactive loop awaits each submitted command and queues
+  further input while it is pending, so the visibly entered recovery
+  `/timesheet <date>` was queued in `pendingUserInputs` and never dispatched;
+  a full process restart was the only escape.
+- Generation ownership. Adapter state is created per factory invocation, never
+  at module scope. A stale continuation cannot read or clear the replacement
+  generation's guard, overwrite its day/review/collection or consume its input.
+- Awaited disposal. `session_shutdown` is idempotent and returns the bounded
+  transport shutdown, so Pi joins the prior writer before the replacement child
+  starts. No replay, respawn or retry is added; an interrupted dispatched write
+  remains an unknown outcome.
+- Settled continuations. Pending input/confirm dialogs are aborted, custom
+  screens are closed through their `done` callback, and every awaited UI call
+  races a per-generation closed signal (the pinned `ui.custom()`/`ui.editor()`
+  promises are not settled when Pi detaches a component). Disposal is the
+  command's outcome: it unwinds instead of blocking Pi's input loop.
+- Identity and packaging: `AppVersion` and the adapter package are
+  `0.1.0-dev.16`; dependency pins stay `1.4.0`/`1.4.0`/`1.3.27` and the lock
+  integrity entries are unchanged.
+- Evidence: Linux, real pinned Pi 1.4.0 TUI through `pi/launch.mjs`, the compiled
+  dev.16 child and generated isolated profiles with synthetic loopback
+  ICS/MCP/model fixtures. A held collect across `/reload` recovered through a
+  visibly entered `/timesheet <date>` in the same Pi process (replacement child
+  only after the old child exited; exactly one new provider request). A pending
+  classification read across reload followed by a different-date command opened
+  the new review with no stale catalog screen. A pending approved write was
+  applied by the loopback provider and left unacknowledged across reload; the
+  replacement showed read-only submission status with the unresolved write,
+  refused contradictory `not_applied` (`identity_conflict`) and resolved by
+  adopting the observed entry with exactly one `log_time` call and no
+  reapproval. `/new` during a pending model preparation left no orphan and the
+  replacement human review opened its own day; idle reload and quit with
+  pending work left no orphan. Cross-day approval selection and the
+  UTF-8/byte-bound transport paths were not rerun (source unchanged since the
+  dev.15 review). `durability_uncertain` UI remains source-reviewed plus
+  accepted backend evidence. macOS, live accounts/credentials and authenticated
+  subscription readiness remain unverified. This snapshot is review-ready only:
+  no commit, publication or R6.
+
+### R5 repair round two (`0.1.0-dev.15`)
+
+Second boundary repair of the R5 consumer (F1/F2/F7 continuations and F9 from the
+dev.14 re-review), without changing the `serve` protocol, state schema or any
+R1-R4 Go behavior beyond the `AppVersion` bump:
+
+- Envelope and identity validation (F1 continuation). The JSONL envelope is
+  validated before use: a non-object frame, a non-string or mismatched `id`, a
+  non-boolean `ok` and a malformed `error` object each fail the transport
+  instead of becoming a fabricated `ok:false/internal` refusal. Startup
+  validates the minimal status identity (application/protocol/store fields)
+  before any comparison. A failed negotiation now leaves the transport in
+  `failed`, stops the child and settles every startup/pending/queued caller;
+  a later `ensureReady` rejects without spawning, and only an explicit reopen
+  starts exactly one clean child. Malformed wire data is never presented as a
+  pre-dispatch child refusal or as evidence of zero effects.
+- Complete-frame byte bound (F2 continuation). The raw size bound is checked on
+  each complete frame BEFORE decoding/dispatching and on an unterminated
+  remainder, so a newline, trailing whitespace, chunk alignment or a pause
+  cannot exempt an oversized frame. Frames are decoded with a strict UTF-8
+  decoder: invalid bytes fail closed rather than being replaced silently.
+  Frames exactly at the bound, split multi-byte characters and ordinary
+  `write()` backpressure still succeed.
+- Exact active approval selection (F7 continuation). The unkeyed
+  `lastApprovalId` cache (state, initialization and writes) is removed. Submit
+  resolves the current day's exact plan against one bounded, read-only
+  `submission_status` read and requires an ACTIVE approval for that plan. The
+  returned id is displayed before the explicit submit and is the id sent.
+  Switching from a just-approved day A to an already-approved day B in the same
+  Pi session now shows and sends B's approval; consumed, revoked and
+  changed-plan approvals are not selectable, and no approval is silently
+  reapproved, substituted, revoked or consumed.
+- Display-cell paging (F9). Detail rows are wrapped with the pinned Pi
+  display-cell/grapheme-aware wrapper at the detail component's real content
+  width, and paging counts those physical rows instead of UTF-16 code units. The
+  window budget subtracts measured chrome, the pinned Pi rows reserved outside
+  the editor slot and the paging label, with no forced minimum window. Long
+  ASCII/CJK/emoji/combining rows, including a sentinel at the very end, remain
+  reachable via `j`/`k`/`g`/`G` at 40×24 and 60×26 and after restoring 100×36
+  on both the edit picker and a full plan/detail surface; the controls stay
+  usable and stored records are unchanged.
+- Identity and packaging: `AppVersion` and the adapter package are
+  `0.1.0-dev.15`; dependency pins stay `1.4.0`/`1.4.0`/`1.3.27` and the lock
+  integrity entries are unchanged.
+- Evidence: Linux, real pinned Pi 1.4.0 TUI over tmux, the compiled dev.15 child
+  and generated loopback MCP/provider fixtures. Controlled fault children prove
+  the malformed-identity/envelope failures, single spawn, no implicit respawn,
+  explicit reopen, pending/queued settlement, the complete/chunked/unterminated
+  oversized-frame rejections, the near-boundary acceptance, split UTF-8 and
+  backpressure. The real TUI exercised two seeded zero-op plans/active
+  approvals (A approved, then B submitted after switching days without a
+  restart), cancel-before-submit, the consumed-approval boundary and long-row
+  paging. macOS, live accounts/credentials and authenticated subscription
+  readiness remain unverified; `durability_uncertain` UI behavior remains
+  source-reviewed/accepted-backend prior evidence rather than a newly driven
+  run. This snapshot is review-ready only: no commit, publication or R6.
+
+### R5 repair round one (`0.1.0-dev.14`)
+
+Boundary repairs to the first R5 consumer (F1-F8 of the dev.13 review) without
+changing the `serve` protocol, state schema or any R1-R4 Go behavior beyond the
+`AppVersion` bump:
+
+- Transport lifecycle (F1). Readiness now means identity negotiation finished:
+  concurrent callers share one startup and no ordinary operation is dispatched
+  before it passes. `failChild`/shutdown settle the in-flight and queued
+  callers exactly once instead of dropping them; a failure after dispatch is
+  reported as an unknown outcome, never as a no-op. Stale-child frames and
+  callbacks are ignored by generation, so a reopened child is never affected by
+  its predecessor. `write()` returning false is treated as ordinary
+  backpressure, not as a rejected write.
+- UTF-8 framing (F2). Complete frames are decoded from buffered raw bytes, so a
+  multi-byte character split across pipe chunks is preserved exactly; the frame
+  bound is a real byte bound. Malformed, extra-id and mid-frame EOF responses
+  fail closed and settle their caller.
+- Evidence shapes (F3). `topics`/`meetings`/`sources` may be JSON `null` on a
+  valid manual-only/empty-evidence day; the adapter and rendering treat that as
+  an empty list, so those days open, review and edit normally.
+- Origin identity (F4). Editing prefills from the canonical interval instead of
+  an allocation's display endpoints (`23:00-01:00` no longer becomes
+  `23:00-24:00`; a midnight-ending interval uses `00:00`, never the `24:00`
+  label). After locked-spill navigation, removal/edit sends the origin day,
+  interval id and the origin day's current revision together. Go remains
+  authoritative for grammar, revision and overlap checks.
+- Empty transitions (F5). Action availability follows dirty/revision state, not
+  nonempty segment lists: removing the final interval keeps `Cancel staged
+  changes` and `Confirm`; a confirmed-but-unsaved revision (including a
+  confirmed zero-work draft) keeps `Save local`. The header and receipts
+  distinguish staged dirtiness from a confirmed revision that is not yet
+  durable.
+- Address-bound identity (F6). `accept_observed` offers mapped AND changed
+  entries and sends the actual `remote_id` with `local_id`, the observation and
+  the current revision. `resolve_write` adoption lists every observed entry,
+  including the already-bound identity left by an exact edit whose
+  acknowledgment was lost; Go still enforces content, date and one-to-one
+  checks.
+- Truthful receipts (F7). The adapter consumes `WriteReceiptRow.status`
+  (`confirmed`/`uncertain`/`unidentified`/`in_flight`/`stopped_unattempted`)
+  and renders each reference plus the aggregate counts. A child envelope error
+  during submission is shown as a proven pre-dispatch refusal; a transport or
+  unexpected local failure is shown as an UNKNOWN remote outcome with read-only
+  status/reconciliation next, never as "zero remote mutations".
+  `persistence_failed` is non-consumption and `durability_uncertain` is
+  distinct.
+- Launcher scope (F8). `--extra-extension` and `--fixture-provider` and their
+  forwarding/doc branches are removed from the shipped launcher; only the
+  trusted adapter and the fixed isolation/tool flags remain. Acceptance
+  fixtures are provisioned externally in a generated dedicated profile.
+- Preparation/human ownership. The one model preparation tool and the human
+  `/timesheet` form flow are mutually exclusive: a preparation call during an
+  open review returns a bounded `status=busy` result and mutates no day, draft
+  or collection, and the human flow refuses to start while a preparation call
+  is executing.
+- Identity and packaging: `AppVersion` and the adapter package are
+  `0.1.0-dev.14`; dependency pins stay `1.4.0`/`1.4.0`/`1.3.27`; new
+  `pi/.gitignore` keeps installed `node_modules/` out of publication without
+  changing the lockfile's resolved packages or integrity pins.
+- Repaired consumer behavior was exercised end to end with the real pinned TUI
+  and the compiled child: shared startup/fail-closed framing probes, manual and
+  empty-evidence days, final removal/cancel/confirm-empty/save/restart,
+  canonical overnight and midnight-ending edits, spill-to-origin removal,
+  mapped/changed/foreign identity decisions, bound-edit lost-ack recovery with
+  no extra provider mutation, explicit create/edit approval and submission with
+  per-reference statuses, `persistence_failed` non-consumption and an explicit
+  retry, migration `no_change`, and one-request model initiation with zero
+  model calls for direct workflows.
+
+### R5 — restricted Pi launcher/adapter (`0.1.0-dev.13`)
+
+First pinned Pi integration for the rewrite, without changing the `serve`
+protocol, schemas or R1-R4 Go behavior (only the `AppVersion` bump):
+
+- `pi/launch.mjs` is the only daily entry point: absolute trusted paths, no
+  shell, the pinned Pi CLI resolved from this package's own dependency tree,
+  and a fixed isolation set (isolated workdir, dedicated profile directory,
+  single trusted adapter extension, no ambient extensions/context
+  files/skills/prompt templates/MCP, no built-in tools, in-memory session,
+  offline automatic refresh/telemetry). Provisioning arguments are
+  operator-only and path-shaped; the launcher and adapter never read the
+  configuration or dotenv contents, and the child's environment is a
+  whitelist of required OS variables plus explicitly named credential
+  variables.
+- `pi/timesheet.ts` renders the compiled child's complete local human workflow
+  (typed intervals with cross-midnight locked spill and origin-day navigation,
+  classification search/select, confirmation vs durable save, attendance,
+  attempt-bound acknowledgment, read-only reconciliation with explicit
+  identity decisions, exact plan preview → explicit approval → one-shot
+  submission, submission status with address-bound `resolve_write` recovery,
+  legacy migration preview/apply) and registers exactly one model tool,
+  `timesheet_prepare`, bounded to one civil date with a ≤512-byte status
+  result. The adapter verifies the effective tool surface at session start and
+  fails closed (shutdown) on any mismatch, blocks every other model tool call,
+  refuses all user shell dispatch, and keeps every operator capability out of
+  the model surface.
+- `pi/transport.ts` runs one session-scoped Go child over bounded, serialized
+  JSONL with fail-closed identity negotiation (`AppVersion`, protocol, store
+  and durable schemas); failures never respawn or replay automatically —
+  reopening is explicit, and unresolved writes require explicit human
+  resolution against a fresh observation. `pi/view.ts` renders untrusted text
+  control-free with a bounded detail layout that can never push local
+  controls off-screen.
+- Accepted against the real pinned TUI with synthetic loopback sources and a
+  fixture model: full local workflow with zero model calls; one natural
+  language initiation produced exactly one model request declaring only
+  `timesheet_prepare` with no follow-up; unknown-write uncertainty
+  (`write_content_mismatch`) blocked submissions, refused a mismatched
+  `adopt`, and resolved only by explicit human attestation; child termination
+  surfaced `transport_failed` and replays nothing.
+
+
 ### Second R4 repair round (`0.1.0-dev.12`)
 
 Boundary-scoped repairs to the first R4 repair (R4-F2 continuation, R4-F7,
