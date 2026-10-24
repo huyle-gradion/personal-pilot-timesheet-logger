@@ -3,6 +3,18 @@
 The assignment's log → review what broke → improve → log again record
 (§3.5). Date-keyed; newest first. The Friday review reads this file.
 
+## 2026-10-25 — entry-store consolidation onto the Mac
+
+The pilot runs recorded the missing working days in a development store
+on the Linux host. The owner's Mac is the single canonical store from
+here; the pilot entry files for 2026-10-12, 10-19, 10-21, 10-22, 10-23
+and 10-24 (each collected from real GitHub/calendar evidence on the day
+they were drafted) were transferred into the Mac's
+`~/.timesheet/entries/`. The Mac already held its own 2026-10-20 and
+the agent-recorded 2026-10-25. After this, every working day since
+2026-10-06 has an entry in one consistent store. New days are logged
+only on the Mac.
+
 ## 2026-10-25 — first full agent-run of the skill (Pi) ✅
 
 **Ran:** the owner asked a normal Pi session (repo cwd) to *"log today's
