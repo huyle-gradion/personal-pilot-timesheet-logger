@@ -227,9 +227,10 @@ func runStatus(args []string) error {
 	summary := map[string]any{
 		"status":  res,
 		"date":    f.date,
-		"entries": len(entries.Entries),
+		"entries": 0,
 	}
 	if entries != nil {
+		summary["entries"] = len(entries.Entries)
 		lines := make([]string, 0, len(entries.Entries))
 		for _, e := range entries.Entries {
 			lines = append(lines, fmt.Sprintf("%s-%s %s", e.Start, e.End, e.Description))
