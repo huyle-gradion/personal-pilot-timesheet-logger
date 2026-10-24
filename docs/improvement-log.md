@@ -11,6 +11,15 @@ authored the block descriptions (judgment step), `record`ed the day
 (`entries/2026-10-25.json`, 1 entry), verified with `status`, and ran
 `tokens.py` on its own session — the full six-step loop, zero manual help.
 
+**Waste found (owner observation):** before the real commands, the agent
+guessed a wrong config path, then ran `bin/timesheet collect --help` and
+`bin/timesheet --help` and read `README.md` to verify flags — pure
+exploration overhead. Fix: `workflow.md` now states the commands are
+final and complete (no `--help`, no flag discovery, no other docs
+needed) and names the standard config/env paths up front; `SKILL.md`
+says the same. Expected effect: the next agent run's input should drop
+noticeably — label the next data point with this change.
+
 **Measured (first agent-run data point):** session input 14,957 / output
 950 / cache 97,280 (total 113,187) — recorded in `benchmarks/tokens.csv`
 by the agent itself. Honest read against the ≤ 1,000 tokens/day target:

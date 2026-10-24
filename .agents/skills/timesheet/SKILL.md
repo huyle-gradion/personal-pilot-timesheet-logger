@@ -11,6 +11,10 @@ requests and reviews, and calendar events. Every deterministic step is a
 fixed script subcommand of the binary; the only judgment step is reviewing
 one compact draft. See `workflow.md` for the exact daily procedure.
 
+`workflow.md` is the complete procedure: the commands it shows are final
+(no `--help` or flag discovery needed) and no other repository
+documentation is required to run this skill.
+
 The workflow is runner-agnostic: any agent runtime with shell access can
 execute it, including Claude Code (which picks this folder up through the
 `.claude/skills/timesheet` link) and the Pi agent.
