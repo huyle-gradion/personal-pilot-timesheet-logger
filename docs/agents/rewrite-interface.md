@@ -1003,3 +1003,213 @@ dotenv lines, authenticated URLs, or a full config dump.
   document is the authoritative interface.
 - Later slices must add Pi integration. R4's native approval/submission path is
   the implemented one; legacy approval rows are inert audit, never approvals.
+
+## R5 — first pinned Pi consumer (`0.1.0-dev.14` → `0.1.0-dev.16`)
+
+R5 does not change the `serve` protocol, schemas, or any Go behavior except the
+`AppVersion` bump. It adds the first protocol consumer: a restricted Pi
+launcher/adapter under `pi/`, pinned to `@earendil-works/pi-coding-agent`
+`1.4.0` / `pi-tui` `1.4.0` / `typebox` `1.3.27`, Node `>=22.19.0`.
+
+Launcher (`pi/launch.mjs`, the only daily entry point):
+
+- Spawns the pinned Pi CLI with `spawn` (`shell: false`), absolute trusted
+  paths only, and a fixed isolation set: isolated working directory, dedicated
+  profile directory (`PI_CODING_AGENT_DIR`), `--no-extensions` plus the single
+  trusted adapter path, `--no-context-files`, `--no-skills`,
+  `--no-prompt-templates`, `--no-mcp`, `--no-builtin-tools`,
+  `--tools timesheet_prepare`, `--no-session`, `PI_OFFLINE=1`,
+  `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`. No free-form Pi arguments pass
+  through.
+- Provisioning inputs are operator-only and path-shaped: `--binary`,
+  `--config`, `--env-file`, `--profile-dir`, `--workdir`, the optional
+  dedicated-profile model selection (`--provider`, `--model`), and forwarded
+  credential NAMES (`--forward-env`). The shipped launcher has no test
+  provisioning flags; acceptance fixtures are provisioned externally in a
+  generated dedicated profile. The launcher and
+  adapter never read the config or dotenv contents; the child receives the
+  paths through `TIMESHEET_CHILD_{BINARY,CONFIG,ENVFILE,WORKDIR}` and its
+  environment is a whitelist (required OS variables plus explicitly named
+  credential variables, values preserved verbatim). Chat-provider secrets are
+  never forwarded wholesale and never logged.
+
+Adapter (`pi/timesheet.ts` + `pi/transport.ts` + `pi/view.ts`):
+
+- One session-scoped compiled child per Pi session. The transport is
+  serialized single-flight JSONL with bounded frames/queue, exact id
+  correlation, idempotent shutdown, and a fail-closed identity negotiation
+  against this document's identity fields; any mismatch, malformed frame,
+  extra id or EOF fails the transport with no automatic respawn or replay.
+  Readiness means identity negotiation FINISHED: concurrent callers share one
+  startup, and no ordinary operation is dispatched before it passes. Every
+  active or queued caller settles exactly once on failure, cancellation,
+  shutdown or replacement; a failure after dispatch is reported as an unknown
+  outcome, never as a proven no-op. Incoming frames are decoded from buffered
+  raw bytes with a strict UTF-8 decoder (invalid bytes fail closed; no silent
+  replacement text), so a UTF-8 character split across pipe chunks is still
+  preserved. The byte bound applies to each complete RAW frame before decoding
+  or dispatch and to an unterminated remainder, so a newline, trailing
+  whitespace, chunk alignment or a pause cannot exempt an oversized frame.
+  Envelope structure (`id`, strictly boolean `ok`, a well-formed error object)
+  and the minimal status identity (`app_version`, `protocol_schema`,
+  `store_schema`) are validated before use: malformed negotiation fails the
+  transport, stops the child, settles every startup/pending/queued caller and
+  requires an explicit reopen; it never spawns a second child implicitly and
+  never fabricates a child refusal. `write()` backpressure is not treated as a
+  rejected write. Frames and callbacks from a replaced child are ignored by
+  generation. Reopening after interruption is an explicit human action;
+  unresolved writes stay unresolved.
+- Consumer boundary corrections (dev.14): evidence `topics`/`meetings`/
+  `sources` may be JSON `null` on a valid R1-only/empty day and render as
+  empty; interval editing prefills from the canonical interval (a
+  `23:00-01:00` interval stays `23:00-01:00`, a midnight-ending interval is
+  `23:00-00:00`, never the `24:00` display label) and sends the origin day,
+  interval id and current origin revision together after a locked-spill
+  navigation; action availability follows dirty/revision state rather than
+  nonempty segment lists (`Cancel` survives a final removal, durable `Save`
+  survives a confirmed empty draft); `accept_observed` offers mapped and
+  changed entries and sends the actual `remote_id` plus `local_id`,
+  observation and revision; address-bound `resolve_write` adoption can select
+  an already-bound observed identity (Go still enforces content and one-to-one
+  checks); submission receipts consume the child's per-reference `status`,
+  distinguish `persistence_failed` (non-consumption) from
+  `durability_uncertain`, and never present a transport failure as "zero
+  remote mutations".
+- Consumer boundary corrections (dev.15): the submit target is the exact active
+  approval for the CURRENT day and exact plan, selected by one bounded
+  `submission_status` read scoped to that day; the previous unkeyed
+  `lastApprovalId` cache is removed, so an approved day A cannot name its
+  approval in an already-approved day B's dialog after switching days without a
+  restart. Consumed, revoked and changed-plan approvals are not selectable, and
+  the displayed approval id is the id sent. Only a validated Go error envelope
+  receives the `from_child` refusal tag; malformed wire data is a transport
+  failure. Detail paging measures the display-cell/grapheme-aware physical rows
+  produced by the pinned Pi wrapper at the real content width and subtracts the
+  pinned Pi rows reserved outside the custom editor slot, so long
+  ASCII/CJK/emoji/combining rows stay reachable at narrow widths on both the
+  edit picker and the plan/detail surface, with no forced minimum window and no
+  modification or truncation of stored work.
+- Every operator capability is local-only (`/timesheet` forms): typed interval
+  authoring including cross-midnight locked spill plus origin-day navigation,
+  confirmation vs durable save, attendance decisions, attempt-bound source
+  acknowledgment, classification search/select against the bounded catalog,
+  read-only reconciliation with explicit `adopt` / `accept_observed` /
+  `foreign` decisions, exact plan preview → display-before-ask approval →
+  one-shot submission with honest receipts, submission status with explicit
+  address-bound `resolve_write` recovery, and migration preview/apply. None of
+  these are registered as model tools — not hidden, not deferred.
+- The model sees exactly one tool, `timesheet_prepare`, taking one civil date.
+  It drives `open_day` → `collect` → `review` for the human's local UI and
+  returns a ≤512-byte bounded status with only opaque local ids
+  (`collection_id`), ending the turn. Defense in depth: the adapter checks
+  `pi.getActiveTools()` at `session_start` and calls `ctx.shutdown()` on any
+  mismatch, blocks and terminates on any other `tool_call`, and refuses all
+  user `!`/`!!` shell dispatch from the `user_bash` gate without executing.
+  Child errors reach the model only as stable codes, sanitized.
+- The adapter keeps no accounting of its own; the compiled child remains
+  authoritative. Non-TUI extension modes fail safely instead of auto-answering
+  forms. Untrusted provider/record text is rendered control-free: the child's
+  sanitization strips controls at collection time and the adapter strips
+  remaining escape sequences before rendering.
+- Acceptance evidence for `0.1.0-dev.14` (real pinned Pi TUI over tmux, the
+  compiled Go child, synthetic loopback ICS/MCP/model fixtures, generated
+  dedicated profiles; no real credentials, live accounts or production
+  writes): controlled-child and real-child probes prove one shared startup,
+  fail-closed identity/extra-id/EOF handling, exact UTF-8 across split chunks,
+  `write(false)` backpressure, stale-child isolation, pending/queued
+  settlement and queued cancellation. The real TUI exercised manual-only and
+  configured-but-empty evidence days, final removal/cancel/confirm-empty/save
+  and restart, canonical 23:00-01:00 and 23:00-00:00 edits, spill-to-origin
+  removal without `stale_revision`, mapped and changed `accept_observed`,
+  `foreign`, a stale-observation refusal, and a bound-edit lost-ack recovery
+  that resolved against the already-bound observed identity with zero
+  additional provider mutations. A real create and a real edit produced
+  explicit approval, one-shot submission, `all_confirmed` and
+  `partial_stopped` per-reference statuses; a zero-op approval survived
+  restart and a commit-boundary fault barrier produced `persistence_failed`
+  with no consumption, followed by an explicit `all_confirmed` retry.
+  Migration imported nonempty legacy work and a repeat was `no_change` with
+  legacy bytes unchanged and legacy plans/approvals inert. Direct workflows
+  made zero model requests; one natural-language initiation made exactly one
+  request whose only declared tool was `timesheet_prepare`, with no follow-up,
+  and no config/env/credential/record content appeared in a model-visible
+  payload (only the pinned Pi documentation path and the isolated cwd). macOS,
+  live accounts and authenticated subscription readiness remain unverified.
+
+- Acceptance evidence for `0.1.0-dev.15` (second R5 repair; Linux, real pinned
+  Pi 1.4.0 TUI over tmux, compiled dev.15 child, generated loopback MCP/provider;
+  no real credentials, live accounts or production writes): controlled protocol
+  children prove that a null/missing status identity and a malformed envelope
+  (non-boolean `ok`, malformed error object) fail the transport, stop the child,
+  settle concurrent startup plus pending/queued callers, never implicitly spawn
+  a second child and reopen exactly one clean child; a valid child refusal is
+  preserved while malformed wire data is never fabricated as one. Each complete
+  oversized frame (including the reported "exactly limit, pause, remainder plus
+  newline" shape), an unterminated oversized remainder and an at-limit frame
+  with trailing whitespace are rejected before decode/stop/settle, while a frame
+  exactly at the byte bound, split multi-byte UTF-8 and `write(false)`
+  backpressure still succeed. In the real TUI with two seeded current zero-op
+  plans/active approvals, approving A and then switching to already-approved B
+  without restarting showed and sent B's approval; B's zero-op submission was
+  `all_confirmed` with zero provider writes, a pre-submit cancel dispatched
+  nothing, A's approval stayed active and untouched, a consumed approval was not
+  selectable, and a same-day changed plan exposed only its own fresh approval
+  (Go refused the old id as `stale_plan` with 0 calls). A saved
+  `START-CJK` + 240 `界` + `END-CJK-ROW` row and a mixed
+  ASCII/emoji/combining row were fully reachable in the actual edit picker and
+  plan/detail surface at 40×24 and 60×26 and after restoring 100×36, with the
+  paging label and controls usable and the durable store hash unchanged.
+
+- Runtime replacement contract (`0.1.0-dev.16`, C1-L1). Pi 1.4.0's
+  `AgentSession.reload` awaits `session_shutdown` handlers and then replaces
+  the extension runtime; its interactive loop awaits each submitted
+  `session.prompt` (command handlers included). The adapter therefore owns
+  disposal as a generation boundary:
+  - Factory-invocation state, not module state. A stale continuation cannot
+    observe or mutate a replacement generation's transport, day, review,
+    collection, guards or draft.
+  - `session_shutdown` returns the transport shutdown so Pi joins the old child
+    before the replacement's `session_start` spawns a new one. This is required
+    because the child holds the state store's exclusive `flock`; a replacement
+    child started earlier exits with `store_locked`, which the adapter reports
+    as `transport_failed: child closed stdout (EOF)`. Shutdown stays bounded and
+    never replays a dispatched operation.
+  - Pending UI is generation-owned: signal-aware input/confirm dialogs are
+    aborted, custom screens are closed through their `done` callback, and every
+    awaited UI call also races a per-generation closed signal because the pinned
+    `ui.custom()` and `ui.editor()` promises are not settled when Pi detaches
+    their component. A disposed generation never notifies or opens a dialog, and
+    the command handler unwinds instead of leaving Pi's input loop blocked.
+  - A transient child startup failure is still explicit and requires an explicit
+    Reopen; there is no automatic respawn, retry or replay.
+  The diagnosed failing sequence on dev.15 was: a held collect was interrupted
+  by `/reload`; its catch opened a recovery custom screen after Pi had already
+  reset extension UI; reload's editor restore hid that screen without calling
+  its callback; the old `/timesheet` handler never returned; Pi's input loop
+  stayed blocked on it, so the visibly entered recovery command was queued in
+  `pendingUserInputs` and never dispatched. Separately, the un-awaited shutdown
+  left the old child holding the store lock while the replacement child started,
+  producing the visible startup EOF. Both are fixed by the generation boundary;
+  the recovery command now runs in the same Pi process.
+
+- Acceptance evidence for `0.1.0-dev.16` (Linux, real pinned Pi 1.4.0 TUI via
+  `pi/launch.mjs`, compiled dev.16 child, generated isolated profile/config and
+  synthetic loopback ICS/MCP/model fixtures; no real credentials, accounts,
+  profile or production writes): a real collect held at the loopback calendar
+  across `/reload` now recovers through a visibly entered `/timesheet <date>`
+  in the same Pi process, with the replacement child started only after the old
+  child exited and exactly one fresh provider request (no replay); a pending
+  classification read across reload followed by a different-date command opened
+  that date's review with no stale catalog screen and usable controls; an
+  approved exact plan was submitted with the loopback provider applying the
+  write and withholding its acknowledgment, and after reload the replacement
+  showed read-only submission status with the unresolved reference, refused a
+  contradictory `not_applied` (`identity_conflict`) and resolved by adopting the
+  observed entry with exactly one `log_time` call; `/new` during a pending model
+  preparation left no orphan child and the replacement human workflow opened its
+  own day with a fresh child; idle reload and quit-with-pending-work left no
+  orphan. Cross-day approval selection and the UTF-8/byte-bound transport paths
+  were not rerun (their source is unchanged from the dev.15 review);
+  `durability_uncertain` UI remains source-reviewed plus accepted backend
+  evidence, not a newly driven UI case. macOS, live accounts and authenticated
+  subscription readiness remain unverified.
