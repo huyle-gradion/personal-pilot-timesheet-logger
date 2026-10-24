@@ -18,8 +18,8 @@ import (
 	"time"
 )
 
-// Application identity. AppVersion is an unreleased development build, not a
-// release tag. ProtocolSchema is negotiated independently and fails closed.
+// Application identity. ProtocolSchema is negotiated independently of the
+// release version and fails closed.
 //
 // stateSchema is the schema this build writes. It still reads the accepted
 // rewrite schemas 1 and 2: each legacy file loads, is validated in its own
@@ -29,7 +29,7 @@ import (
 // is intentional: they have no semantics for native approvals, write intents or
 // execution history.
 const (
-	AppVersion        = "0.1.0-dev.16"
+	AppVersion        = "0.1.0"
 	ProtocolSchema    = 1
 	stateSchema       = 3
 	legacyStateSchema = 1

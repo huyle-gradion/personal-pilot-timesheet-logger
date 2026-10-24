@@ -1,3 +1,9 @@
+> **Current product release: 0.1.0.** The owner authorized rewrite integration
+> and release with the known upstream Pi risk accepted for this version.
+> [Release disposition](timesheet-rewrite-v0.1.0-release.md) is authoritative;
+> earlier candidate/blocked statuses below are historical. R6 / #137 remains
+> open for dependency remediation and further improvements.
+
 # Orchestrator entry point
 
 Coordinate workers, evaluate their evidence, and integrate accepted slices. The orchestrator owns integration and records; workers own bounded code changes. The accepted 2026-10-22 rewrite removes ai-database/vault integration. This documentation creates no running agent service and grants no production-write permission.

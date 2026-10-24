@@ -4,6 +4,80 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
 
 ## Unreleased
 
+R6 improvements and upstream Pi dependency remediation remain tracked in
+[issue #137](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/137).
+
+## 0.1.0
+
+- Release the rewrite as the main product: one compiled timesheet server and
+  one pinned Pi consumer; legacy CLI and vault integration are retired.
+- Promote dev.17 to `0.1.0` with no workflow, protocol, state-schema or dependency
+  change. Local logging/migration/lifecycle have Linux and actual Darwin evidence;
+  the owner supplied the final Darwin runner pass.
+- Include the reviewed restart-durability and CLI exit-code documentation fixes.
+- The owner explicitly accepted the known upstream Pi/Undici dependency risk for
+  this release. The vulnerable bundle is unchanged; remediation remains open.
+  This release is not claimed to be vulnerability-free or live-provider verified.
+- Live credentials, model authentication and real Gradion submission remain
+  unverified. Exact human approval is still required for every remote write plan.
+
+Historical prerelease notes below retain their original evidence qualifications.
+
+### Source cutover (`0.1.0-dev.17`)
+
+R6 is the single-product cutover. It changes no `serve` protocol field, state
+or store schema, and no local workflow behavior; `AppVersion` and the adapter
+package stamp move to `0.1.0-dev.17` with dependency pins
+`1.4.0`/`1.4.0`/`1.3.27` and lock integrity unchanged.
+
+- Added `python3 scripts/verify-r6-macos.py`: a deterministic, Darwin-gated QA
+  runner for the real pinned Pi local workflow and lifecycle. Uses only private
+  synthetic fixtures, records screens/results/PIDs/checksums, and changes no
+  application behavior, dependency pins or release identity.
+- One Go target. `cmd/timesheet/main.go` is now the accepted 99-line server
+  entry point, branded `timesheet`, exposing only `version` and
+  `serve --config --env-file` with unchanged exit codes and credential
+  loading. The temporary `cmd/timesheet-rewrite` entry point was deleted; no
+  alias, legacy flag, wrapper CLI or second server exists.
+- Legacy retirement. 225 manifest-listed tracked files were removed from the
+  working tree: the old `cmd/timesheet` subcommands and their tests, the
+  sixteen legacy `internal/` package trees and tests, `cmd/fetch-git`,
+  `cmd/fetch-calendar`, `cmd/benchmark`, the four `tests/*.go` files, the old
+  product skill (`SKILL.md`, `workflow.md`, and the tracked
+  `.claude/skills/timesheet` symlink, unlinked only), `scripts/sync-vault.sh`
+  and the tracked `scripts/vaultgen` source/test fixtures. No directory was
+  removed wholesale and no untracked owner file was touched.
+- Module pruning. `go.mod`/`go.sum` keep only what `cmd/timesheet`,
+  `internal/rewrite` and `internal/mcp` still use (`arran4/golang-ical`,
+  `teambition/rrule-go`); the unused `charm.land/huh` tree was pruned by the
+  installed toolchain with no version upgrade, module-directive or toolchain
+  change. `go list ./...` is exactly those three packages.
+- Public configuration. `cmd/timesheet/timesheet.example.json` is a minimal
+  valid rewrite-schema document with synthetic placeholders.
+- Operator documentation. New root `README.md` documents the one build/launch
+  path, fixed config/env inputs, the local `/timesheet` flow, explicit
+  migration and reconciliation before writes, recovery/no-replay rules and
+  honest readiness. `pi/README.md`, the rewrite interface identity and command
+  line (stale R4/dev.11 heading corrected; R1-R5 stage text marked historical),
+  `docs/agents/credentials.md` (active `.env.local` policy replaces the retired
+  Keychain-only guidance) and this changelog were updated.
+- Documentation correction. The README no longer implies that unsaved staged
+  interval edits survive a restart: staged and confirmed-but-unsaved interval
+  changes are session-only, only committed state and durable ledgers reload, and
+  startup never submits or replays anything on its own. Both the README and the
+  rewrite interface now separate top-level/`version` usage errors (exit `2`)
+  from `serve` argument validation, startup and stream failures (exit `1`).
+  No application, protocol, schema, dependency or release-identity change.
+- Evidence. Linux, real pinned Pi 1.4.0 TUI through the unchanged
+  `pi/launch.mjs` with `--binary` pointing at the built `bin/timesheet`, an
+  isolated generated HOME/profile/config/env/state and synthetic loopback
+  GitHub/ICS/MCP/model fixtures. `timesheet version` exits 0 with no resource
+  files; extra `version` arguments and retired commands exit 2 with no remote call.
+  Darwin arm64/amd64 cross-builds are compile-only. macOS runtime migration
+  and local flow, live accounts/credentials and authenticated model
+  readiness remain unverified prerequisites for full R6 acceptance. This
+  snapshot is review-ready only: no commit, publication, tag or release.
+
 ### R5 lifecycle repair (`0.1.0-dev.16`)
 
 Narrow lifecycle investigation/fix of the R5 consumer's pending-reload boundary,

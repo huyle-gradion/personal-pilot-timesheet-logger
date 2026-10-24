@@ -1,9 +1,17 @@
-# Timesheet Pi profile (R5, `0.1.0-dev.16`)
+# Timesheet Pi profile (`0.1.0`)
 
 This directory is the ONLY supported Pi integration for the timesheet rewrite:
 a restricted launcher plus one trusted adapter extension that renders the
 compiled Go child's local workflow and exposes exactly one bounded
 preparation tool to the model. It is not a general Pi configuration.
+
+R6 retires the legacy CLI and its temporary rewrite entry point: the one child
+is the production-named `bin/timesheet` built from `cmd/timesheet`, with the
+same `version` / `serve --config --env-file` surface. The launcher, adapter,
+transport and view code are unchanged from the accepted R5 lifecycle repair.
+
+The owner authorized this release with the known Pi/Undici dependency risk
+documented in the root README. Pins remain unchanged; R6 remediation stays open.
 
 ## What runs
 
@@ -18,7 +26,7 @@ preparation tool to the model. It is not a general Pi configuration.
   extension it loads is the trusted adapter next to the launcher; no test
   provisioning flags exist.
 - `timesheet.ts` — the trusted adapter. One session-scoped compiled child
-  (`cmd/timesheet-rewrite serve`) through `transport.ts`; all operator authority
+  (`cmd/timesheet serve`) through `transport.ts`; all operator authority
   (typed intervals, cross-midnight locked spill, confirmation, durable save,
   attendance, attempt-bound acknowledgment, classification search/select,
   reconciliation and explicit identity decisions, exact plan preview → explicit
@@ -60,7 +68,7 @@ preparation tool to the model. It is not a general Pi configuration.
   the action menu and footer remain on screen. Empty confirmed/staged views
   render as a valid `(none)` total, not as a missing capability.
 
-## Reload and runtime replacement (dev.16)
+## Reload and runtime replacement (dev.16, unchanged by R6)
 
 Pi replaces the extension runtime on `/reload`, `/new`, resume and fork. The
 old runtime's handlers stay alive long enough to run continuations, so the
@@ -182,8 +190,9 @@ ships in the adapter or launcher.
 - Nothing is replayed across a child restart: reopening is explicit, unsaved
   session drafts do not survive, and unresolved writes stay unresolved until a
   human resolves them against a fresh observation.
-- dev.16 runtime evidence covers Linux with the pinned Pi 1.4.0 TUI, the
-  compiled dev.16 child, synthetic loopback ICS/MCP/model fixtures and generated
+- Historical stage evidence for the unchanged consumer code (accepted R5
+  lifecycle repair, dev.16): Linux with the pinned Pi 1.4.0 TUI, the compiled
+  dev.16 child, synthetic loopback ICS/MCP/model fixtures and generated
   isolated profiles: pending collect and pending classification reads across
   reload, a pending approved write applied but unacknowledged across reload
   (read-only status, explicit adoption, contradictory `not_applied` refused,
@@ -192,5 +201,7 @@ ships in the adapter or launcher.
   selection and the UTF-8/byte-bound transport paths were not rerun because
   their source is unchanged from the verified dev.15 review; `durability_uncertain`
   UI behavior remains source-reviewed plus accepted backend evidence, not a
-  newly driven case. macOS, live accounts/credentials and authenticated
-  subscription readiness remain unverified.
+  newly driven case. Subsequent dev.17 Darwin native migration and local
+  workflow/lifecycle checks passed, including the owner-run one-command verifier.
+  Release `0.1.0` changes identity only, not those behaviors. Live accounts,
+  credentials and authenticated subscription readiness remain unverified.

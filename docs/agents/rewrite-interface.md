@@ -1,16 +1,28 @@
-# Rewrite interface (R4: exact-plan approval and verified submission)
+# Timesheet interface (`0.1.0`)
 
-Application version: `0.1.0-dev.11` (unreleased development build, not a release tag).
+Application version: `0.1.0`.
 Protocol schema: `1`. State schema: `3`.
 
-This document is the public interface for the R4 slice of the timesheet rewrite.
-R4 builds on the accepted local review-first workflow, R2 verification-only
-evidence collection and the R3 migration/read-only boundary. It adds a native
-approval ledger (an approval authorizes exactly ONE rendered plan), durable
-pre-write intent records, and ONE verified submission path: every remote write is
-acknowledged, re-read from the provider, content-checked, and only then recorded
-as confirmed — with explicit, operator-driven recovery for writes whose outcome
-could not be verified.
+This document is the public interface for the current release. The
+implemented surface is the accepted R1-R5 slices: the local review-first
+workflow, R2 verification-only evidence collection, the R3 migration/read-only
+boundary, the R4 native approval ledger and ONE verified submission path, and
+the R5 pinned Pi consumer. R6 changes no protocol, schema or store behavior: it
+retires the legacy CLI, moves the one entry point to `cmd/timesheet` and makes
+`bin/timesheet` the production-named child. The stage descriptions below remain
+accurate as historical slices.
+
+Release `0.1.0` promotes the verified dev.17 behavior without changing protocol,
+schemas or dependency pins. The owner explicitly accepted the known upstream
+Pi/Undici risk for this release; R6 remains open for improvements. See the root
+README for current verification and limitations. Historical stage notes below
+describe their original snapshots, not new runtime evidence.
+
+The R4 slice adds a native approval ledger (an approval authorizes exactly ONE
+rendered plan), durable pre-write intent records, and ONE verified submission
+path: every remote write is acknowledged, re-read from the provider,
+content-checked, and only then recorded as confirmed — with explicit,
+operator-driven recovery for writes whose outcome could not be verified.
 
 No automatic submission exists in any form: approval never dispatches, startup
 never resumes, and a restart never replays a batch. Imported legacy approvals
@@ -21,8 +33,8 @@ complete observation.
 ## Command line
 
 ```text
-timesheet-rewrite version
-timesheet-rewrite serve --config <path> --env-file <path>
+timesheet version
+timesheet serve --config <path> --env-file <path>
 ```
 
 `version` prints the application version and protocol schema and exits 0. It
@@ -36,8 +48,11 @@ and are sanitized. The process never launches a shell.
 fields for paths, executable names, or arbitrary operations. Both flags are
 required.
 
-Exit codes: `0` normal close/EOF, `1` startup or stream failure (for example an
-invalid config, locked state, or unreadable stream), `2` usage error.
+Exit codes: `0` for a normal `version` run, a normal `serve` close/EOF and
+`serve` help; `2` for a missing or unknown top-level command and extra
+`version` arguments; `1` for `serve` argument validation (unknown flag, extra
+positional, missing required flag), startup failure (for example an invalid
+config or locked state) and stream failure (for example an unreadable stream).
 
 Only one process may open a given state file. A second `serve` against the same
 state fails with `store_locked`; it does not race or overwrite the first.
@@ -997,14 +1012,16 @@ dotenv lines, authenticated URLs, or a full config dump.
   save/transaction. A schema-1-only loader rejects a later-schema file with
   `state_invalid` and leaves it intact. A pre-R2 build rejects an R2 evidence
   file the same way.
-- The production CLI (`cmd/timesheet`) and legacy packages are unchanged; the
-  development entry point `cmd/timesheet-rewrite` carries only usage text, and
-  its text now describes the implemented R4 scope. The `serve` protocol in this
-  document is the authoritative interface.
+- Historical note (superseded by R6): when R4 was reviewed, the then-production
+  CLI (`cmd/timesheet`) and the legacy packages were unchanged and the
+  development entry point was `cmd/timesheet-rewrite`. R6 removed the legacy CLI
+  and that temporary entry point; `cmd/timesheet` now carries only the
+  `version` / `serve` surface. The `serve` protocol in this document is the
+  authoritative interface.
 - Later slices must add Pi integration. R4's native approval/submission path is
   the implemented one; legacy approval rows are inert audit, never approvals.
 
-## R5 — first pinned Pi consumer (`0.1.0-dev.14` → `0.1.0-dev.16`)
+## R5 — first pinned Pi consumer (`0.1.0-dev.14` → `0.1.0-dev.16`, historical stage)
 
 R5 does not change the `serve` protocol, schemas, or any Go behavior except the
 `AppVersion` bump. It adds the first protocol consumer: a restricted Pi
@@ -1213,3 +1230,35 @@ Adapter (`pi/timesheet.ts` + `pi/transport.ts` + `pi/view.ts`):
   `durability_uncertain` UI remains source-reviewed plus accepted backend
   evidence, not a newly driven UI case. macOS, live accounts and authenticated
   subscription readiness remain unverified.
+
+## R6 — single-product cutover (`0.1.0-dev.17`)
+
+R6 changes no protocol, schema or store behavior. `AppVersion` moves to
+`0.1.0-dev.17` in `internal/rewrite/model.go` and `pi/transport.ts`, and the
+adapter package version stamp moves with it; dependency pins and lock
+integrity are unchanged.
+
+- One Go target: `cmd/timesheet` carries only `version` and
+  `serve --config --env-file`, and `bin/timesheet` is the production-named
+  binary the launcher receives via `--binary`. The temporary
+  `cmd/timesheet-rewrite` entry point and the legacy CLI subcommands
+  (`preflight`, `review`, `preview`, `approve`, `submit`, `resolve`, `export`,
+  `run`, `classify`, `metrics`, `config`) are retired; there is no alias or
+  wrapper.
+- The legacy package trees, their tests, `cmd/fetch-{git,calendar}`,
+  `cmd/benchmark`, the old product skill (`SKILL.md`/`workflow.md` and its
+  `.claude/skills/timesheet` symlink), `scripts/sync-vault.sh` and the tracked
+  `scripts/vaultgen` source/test fixtures are retired. `go list ./...` is
+  exactly `cmd/timesheet`, `internal/rewrite`, `internal/mcp`.
+- `go.mod`/`go.sum` keep only dependencies still reachable from those
+  packages; no dependency version, module directive or toolchain changed.
+  `cmd/timesheet/timesheet.example.json` is now a minimal rewrite-schema
+  example with synthetic placeholders.
+- The pinned Pi consumer sources are unchanged. The local `/timesheet` flow,
+  migration, reconciliation, approval, submission, recovery and the
+  `timesheet_prepare` model boundary above remain the current contract.
+- Readiness is unchanged and honest: the dev.17 proof is Linux, hermetic and
+  synthetic. macOS pinned-Pi migration/local flow remains a mandatory separate
+  gate for full R6 acceptance, and live account/model readiness is a separate
+  named authorization gate. No RC/stable/production claim follows from source
+  review.
