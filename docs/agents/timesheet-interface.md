@@ -1,6 +1,7 @@
-# Timesheet interface (`0.1.1`)
+# Timesheet interface (`0.2.0-dev.1`)
 
-Application version: `0.1.0`.
+Application version: `0.2.0-dev.1` (unreleased development stamp; the
+public release line remains `0.1.1` until this ships).
 Protocol schema: `1`. State schema: `3`.
 
 This document is the public interface for the current release. The
@@ -35,6 +36,10 @@ complete observation.
 ```text
 timesheet version
 timesheet serve --config <path> --env-file <path>
+timesheet collect --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+timesheet draft --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+timesheet record --config <path> --date <YYYY-MM-DD> --file <reviewed.json>
+timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 ```
 
 `version` prints the application version and protocol schema and exits 0. It
@@ -46,16 +51,60 @@ and are sanitized. The process never launches a shell.
 
 `--config` and `--env-file` are fixed launcher inputs. There are no request
 fields for paths, executable names, or arbitrary operations. Both flags are
-required.
+required for `serve`; the headless subcommands require `--config` and treat
+`--env-file` as optional (no file values when omitted).
 
 Exit codes: `0` for a normal `version` run, a normal `serve` close/EOF and
 `serve` help; `2` for a missing or unknown top-level command and extra
 `version` arguments; `1` for `serve` argument validation (unknown flag, extra
 positional, missing required flag), startup failure (for example an invalid
 config or locked state) and stream failure (for example an unreadable stream).
+The headless subcommands follow the same convention: `0` on success, `2` for
+usage errors, `1` for validation, collection and recording failures reported
+as `timesheet: <code>: <message>` on stderr.
 
 Only one process may open a given state file. A second `serve` against the same
 state fails with `store_locked`; it does not race or overwrite the first.
+`collect`, `draft` and `status` open the store the same way, so they also fail
+with `store_locked` while a `serve` process holds the state. `record` opens no
+store and never interferes with a running `serve`.
+
+## Headless skill surface
+
+`collect`, `draft`, `record` and `status` are the deterministic [Script]
+layer of the timesheet skill (`.agents/skills/timesheet/`). They construct
+the same session `serve` uses and drive its request dispatcher in-process;
+there is no second protocol and no new request grammar.
+
+- `collect` performs exactly one bounded collection attempt for the day and
+  prints its result (per-source status, topic and meeting counts).
+- `draft` performs the same collection and then prints the compact one-day
+  draft: time blocks with topic candidates, inline PR identities, bounded
+  source references and per-source completeness. The partitioning rule is
+  fixed: eligible calendar meetings become blocks in start order; confirmed
+  intervals outside every meeting become work blocks; evidence topics attach
+  to the first block their time span overlaps; remaining topics form one
+  evidence block; a day with no time anchors still yields one whole-day
+  block. This draft is the skill's entire model input.
+- `record` validates the reviewed draft (every block keeps its `block_id`
+  and carries a non-empty `description`; a block with PRs must keep the
+  inline `PRs:` list) and merges it into `<state dir>/entries/<date>.json`
+  atomically. Recording is idempotent per block: an existing block is
+  updated in place and never duplicated, so a retried run still counts as
+  one day.
+- `status` prints the store status and, with `--date`, the day's recorded
+  entries.
+
+None of the headless subcommands acknowledges sources, confirms work, saves
+store revisions, approves or submits anything. Remote submission remains on
+the interactive, human-approved workflow.
+
+`scripts/tokens.py` completes the skill's evidence loop, runner-agnostic: it
+scans local agent-session transcripts — Claude Code (`~/.claude/projects`,
+default) and optionally Pi (`--pi-dir`, for example the dedicated profile
+directory) — selects sessions that invoked the binary, sums usage per
+calendar day, and appends one idempotent row per (date, runtime, session) to
+`benchmarks/tokens.csv`.
 
 ## Protocol envelope
 
