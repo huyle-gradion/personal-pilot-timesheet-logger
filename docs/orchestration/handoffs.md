@@ -10,6 +10,9 @@ Objective and requirement links:
 Authority: implement / fix / review / research; commit yes/no; live access yes/no
 Execution mode: owner-mediated / direct
 Selected agent and rationale (capability fit; record the actual runtime agent):
+Observed harness capabilities (from exposed tools, not assumed from skill names):
+Delegation permission: prohibited / named read-only roles / bounded implementation roles
+Delegation decision and rationale: inline / specialist slices; actual agent identifiers if used
 Repository and working directory:
 Branch, base HEAD, dependent commits:
 Snapshot ID and changed/untracked files:
@@ -25,12 +28,15 @@ Required report and handoff destination:
 
 A snapshot identifies HEAD plus the exact dirty tracked and untracked content. Use a saved sanitized diff and file-content manifest, or equivalent reproducible hashes, when reviewing uncommitted work. HEAD alone is insufficient. Store task-specific private artifacts outside tracked source; never include credentials or private evidence. The orchestrator records the artifact reference, not a raw secret-bearing dump.
 
+Capability awareness is not delegation authority. State available tools and the delegation decision once at task start; revisit only when scope, session, or tool availability changes. Do not search private configuration or outside scoped files to rediscover tools. Inline work is valid when the slice is coherent or delegation overhead would exceed its benefit. When delegation is explicitly permitted, use specialists for substantial independent questions or isolated work with clear ownership; never delegate merely to prove the capability exists. A no-child-dispatch packet forbids read-only child agents too unless it explicitly grants an exception. Independent acceptance remains a separate gate.
+
 ## Implementation or fix report
 
 ```text
 Task ID / branch / base / snapshot:
+Capabilities/delegation: observed tools, permitted roles, actual use or reason for inline execution:
 Files changed and behavior:
-Tests added, including demonstrated regression:
+Tests added/run, if any; runtime behavior demonstrated:
 Commands, exit results, environment, and timestamp:
 Acceptance criteria: pass / fail / not run, with evidence:
 Known limitations and open findings:

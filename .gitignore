@@ -1,6 +1,8 @@
 .venv/
 .cache/
 .env
+.env.local
+.env.*.local
 __pycache__/
 *.pyc
 bin/
