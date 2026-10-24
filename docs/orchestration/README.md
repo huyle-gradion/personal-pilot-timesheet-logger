@@ -1,22 +1,26 @@
-> **Current product release: 0.1.0.** The owner authorized rewrite integration
+> **Current product release: 0.1.1.** The owner authorized implementation integration
 > and release with the known upstream Pi risk accepted for this version.
-> [Release disposition](timesheet-rewrite-v0.1.0-release.md) is authoritative;
+> [Release disposition](timesheet-0.1.1-release.md) is authoritative;
 > earlier candidate/blocked statuses below are historical. R6 / #137 remains
 > open for dependency remediation and further improvements.
 
 # Orchestrator entry point
 
-Coordinate workers, evaluate their evidence, and integrate accepted slices. The orchestrator owns integration and records; workers own bounded code changes. The accepted 2026-10-22 rewrite removes ai-database/vault integration. This documentation creates no running agent service and grants no production-write permission.
+Historical engineering records in this checkout use normalized product names and
+paths. Exact original labels and checksum provenance remain in Git history and
+the referenced commit objects; old packets are not current execution authority.
+
+Coordinate workers, evaluate their evidence, and integrate accepted slices. The orchestrator owns integration and records; workers own bounded code changes. The accepted 2026-10-22 implementation removes ai-database/vault integration. This documentation creates no running agent service and grants no production-write permission.
 
 ## Start here
 
 1. Read [control policy](control-policy.md) for authority and lifecycle gates.
-2. For the active rewrite, use the accepted [rewrite specification](../timesheet-rewrite-spec.md) and [execution plan](../../.omo/plans/timesheet-rewrite.md).
-3. [R1](timesheet-rewrite-r1-acceptance.md), [R2](timesheet-rewrite-r2-acceptance.md), [R3 dev.9](timesheet-rewrite-r3-acceptance.md) and [R4 dev.12](timesheet-rewrite-r4-acceptance.md) have qualified Linux/hermetic acceptance. R4's second repair converged; F1-F8 and V1 are closed for that snapshot. PR #138 publishes R1-R3; accepted R4 remains uncommitted and requires its separate publication gate/PR. Next prepare a bounded R5 packet with pinned upstream Pi APIs; R5 implementation is not released. Track [epic #131](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/131), R1-R4 in #132-#135, dependent R5/R6 in #136/#137. No automatic child dispatch, merge, release or live submission.
+2. For the active implementation, use the accepted [implementation specification](../timesheet-spec.md) and [execution plan](../../.omo/plans/timesheet.md).
+3. [R1](timesheet-r1-acceptance.md), [R2](timesheet-r2-acceptance.md), [R3 dev.9](timesheet-r3-acceptance.md) and [R4 dev.12](timesheet-r4-acceptance.md) have qualified Linux/hermetic acceptance. R4's second repair converged; F1-F8 and V1 are closed for that snapshot. PR #138 publishes R1-R3; accepted R4 remains uncommitted and requires its separate publication gate/PR. Next prepare a bounded R5 packet with pinned upstream Pi APIs; R5 implementation is not released. Track [epic #131](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/131), R1-R4 in #132-#135, dependent R5/R6 in #136/#137. No automatic child dispatch, merge, release or live submission.
 4. Reconcile the packet's base and current ownership before implementation. Use [handoff contracts](handoffs.md) for implementation and independent review reports.
-5. Commit, publication, live access, release tags, and production writes require their own authority. Do not synchronize this rewrite to ai-database.
+5. Commit, publication, live access, release tags, and production writes require their own authority. Do not synchronize this implementation to ai-database.
 
-`GLOSSARY.md` remains the canonical domain vocabulary. The older [implementation plan](implementation-plan.md), [state ledger](state.md), redesign specification, and ADR 0005 are historical context where the new specification supersedes them. Do not load the full historical ledger into routine rewrite workers or daily-agent context.
+`GLOSSARY.md` remains the canonical domain vocabulary. The older [implementation plan](implementation-plan.md), [state ledger](state.md), redesign specification, and ADR 0005 are historical context where the new specification supersedes them. Do not load the full historical ledger into routine implementation workers or daily-agent context.
 
 ## Default mode
 
@@ -32,9 +36,9 @@ Separate permissions for implementation, local commits, GitHub publication, live
 | --- | --- | --- |
 | Owner | Authorizes scope and exceptions; decides product trade-offs | Approves each remote timesheet plan separately |
 | Orchestrator | Chooses slices, dispatches, reconciles findings, commits accepted work, updates records | Does not silently implement worker code or waive safety blockers |
-| Implementer | Implements the bounded slice and demonstrates behavior; tests optional under the rewrite spec | Stops for independent review; no commit or vault writes |
+| Implementer | Implements the bounded slice and demonstrates behavior; tests optional under the application spec | Stops for independent review; no commit or vault writes |
 | Reviewer | Independently checks the exact snapshot and evidence | Read-only; does not retrieve credentials or alter files |
-| Fixer | Repairs accepted findings and demonstrates corrected behavior; tests optional under the rewrite spec | Does not expand scope or commit |
+| Fixer | Repairs accepted findings and demonstrates corrected behavior; tests optional under the application spec | Does not expand scope or commit |
 | Researcher | Resolves named facts with bounded, authorized access | No changes or live mutations unless separately authorized |
 
 An implementer's self-review is useful evidence, not independent acceptance. Reviewers and fixers can use fresh agents or separate sessions; record which happened.
@@ -86,7 +90,7 @@ GIT-DATE-WINDOW-1 (git day-window timezone anchoring): `4e50ae6`. Independently 
 
 INCIDENT-REPAIR-1 (source-only incident repair R1-R3): `a9c1f06` with the acceptance record `6c3da32`. Independently reviewed and re-reviewed, closed source-accepted, local only (not pushed). See [state](state.md).
 
-PUBLICATION-1 (repository publication): the accepted development branch was published to `origin` at https://github.com/huyle-gradion/personal-pilot-timesheet-logger. Published work tip `6c3da32` on `feat/s9-integrated-acceptance` (parent `a9c1f06`), over the 107-commit linear range from `origin/main` `bc6023f`. This is a source publication only: the push was a normal fast-forward (destination ref created, no existing remote ref), with no merge, no pull request, no `main` push, no force-push, and no history rewrite. Production readiness is not established and production submission remains blocked. See [state](state.md).
+PUBLICATION-1 (repository publication): the accepted development branch was published to `origin` at https://github.com/huyle-gradion/personal-pilot-timesheet-logger. Published work tip `6c3da32` on `feat/s9-integrated-acceptance` (parent `a9c1f06`), over the 107-commit linear range from `origin/main` `bc6023f`. This is a source publication only: the push was a normal fast-forward (destination ref created, no existing remote ref), with no merge, no pull request, no `main` push, no force-push, and no history implementation. Production readiness is not established and production submission remains blocked. See [state](state.md).
 
 TRACKER-1 (tracker workflow restoration): publication left the accepted series with no issue and no pull request, so the repository's documented loop had been unused since 2026-10-08. Nine outstanding items were filed as issues #26 to #34 (the three owed incident decisions, EVIDENCE-WINDOW-CORRECTION-1, the adjacent collector timezone items, the carried F6 projection, the pre-existing gofmt deviations, the untimed journal collector, and the read-only metrics import decision), integration issue #35 was opened, and pull request #36 (`feat/s9-integrated-acceptance` into `main`) was created against it. The one previously unpushed change in that pull request is the reviewed documentation commit `523e8d9`. Merge is not authorized and production readiness is not established. See [state](state.md).
 

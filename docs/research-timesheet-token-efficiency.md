@@ -10,24 +10,24 @@ pi_source_commit: "58c0b02ce552adab76014e7ed712ab7981359aa8"
 
 ## Owner constraints
 
-- Full rewrite, not a wrapper-only migration. Output-first delivery.
+- Full implementation, not a wrapper-only migration. Output-first delivery.
 - Pi provides conversation and optional editorial text; all accounting and workflow decisions run in a compiled binary.
 - One binary process stays alive through review, revision, and submission approval within the daily session. Persistence across Pi restarts has not been requested.
 - Save locally, revise with structured typed input, and cancel are distinct outcomes.
 - Token reduction is best effort, not a hard per-run budget.
 - The agent never reads configuration, raw evidence, workflow records, daily notes, or exports. The binary loads the configured sources and returns only bounded status to the model.
-- TigerStyle and `docs/engineering/go-rules.md` are not mandatory for the rewrite. [Effective Go](https://go.dev/doc/effective_go) is the minimum Go baseline. It is not a complete guide to modern Go; consult current official documentation when needed.
+- TigerStyle and `docs/engineering/go-rules.md` are not mandatory for the application. [Effective Go](https://go.dev/doc/effective_go) is the minimum Go baseline. It is not a complete guide to modern Go; consult current official documentation when needed.
 - Tests are optional, not a delivery gate. Runtime output must still demonstrate the delivered behavior.
 - Use a supported chat model through an available authenticated Pi provider. Luna is not required, and no classifier call is added without a concrete need. Subscription compatibility remains to be verified against the selected provider.
 - Review, structured corrections, and approval use local Pi UI and commands without model calls. Conversation and editorial assistance remain optional.
-- Explicitly migrate confirmed work, remote identities, and submission history. Old approvals must not authorize writes in the rewrite. Reconcile remote entries before creating new entries.
+- Explicitly migrate confirmed work, remote identities, and submission history. Old approvals must not authorize writes in the application. Reconcile remote entries before creating new entries.
 - Target macOS first. Credentials are stored in `.env.local`, loaded only by the compiled binary; inherited environment variables may supply or override values. This supersedes the earlier Keychain-first proposal. Never read or print credentials through agent tools.
 - Evidence plugins are GitHub and calendar only. Remove ai-database, journal/vault collection and export, agent-session collection, and local-git collection from the target workflow. Existing owner files remain untouched; historical provenance may be retained during migration.
 - Gradion remains the submission destination; it is not an evidence plugin. Local review state and migration history remain necessary even without ai-database.
 - GitHub evidence includes all three selected scopes: commits and authored PRs, submitted PR reviews, and issue comments/discussions/other user-attributable interactions in explicitly configured repositories. Preserve event provenance and group related activity; none establishes worked duration.
 - GitHub topic groups show observed activity bounds only. The user supplies working intervals through structured typed input; the binary does not infer worked intervals from activity gaps. Calendar events provide proposed meeting intervals requiring user confirmation.
 - Failed or incomplete evidence collection permits explicit acknowledgment of the named source failure and manual completion. Never acknowledge automatically or relabel the collection complete. Evidence acknowledgment is neither work confirmation nor submission approval.
-- The owner confirmed the product design and requested a SemVer-governed kickoff. The accepted requirements and execution plan are recorded in `docs/timesheet-rewrite-spec.md` and `.omo/plans/timesheet-rewrite.md`; technical alternatives below remain research, not additional requirements.
+- The owner confirmed the product design and requested a SemVer-governed kickoff. The accepted requirements and execution plan are recorded in `docs/timesheet-spec.md` and `.omo/plans/timesheet.md`; technical alternatives below remain research, not additional requirements.
 
 ## Verdict
 
@@ -430,7 +430,7 @@ Applied here: one `ts_propose` tool, not CRUD tools; a compact status; no full p
 
 ### 6.4 Prompt caching
 
-- Keep stable instructions and tool definitions at the front; append rather than rewrite history; compaction/truncation can reset cache reuse. [OpenAI prompt caching §Best practices](https://developers.openai.com/api/docs/guides/prompt-caching)
+- Keep stable instructions and tool definitions at the front; append rather than update history; compaction/truncation can reset cache reuse. [OpenAI prompt caching §Best practices](https://developers.openai.com/api/docs/guides/prompt-caching)
 - Cache hits are cheaper, not free: 0.1x input on Anthropic and most OpenAI models (0.05x on GPT-6.1 Sol). Cache writes cost more (1.25x for 30-minute, 2x/2.5x for longer retention). [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching), [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
 
 Applied here: within a short review, a stable prefix helps; across a day, a fresh session avoids paying to carry stale context.

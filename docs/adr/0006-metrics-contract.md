@@ -196,7 +196,7 @@ stands as written.
   a day with no record (or no editor) writes an empty cell and prints `unknown`; a
   record-read error leaves the cells empty and warns on stderr. The chart omits the
   bar and prints `unknown` rather than a `0 <= ceiling` tick. Rows are upserted one
-  per date (last value wins) by temp-file + atomic rename, and reads/rewrites are no
+  per date (last value wins) by temp-file + atomic rename, and reads/implementations are no
   longer truncated at 1,000 rows.
 - **The date gate.** A run's day is an operator input. `metrics.Import` requires an
   explicit `--date YYYY-MM-DD` (validated, `ErrDateRequired` when absent) and no
@@ -370,7 +370,7 @@ as written.
   `sum(Models[].TotalTokens)` still equals the session total and the cost reflects the
   tokens actually seen; only when the hash matches is the stored evidence itself
   reused. A catalog price fix
-  still does not rewrite the session (the content hash governs).
+  still does not alter the session (the content hash governs).
 
 ### 2026-10-22 — the chart ceiling follows the data, and the budget vocabulary goes (#128)
 

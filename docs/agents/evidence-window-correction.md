@@ -119,7 +119,7 @@ Rules:
 - **Reading the record is allowed and required**; editing it is not. Every
   `jq`/`shasum` command in this note is read-only. Do **not** hand-edit the record
   JSON: it is revision-checked, atomically replaced, and validated by the store, so
-  an out-of-band edit is exactly the silent rewrite this procedure forbids.
+  an out-of-band edit is exactly the silent implementation this procedure forbids.
 - Do **not** put the note inside the journal source's `daily_dir`: the journal
   adapter reads `<vault>/<daily_dir>/<date>.md`, so technical prose added there
   becomes narrative evidence on the next collection.
@@ -379,7 +379,7 @@ Consequences the operator must hold onto:
 
 ## Forbidden
 
-- No silent rewrite of a private record: no hand-edited JSON, no editing
+- No silent update of a private record: no hand-edited JSON, no editing
   `collected_evidence` in place, no reconstructing a record from a backup.
 - No deletion of evidence rows. Exclusion is a review decision and retains the
   row; the record keeps its history.

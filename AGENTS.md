@@ -1,5 +1,12 @@
 # Agent Instructions
 
+## Publication and versioning
+
+- Use GitHub account `huyle-gradion` and repository-local Git identity `Huy Le <huy.leminh@gradion.com>`. Verify author, committer and authenticated account before publication; keep global Git settings unchanged.
+- Use **Timesheet** as the public product name and neutral product terminology in source, documentation and release metadata.
+- Every shipped application changeset updates SemVer consistently across Go, adapter negotiation, package/root-lock stamps, changelog and release tag.
+- Preserve published commits and tags unless the owner explicitly authorizes changing history.
+
 ## Agent skills
 
 ### Orchestration

@@ -371,8 +371,8 @@ second record for a date silently inflates “Total days tracked”. The upsert 
   while `parseCSVRow` **errors on an empty token cell** (`csv_store.go:138–141`; `record[3]` is
   the first token cell). A reader built
   today would truncate history past 1000 rows and delete every unknown-token row §7 introduces.
-  The rewrite capability therefore requires: a rewrite path not bounded by `MaxCSVRowsCount`;
-  `parseCSVRow` tolerant of empty token cells; and the rewrite failing LOUDLY on any malformed
+  The update capability therefore requires: a update path not bounded by `MaxCSVRowsCount`;
+  `parseCSVRow` tolerant of empty token cells; and the update failing LOUDLY on any malformed
   row rather than skipping it.
 - **The upsert** is temp-file + atomic rename, never append-on-top-of-a-duplicate.
 - R2 (below) gains a truncation assertion, because the naive upsert would not fail it.
@@ -405,7 +405,7 @@ Pipeline instrument (post-retirement):
   omitted, status `unknown`, never `0 ≤ ceiling`); an empty-token-cell row survives the reader
   (parseCSVRow no longer rejects it).
 - **R2** upsert: two records for one date yield one row, last value wins, “days tracked” counts
-  distinct dates; AND a rewrite of a file with more than `MaxCSVRowsCount` rows preserves all of
+  distinct dates; AND a update of a file with more than `MaxCSVRowsCount` rows preserves all of
   them (no silent truncation).
 - **R3** no-parser invariant: a package-boundary test asserting `internal/benchmark`’s import set
   is stdlib-only and that no symbol in it names a provider.

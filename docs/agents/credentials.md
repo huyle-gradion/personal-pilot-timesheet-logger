@@ -8,7 +8,7 @@ never read the file; they receive its path.
 ## Active rules
 
 - **One owner-authored file.** `.env.local` at the repository root is
-  git-ignored and owner-authored. Nothing in this repository creates, rewrites
+  git-ignored and owner-authored. Nothing in this repository creates, implementations
   or logs it.
 - **Binary-owned.** `timesheet serve --env-file <path>` is the only reader.
   The path is a fixed launcher input, never a protocol request field and never

@@ -1,6 +1,6 @@
 {
   "timezone": "Europe/Amsterdam",
-  "state_path": "/Users/example/.timesheet/rewrite/state.json",
+  "state_path": "/Users/example/.timesheet/state.json",
   "projects": [
     {
       "id": "SYN-1",

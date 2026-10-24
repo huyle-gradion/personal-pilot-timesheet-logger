@@ -1,15 +1,23 @@
 # Changelog
 
-Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented rewrite release line; it does not retroactively assign versions to historical commits.
+Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
 ## Unreleased
 
 R6 improvements and upstream Pi dependency remediation remain tracked in
 [issue #137](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/137).
 
+## 0.1.1
+
+- Standardize product, package, documentation and operator-facing names as Timesheet.
+- Keep published history and existing tags unchanged; commits and publication use the work identity.
+- Update application/adapter identity to `0.1.1`; protocol, state schemas, dependency pins and accounting behavior are unchanged.
+- Existing state and credential paths remain user-controlled; naming examples do not migrate or replace durable records.
+- Known upstream dependency limitations remain tracked in issue #137.
+
 ## 0.1.0
 
-- Release the rewrite as the main product: one compiled timesheet server and
+- Release the application as the main product: one compiled timesheet server and
   one pinned Pi consumer; legacy CLI and vault integration are retired.
 - Promote dev.17 to `0.1.0` with no workflow, protocol, state-schema or dependency
   change. Local logging/migration/lifecycle have Linux and actual Darwin evidence;
@@ -37,7 +45,7 @@ package stamp move to `0.1.0-dev.17` with dependency pins
 - One Go target. `cmd/timesheet/main.go` is now the accepted 99-line server
   entry point, branded `timesheet`, exposing only `version` and
   `serve --config --env-file` with unchanged exit codes and credential
-  loading. The temporary `cmd/timesheet-rewrite` entry point was deleted; no
+  loading. The temporary `cmd/timesheet` entry point was deleted; no
   alias, legacy flag, wrapper CLI or second server exists.
 - Legacy retirement. 225 manifest-listed tracked files were removed from the
   working tree: the old `cmd/timesheet` subcommands and their tests, the
@@ -48,16 +56,16 @@ package stamp move to `0.1.0-dev.17` with dependency pins
   and the tracked `scripts/vaultgen` source/test fixtures. No directory was
   removed wholesale and no untracked owner file was touched.
 - Module pruning. `go.mod`/`go.sum` keep only what `cmd/timesheet`,
-  `internal/rewrite` and `internal/mcp` still use (`arran4/golang-ical`,
+  `internal/timesheet` and `internal/mcp` still use (`arran4/golang-ical`,
   `teambition/rrule-go`); the unused `charm.land/huh` tree was pruned by the
   installed toolchain with no version upgrade, module-directive or toolchain
   change. `go list ./...` is exactly those three packages.
 - Public configuration. `cmd/timesheet/timesheet.example.json` is a minimal
-  valid rewrite-schema document with synthetic placeholders.
+  valid implementation-schema document with synthetic placeholders.
 - Operator documentation. New root `README.md` documents the one build/launch
   path, fixed config/env inputs, the local `/timesheet` flow, explicit
   migration and reconciliation before writes, recovery/no-replay rules and
-  honest readiness. `pi/README.md`, the rewrite interface identity and command
+  honest readiness. `pi/README.md`, the application interface identity and command
   line (stale R4/dev.11 heading corrected; R1-R5 stage text marked historical),
   `docs/agents/credentials.md` (active `.env.local` policy replaces the retired
   Keychain-only guidance) and this changelog were updated.
@@ -65,7 +73,7 @@ package stamp move to `0.1.0-dev.17` with dependency pins
   interval edits survive a restart: staged and confirmed-but-unsaved interval
   changes are session-only, only committed state and durable ledgers reload, and
   startup never submits or replays anything on its own. Both the README and the
-  rewrite interface now separate top-level/`version` usage errors (exit `2`)
+  implementation interface now separate top-level/`version` usage errors (exit `2`)
   from `serve` argument validation, startup and stream failures (exit `1`).
   No application, protocol, schema, dependency or release-identity change.
 - Evidence. Linux, real pinned Pi 1.4.0 TUI through the unchanged
@@ -262,7 +270,7 @@ changing the `serve` protocol, state schema or any R1-R4 Go behavior beyond the
 
 ### R5 — restricted Pi launcher/adapter (`0.1.0-dev.13`)
 
-First pinned Pi integration for the rewrite, without changing the `serve`
+First pinned Pi integration for the application, without changing the `serve`
 protocol, schemas or R1-R4 Go behavior (only the `AppVersion` bump):
 
 - `pi/launch.mjs` is the only daily entry point: absolute trusted paths, no
@@ -335,7 +343,7 @@ R1-R3 surfaces:
   protocol schema remains `1` and state schema remains `3`. No state field is
   added or removed: the existing `choices` field is simply written even when
   empty (legacy rows that lack it may materialize it as `null` on a later
-  rewrite, which still reloads as missing proof and stays unauthorized). Existing
+  update, which still reloads as missing proof and stays unauthorized). Existing
   state loads unchanged; no migration is created or implied.
 
 ### First R4 repair round (`0.1.0-dev.11`)
@@ -522,7 +530,7 @@ changing R1/R2 behavior:
 - State schema remains `1`; the optional `Evidence` map gains only additive optional fields (verified acknowledgment identity receipts, item `resource`, topic truncation counts, decision `collection_id`). A pre-R2 binary still fails closed (`state_invalid`) on a file this build writes; pre-R2 files load unchanged.
 - New protocol receipts and errors: `collect`, `acknowledge_source` (now with verified `collection_id`), `decide_meeting`; new error code `stale_collection`. Error details carry HTTP status only; feed URLs, tokens, and raw provider documents are never echoed.
 - Configuration gains an optional `sources` block (GitHub `user`/`repositories`/`api_base`, calendar feed user, `required_env` extension); a config without `sources` behaves exactly like R1 (`no_sources` collection, no gate).
-- The development entry point's usage text now describes the implemented collection scope; the `serve` protocol in [docs/agents/rewrite-interface.md](docs/agents/rewrite-interface.md) is the authoritative interface.
+- The development entry point's usage text now describes the implemented collection scope; the `serve` protocol in [docs/agents/timesheet-interface.md](docs/agents/timesheet-interface.md) is the authoritative interface.
 - R2 limits unchanged from R1 beyond the above: no migration, Pi adapter, remote reconciliation, submission approval, or remote write; evidence never creates worked minutes.
 
 ### R1 timezone continuation (`0.1.0-dev.3`)
@@ -540,24 +548,24 @@ changing R1/R2 behavior:
 
 ### Local daily workflow (R1, `0.1.0-dev.1`)
 
-- Added the development entry point `cmd/timesheet-rewrite` and `internal/rewrite` for the local, review-first daily workflow. This is not a release and not a second production CLI.
+- Added the development entry point `cmd/timesheet` and `internal/timesheet` for the local, review-first daily workflow. This is not a release and not a second production CLI.
 - Added a persistent line-delimited JSON `serve` session with strict request schemas, echoed request IDs, expected revisions, stable error codes, and protocol schema `1`. `version` reports the development build identifier and loads no credentials.
 - Added manual typed intervals (`DATE HH:MM-HH:MM PROJECT[/CLASSIFICATION] DESCRIPTION`), staged add/edit/remove, review with accurate totals, explicit confirmation, atomic local save, revision, cancellation, status, and restart recovery.
 - Rejected zero/negative/invalid intervals and unresolved overlaps without changing confirmed work. Multiple evidence references add no minutes. Cross-midnight work is allocated explicitly to both local dates without wrapping or double-counting.
 - Added binary-only JSON configuration and environment-file loading with inherited environment precedence, documented dotenv syntax, lazy required-variable checks, and value-free diagnostics. Local save requires no remote credential.
 - Added single-writer state locking, atomic `0600` state replacement, and failed-write rollback so cancellation or a failed write cannot report success or erase the last confirmed state.
-- Documented the R1 public interface in [docs/agents/rewrite-interface.md](docs/agents/rewrite-interface.md) and added placeholder-only environment examples.
+- Documented the R1 public interface in [docs/agents/timesheet-interface.md](docs/agents/timesheet-interface.md) and added placeholder-only environment examples.
 - R1 limits: no GitHub/calendar collection, migration, Pi adapter, remote reconciliation, submission approval, or remote write. No legacy store is read, rewritten, or deleted.
 
 ### Project kickoff
 
-- Accepted the [timesheet rewrite specification](docs/timesheet-rewrite-spec.md) and prepared an owner-mediated implementation plan and first worker packet.
+- Accepted the [timesheet update specification](docs/timesheet-spec.md) and prepared an owner-mediated implementation plan and first worker packet.
 - Targeted a persistent compiled Go workflow with local Pi review, GitHub/calendar evidence, user-supplied working intervals, explicit migration, and exact-plan submission approval.
 - Replaced the proposed Keychain-first credential flow with binary-only `.env.local` loading and process-environment overrides.
 - Added Git exclusions for `.env.local` and environment-specific local credential files. Credential contents were not inspected.
 
 ### Release policy
 
-- Initial rewrite target: `0.1.0`, with development/alpha/beta/rc identifiers as documented in the [execution plan](.omo/plans/timesheet-rewrite.md).
-- No rewrite application implementation, release artifact, tag, or production readiness is claimed by this kickoff.
+- Initial update target: `0.1.0`, with development/alpha/beta/rc identifiers as documented in the [execution plan](.omo/plans/timesheet.md).
+- No update application implementation, release artifact, tag, or production readiness is claimed by this kickoff.
 - Public-interface compatibility covers CLI/input grammar, Pi protocol, configuration names/precedence, and state migration. Stable `1.0.0` requires accepted end-to-end behavior and an owner release decision.

@@ -79,7 +79,7 @@ performed in this slice, the cell is marked `unavailable` rather than estimated.
 
 | algorithm | time | in-memory space | durable space | code ref | cap | note |
 | --- | --- | --- | --- | --- | --- | --- |
-| Marker-delimited rewrite of the managed section | `O(B_note)` | `O(B_note)` | `O(B_note)` | `internal/run/submit.go:108`, `internal/export/` | none explicit | Non-destructive: only the `timesheet:begin/end` block changes. |
+| Marker-delimited implementation of the managed section | `O(B_note)` | `O(B_note)` | `O(B_note)` | `internal/run/submit.go:108`, `internal/export/` | none explicit | Non-destructive: only the `timesheet:begin/end` block changes. |
 
 ### Metrics-collect
 
