@@ -3,6 +3,32 @@
 The assignment's log → review what broke → improve → log again record
 (§3.5). Date-keyed; newest first. The Friday review reads this file.
 
+## 2026-10-25 — first owner-run loop on macOS; two defects found and fixed
+
+**Ran:** the owner executed the full loop manually on macOS (collect →
+draft → judgment in an editor → record → status) for 2026-10-20 and
+2026-10-27 with the real config and env file. The whole path works
+natively; entries landed in `~/.timesheet/entries/`.
+
+**What broke (found by the owner, both fixed same day):**
+
+1. **`record` ignored a mismatched `--date`.** A draft for 2026-10-20
+   recorded successfully under `--date 2026-10-24`; the file's date won
+   silently. Fix `28db13b`: `record` now rejects the mismatch explicitly.
+2. **`status --date` panicked on a day with no entries file** (nil
+   dereference in the missing-file path). Fix `e9aa687`: reports
+   `entries: 0`; cmd-level regression tests added for both defects.
+
+Also recorded earlier: the owner's first run failed with `write_failed:
+state directory cannot be created` because the same `config.json` was
+copied across machines — `state_path` is machine-specific (absolute home
+path). Not a product defect; worth a config-error hint improvement.
+
+**Improvement queue:** convert provider timestamps to the configured
+timezone in `draft` (evidence blocks currently render UTC wall clock);
+add `GITHUB_TOKEN` to the Mac env file; surface a clearer diagnostic when
+`state_path` cannot be created.
+
 ## 2026-10-24 — skill surface kickoff and missing-day backfill
 
 **Ran:** first live loop of the new headless skill (`collect` → `draft` →
