@@ -11,6 +11,10 @@ or store schema, and no local workflow behavior; `AppVersion` and the adapter
 package stamp move to `0.1.0-dev.17` with dependency pins
 `1.4.0`/`1.4.0`/`1.3.27` and lock integrity unchanged.
 
+- Added `python3 scripts/verify-r6-macos.py`: a deterministic, Darwin-gated QA
+  runner for the real pinned Pi local workflow and lifecycle. Uses only private
+  synthetic fixtures, records screens/results/PIDs/checksums, and changes no
+  application behavior, dependency pins or release identity.
 - One Go target. `cmd/timesheet/main.go` is now the accepted 99-line server
   entry point, branded `timesheet`, exposing only `version` and
   `serve --config --env-file` with unchanged exit codes and credential

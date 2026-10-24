@@ -11,6 +11,43 @@ VERIFICATION: Darwin-built timesheet plus bundled pinned Pi, synthetic migration
 
 This is an **unaccepted verification candidate**, not a release or merge authorization. The owner explicitly requested a pullable branch so a macOS Pi agent can run it. Local root README exit-code/restart wording still has R6-F1/F2; use the corrected behavioral facts below. Publishing does not close those findings or issue #137.
 
+## One-command runner (preferred)
+
+From this checkout on the actual Mac:
+
+```sh
+python3 scripts/verify-r6-macos.py
+```
+
+Requires installed Go, Node, tmux and the pinned `pi/node_modules` tree. It does
+not install anything or read owner configuration. It builds its own native
+binary, creates a private synthetic fixture, launches the real Pi TUI, drives
+the missing add/confirm/save/cancel/restart/edit/reload/quit sequence, checks child
+exit and lock release, and prints the retained evidence directory.
+
+Exit 0 means the sequence passed; 1 means a recorded runtime failure; 2 means a
+missing platform/prerequisite. Non-Darwin hosts stop before creating fixtures.
+Successful runs remove generated fixture state; failures retain it for diagnosis.
+Results include the actual platform and explicitly distinguish non-Mac developer
+smoke tests from Darwin evidence. This helper never grants overall R6 acceptance.
+
+## Mandatory host gate — run before any setup
+
+Run this in the terminal tool that will execute the application, not merely in
+the computer displaying the chat:
+
+```sh
+if [ "$(uname -s)" != "Darwin" ]; then
+  printf '%s\n' 'BLOCKED: actual macOS/Darwin execution required; stop this task.'
+  exit 1
+fi
+```
+
+If blocked, report the execution host and stop immediately. Do not substitute
+another Linux rehearsal, package-test run or cross-build. A Mac client connected
+to a Linux/container runner is still Linux execution. Resume inside the actual
+Mac checkout that produced the earlier Darwin preflight evidence.
+
 ## Checkout and permissions
 
 - Branch: `feat/timesheet-rewrite-r6-v0.1.0`; ancestor R5 `99a7f23336845ac6858706319e695a750f9116cd`. Record the pulled HEAD and compare with the publication hash supplied by the owner/issue #137, not the old R5 baseline.
