@@ -1,2 +1,0 @@
-# Keeps the empty ADR directory in the repository so the empty-ADR branch is
-# exercised by TestEmptySections. Non-.md files are ignored by loadADRs.

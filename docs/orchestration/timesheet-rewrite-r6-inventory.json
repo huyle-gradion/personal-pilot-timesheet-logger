@@ -1,0 +1,1649 @@
+{
+  "schema": 1,
+  "task": "TIMESHEET-REWRITE-R6",
+  "base_commit": "99a7f23336845ac6858706319e695a750f9116cd",
+  "branch": "feat/timesheet-rewrite-r6-v0.1.0",
+  "target": "0.1.0-dev.17",
+  "purpose": "Machine-input tracked-path ownership and retirement inventory; do not load the full file into model context.",
+  "observed_production_module_closure": [
+    "internal/mcp",
+    "internal/rewrite",
+    "cmd/timesheet-rewrite"
+  ],
+  "legacy_package_prefixes": [
+    "internal/benchmark",
+    "internal/calendar",
+    "internal/editorial",
+    "internal/evidence",
+    "internal/export",
+    "internal/git",
+    "internal/gradion",
+    "internal/keychain",
+    "internal/metrics",
+    "internal/proposal",
+    "internal/review",
+    "internal/run",
+    "internal/selection",
+    "internal/storage",
+    "internal/submit",
+    "internal/workflow"
+  ],
+  "new_allowed_files": [
+    "README.md",
+    "cmd/timesheet/cutover_test.go"
+  ],
+  "owner_governance_excluded": [
+    ".omo/plans/timesheet-rewrite.md",
+    "docs/orchestration/README.md",
+    "docs/orchestration/timesheet-rewrite-r4-acceptance.md"
+  ],
+  "private_exclusions": [
+    "transcript_full.jsonl",
+    ".env.local",
+    "owner config/store/records/profiles/vault"
+  ],
+  "rules": [
+    "Retire listed tracked files only; preserve any untracked or changed owner file.",
+    "For mode 120000 unlink only the listed symlink; never follow it.",
+    "read_only forbids changes/deletion; bounded_edit permissions are further narrowed by the handoff.",
+    "Do not add replacement tests that pin source text, wording, command inventories, copies or incidental defaults."
+  ],
+  "counts": {
+    "retire": 225,
+    "replace_legacy": 2,
+    "bounded_edit": 10,
+    "read_only": 28
+  },
+  "entries": [
+    {
+      "path": ".agents/skills/timesheet/SKILL.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "04dad45ef6c458bf14a175d420185fca35ca041a"
+    },
+    {
+      "path": ".agents/skills/timesheet/workflow.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e45e793f69eb3d1671a661c6edcb6354773f0834"
+    },
+    {
+      "path": ".claude/skills/timesheet",
+      "action": "retire",
+      "git_mode": "120000",
+      "git_blob": "15c12abb8f89bc3a5d7edecacbd7cfda1c635682"
+    },
+    {
+      "path": ".env.example",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "5000d64c601e38c745dfbc59539cd982c85edc0d"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "8f4ebee70b51944f0e9dc7b7d7a750947356990b"
+    },
+    {
+      "path": "cmd/benchmark/main.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2c49c9edf9b01aecf5fc9d13512167aefaf7c1ea"
+    },
+    {
+      "path": "cmd/benchmark/main_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "72a93299a9fcb69d6a7dc72e9ff22b8a5d84fe45"
+    },
+    {
+      "path": "cmd/fetch-calendar/main.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "71d7864213d7a8726aab31d2ebc45bac2b421d63"
+    },
+    {
+      "path": "cmd/fetch-calendar/main_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3fa5cf471fc5671361bddb5a4b724af047887ff8"
+    },
+    {
+      "path": "cmd/fetch-git/main.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "9b4730be852ab6a77ce476524b63f0ead0833737"
+    },
+    {
+      "path": "cmd/fetch-git/main_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "8b4227c8d45d416e208a7ad323648568e0951ed6"
+    },
+    {
+      "path": "cmd/timesheet-rewrite/main.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a834c619c8193b25be06b7f6458b4b2565192ba3"
+    },
+    {
+      "path": "cmd/timesheet/classify.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "ef4f21a74c2151d530e271383b4dc18db034bd90"
+    },
+    {
+      "path": "cmd/timesheet/classify_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c92a03f0ec45e042b57a5e48755841d0ff008a17"
+    },
+    {
+      "path": "cmd/timesheet/config.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "57904b2dda89a1fe0a00a9b5f6dce224411740a4"
+    },
+    {
+      "path": "cmd/timesheet/config_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "cad2e435c0f703755db828a7d723dbbe6207bf72"
+    },
+    {
+      "path": "cmd/timesheet/hermeticity_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "72604ab500caa85357b991351bf84fcae7eb6314"
+    },
+    {
+      "path": "cmd/timesheet/interactive.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "dcba0b592ff7205ccb6f9350de54233c0fee5833"
+    },
+    {
+      "path": "cmd/timesheet/interactive_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "1614aa557e0f678a740dd2fa7b0f9ad30d623c71"
+    },
+    {
+      "path": "cmd/timesheet/journal_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2cb88e1604984fe37608450c602f7307e49c655a"
+    },
+    {
+      "path": "cmd/timesheet/main.go",
+      "action": "replace_legacy",
+      "git_mode": "100644",
+      "git_blob": "e7678ee7ffeb8068f5c77d27ccdbb3d52ef50de5"
+    },
+    {
+      "path": "cmd/timesheet/main_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e36639888c049c0744853ef88f49201aff10adbc"
+    },
+    {
+      "path": "cmd/timesheet/metrics.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c97dbee36c23d481398c8a7dd7c9d794085fd6cb"
+    },
+    {
+      "path": "cmd/timesheet/metrics_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c451cba9cb6e40dda646f31ddb8c84133ba5a351"
+    },
+    {
+      "path": "cmd/timesheet/observation_surface_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c749ba79c7fb4e6f57fb1ade87d3a09dbe7965f6"
+    },
+    {
+      "path": "cmd/timesheet/prompt_plain.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "4e287efd16a158a816f4d629837d3efc64f19439"
+    },
+    {
+      "path": "cmd/timesheet/prompt_tui.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "dc2c0a26c92f3dc7d01709f95ae99f215cf68d3e"
+    },
+    {
+      "path": "cmd/timesheet/timesheet.example.json",
+      "action": "replace_legacy",
+      "git_mode": "100644",
+      "git_blob": "e394302e42e6bdffe2abc04af3173a3cca9eb425"
+    },
+    {
+      "path": "cmd/timesheet/timesheet.journal.example.json",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "ce6b852527d7b36b18b308b1be6a0979b6c2cc0f"
+    },
+    {
+      "path": "cmd/timesheet/timesheet.local-git.example.json",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "eac10e35fc6a751d006cd7cf51cccffd810be3c2"
+    },
+    {
+      "path": "cmd/timesheet/timesheet.personal.example.json",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3c139bcd632859f7f9543a790183df63afd19f70"
+    },
+    {
+      "path": "cmd/timesheet/tty_darwin.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "cd3248df4f39a2eed838734cd5d8556a80082d0e"
+    },
+    {
+      "path": "cmd/timesheet/tty_linux.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "1e76b5dc82e4c797ac66d96ea39711450c13888d"
+    },
+    {
+      "path": "cmd/timesheet/tty_other.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "fbe8faee67c616f2826dddf57d2edaaa995550c4"
+    },
+    {
+      "path": "docs/agents/credentials.md",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "d0cac0a47fa489c08888e7edac3928f935144c0c"
+    },
+    {
+      "path": "docs/agents/rewrite-interface.md",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "a2cb8e2ccc16dc32fd2ad6780ffc485e4280241e"
+    },
+    {
+      "path": "go.mod",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "3a561d2c87e85e1cda2da3d7bfe3974420126d79"
+    },
+    {
+      "path": "go.sum",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "673f246231d9fccc454ed897e37580a1a3922510"
+    },
+    {
+      "path": "internal/benchmark/benchmark_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "dfc914f5d31f586c3ba565a5be87d5ae15063479"
+    },
+    {
+      "path": "internal/benchmark/boundary_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "78033a08f454b88134bbbba1a041eff42b38092e"
+    },
+    {
+      "path": "internal/benchmark/chart.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "bdd64984c199a7094b0b742e3a4f46e022e063c5"
+    },
+    {
+      "path": "internal/benchmark/chart_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2f5e170d45e0ac5342c0be52a194a53a5bb846b8"
+    },
+    {
+      "path": "internal/benchmark/csv_store.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d3bfa9792e020e6436d19ea4fcbbf4bec0fe9679"
+    },
+    {
+      "path": "internal/benchmark/csv_store_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "dc38175b6c545e6b89b691e63da4fef0ef133136"
+    },
+    {
+      "path": "internal/benchmark/measurer.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "bdcdfd9b79f579dce2bdbac538beec72b184fd34"
+    },
+    {
+      "path": "internal/benchmark/models.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "ccb165ec43204da52d359d6c4f7480f6d1611198"
+    },
+    {
+      "path": "internal/benchmark/report.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "bd4dca03d30771e875ff0a6ba770a40441f9d7fc"
+    },
+    {
+      "path": "internal/benchmark/report_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "687a4f0a4d8a051ceede9fb15c3fd2c8c55ac39e"
+    },
+    {
+      "path": "internal/calendar/calendar.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3e4c68fda5566bbf41de32846f3632f2f179c4b7"
+    },
+    {
+      "path": "internal/calendar/calendar_detailed_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2d3c82c85adf3e59b220c439fb0e1eaeba44be13"
+    },
+    {
+      "path": "internal/calendar/calendar_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "26285561f4a993550ae76b99bce6222049e38ba3"
+    },
+    {
+      "path": "internal/calendar/preflight.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "ea137560196fc7a486e8f050f6e353ddc5f5a7e8"
+    },
+    {
+      "path": "internal/calendar/preflight_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a7cc1e9ec183520d6a6e519cbc09fe71a47ee2a4"
+    },
+    {
+      "path": "internal/editorial/apply.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "5ab586b7d85ac915880a15b21139c62abb8b1c9a"
+    },
+    {
+      "path": "internal/editorial/apply_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "fa6f10deadc3ab4ca1f1aa9238399764ef1e0b76"
+    },
+    {
+      "path": "internal/editorial/build.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e95889bec2a3494ef0ddab6f1158df6c65591986"
+    },
+    {
+      "path": "internal/editorial/build_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "57703238402ab10201146c66d5307825d099dd06"
+    },
+    {
+      "path": "internal/editorial/config.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d4490546cab985d67bf118ad3f20659bdaaf2f66"
+    },
+    {
+      "path": "internal/editorial/config_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "1f2bf599f9514de6ab17a1c50a4985bb881ed02e"
+    },
+    {
+      "path": "internal/editorial/deterministic.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d0c9390ee6f7dac9cf53677630e1cc49ee4eaeeb"
+    },
+    {
+      "path": "internal/editorial/editor.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "4079c3e8f98d0d91d83a72d6f5099301e33e54a6"
+    },
+    {
+      "path": "internal/editorial/editor_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "5628e693dfb3b89b2cdd020de352dd517626c651"
+    },
+    {
+      "path": "internal/editorial/integration_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c4b3e4bb6e23555b9f4cc7bafe8f1952a4e4c174"
+    },
+    {
+      "path": "internal/editorial/model.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "17587195a43dfd6974d0046b25516ca2bb07f06d"
+    },
+    {
+      "path": "internal/editorial/privacy_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "dd06c6af25df498d26469563838e0bddfc3f946c"
+    },
+    {
+      "path": "internal/editorial/synthesize.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "6a5c87e4879277dbad31f88934fbb658118b6d6d"
+    },
+    {
+      "path": "internal/editorial/synthesize_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2385a46ec507ac0d8c722da32e2c01e5b6137da5"
+    },
+    {
+      "path": "internal/editorial/usage.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "09625d0c77bc5bf719b778a1f1d19061968c86f3"
+    },
+    {
+      "path": "internal/editorial/usage_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d4faf7e80efd62ee9736c7608d1802bdc12c6d51"
+    },
+    {
+      "path": "internal/editorial/validate.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "adf6139fb625379c6d3e10451aa882bd46e13cab"
+    },
+    {
+      "path": "internal/editorial/validate_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "ec3313ef146ab4f2e24579724f2164e2476e8186"
+    },
+    {
+      "path": "internal/evidence/config.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "77139e80fa7b93b5a767593ff9dd946dba6005ba"
+    },
+    {
+      "path": "internal/evidence/config_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "8cf9cac601016bb8609eafc0d715eb5e0ff04ac3"
+    },
+    {
+      "path": "internal/evidence/contract.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "59ddfd4b4c921a121330d6f5162d6efcc60d90d8"
+    },
+    {
+      "path": "internal/evidence/filter.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "5eb00ce37744394008e66c2809d1a500cfe49732"
+    },
+    {
+      "path": "internal/evidence/filter_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a177e5a7056753be673d1240aef2632fa1721b33"
+    },
+    {
+      "path": "internal/evidence/identity.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "27d9fa95283dcf6b83cc538a7ec63a227d9f0083"
+    },
+    {
+      "path": "internal/evidence/identity_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "56ec6e8d4d219ec230172d3ce5e1b2cbcfcf4ca7"
+    },
+    {
+      "path": "internal/evidence/plugins/agent.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2dcacdf93d038887dd223a14c8490702e086e32c"
+    },
+    {
+      "path": "internal/evidence/plugins/agent_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "f814cf71a2d40e4ca83dc3e2129fb405e97afbec"
+    },
+    {
+      "path": "internal/evidence/plugins/calendar.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a37794f823177fc5078b17554462be43af073ab3"
+    },
+    {
+      "path": "internal/evidence/plugins/calendar_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "16c2b8fe409204ed1e2a48d7d4e11c315f60a6cf"
+    },
+    {
+      "path": "internal/evidence/plugins/fixture.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "7018f4ce32a249564bc573882dea3f43c89cc669"
+    },
+    {
+      "path": "internal/evidence/plugins/fixture_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e25acea03828cbc2d8b7a4fb098962521f13ec4b"
+    },
+    {
+      "path": "internal/evidence/plugins/git.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d762c261fdf000e1495f4eafcd6e10ac4d75dad9"
+    },
+    {
+      "path": "internal/evidence/plugins/git_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3aefd58ea0811f627bc48de6309d87ecc0a105f2"
+    },
+    {
+      "path": "internal/evidence/plugins/journal.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "76869f5076b9df333b6463d7c783405a81a267b3"
+    },
+    {
+      "path": "internal/evidence/plugins/journal_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "899fe0f4c29dd6b7a9097bc426cf9a444abf0ba8"
+    },
+    {
+      "path": "internal/evidence/plugins/testdata/journal/daily.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "4c6cb6011562f3d4d2597467b381f48bf67e61e4"
+    },
+    {
+      "path": "internal/evidence/plugins/testdata/journal/fence.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d622564989d25027defb04a9b53c11018d5178ba"
+    },
+    {
+      "path": "internal/evidence/plugins/testdata/journal/malformed.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2a13bff39af4dfa4322bbcb5dfea627fd0a49528"
+    },
+    {
+      "path": "internal/evidence/plugins/testdata/journal/managed.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "ae5b2bcb9ec224e0abd6a4a989524d68c1ac9ef2"
+    },
+    {
+      "path": "internal/evidence/preflight_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "f9b90a3bd10e27cacdc034a3f7fd9bc7f21922f2"
+    },
+    {
+      "path": "internal/evidence/registry.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "238d7b177f424a90ebc76980d169fa20c94dc413"
+    },
+    {
+      "path": "internal/evidence/registry_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "7e5ede6beac6ba51fc9950d99ae2544653746e4b"
+    },
+    {
+      "path": "internal/export/export.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "44f90193982321aa36d4d105a9903149bcfe5109"
+    },
+    {
+      "path": "internal/export/export_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "05139e0b125d106799d2f11b445c969cc20212be"
+    },
+    {
+      "path": "internal/git/github.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "fc451cf5d7353eafc8a65144544e50e56cc38f7b"
+    },
+    {
+      "path": "internal/git/github_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "b780b0ec7ed30eee63e2f5cf817ad153532bfdb9"
+    },
+    {
+      "path": "internal/git/local.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e4bba215d2a125b58b6ef7565eda9470c64d7c3f"
+    },
+    {
+      "path": "internal/git/local_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c291ccf2b54bcaaa11a2ef92143816451152e4eb"
+    },
+    {
+      "path": "internal/git/preflight.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "b19b100e98764876ec932ef8b6f872d00d5cd037"
+    },
+    {
+      "path": "internal/git/preflight_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3672c5c69f2699e49e42adb7b6725648dc71a661"
+    },
+    {
+      "path": "internal/gradion/catalog.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "10236994d9938872f466e8b7bb88cab5ea802c99"
+    },
+    {
+      "path": "internal/gradion/catalog_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2b40c8264bd86bb641e6ac67c71f85bf2ba54c39"
+    },
+    {
+      "path": "internal/gradion/client.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "f40c620b1fc2f10a40b482a4230dfdae1a5f9bb4"
+    },
+    {
+      "path": "internal/gradion/client_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "094db41873f2a9d38b220e89de8679a94693a08b"
+    },
+    {
+      "path": "internal/gradion/fakeserver_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "38025d669ef5de7ed8891ad14a280bc4a60a037c"
+    },
+    {
+      "path": "internal/gradion/incident_repair_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "1c74dde70dcfbb220e581317fecd2350c4b98c51"
+    },
+    {
+      "path": "internal/gradion/outcome.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "381c1dc0b625b98f9483fee2fa9fe0b8d204c2d2"
+    },
+    {
+      "path": "internal/gradion/outcome_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d42f676bcaf2c8fefc7aa371deb3fbd5b75b1ba5"
+    },
+    {
+      "path": "internal/gradion/parse.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "90fc1bfcc1242ae89e9b334562b3f1db3d3f9fe9"
+    },
+    {
+      "path": "internal/gradion/parse_write_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "1cc275190fb6daa7e25ba970e134bfb32d89bcbe"
+    },
+    {
+      "path": "internal/gradion/tools.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "05b5b2d387b1e7ff3faa1206df42b18209bff601"
+    },
+    {
+      "path": "internal/gradion/week_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "8096da13502a9b8643d92137531dbb1d3854f24b"
+    },
+    {
+      "path": "internal/keychain/keychain.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "feed87fc02b40b1d735376492ac96261138bfdaf"
+    },
+    {
+      "path": "internal/keychain/keychain_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "ce9a0b47d6ea8d3cd2e439eea4a9a57e424dd816"
+    },
+    {
+      "path": "internal/mcp/bounds.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "be025c23a7c4647b403f252eacaaaaf91612de1c"
+    },
+    {
+      "path": "internal/mcp/errors.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "2a68caca7e4fc371498b807433f1e6e333216404"
+    },
+    {
+      "path": "internal/mcp/fakeserver_test.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "6b0e0dfa4a9ccc92b33122586620a7730292d2a4"
+    },
+    {
+      "path": "internal/mcp/jsonrpc.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "0ae8bff9983041b45446150d07dcc1b12569bd7f"
+    },
+    {
+      "path": "internal/mcp/session.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "e37da2bd13ca810246fe8e171b586c2ccb13a25e"
+    },
+    {
+      "path": "internal/mcp/session_test.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "8fef4dbab930a3f5220a167c876abdf053378b74"
+    },
+    {
+      "path": "internal/metrics/adapter.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "40e8e11eb4105e125afa594502cd14ca29daf1dc"
+    },
+    {
+      "path": "internal/metrics/adapter_antigravity.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a212a9114a07777198985a5a13b2344ed6204cba"
+    },
+    {
+      "path": "internal/metrics/adapter_antigravity_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "aafc4516a90dc92e680eb9ab9589db5e29747339"
+    },
+    {
+      "path": "internal/metrics/adapter_claude.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "789a74a60de92a26575257c9486cbe5143ede782"
+    },
+    {
+      "path": "internal/metrics/adapter_pi.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "483e87793e87cf88ae8da2d6cdd80dd1ceea59d5"
+    },
+    {
+      "path": "internal/metrics/adapter_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "75f70c7f0ef016dc63caf75bb37ff804f231a392"
+    },
+    {
+      "path": "internal/metrics/aggregate.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "975f0829ff555012b731aeb243f960d69b91a839"
+    },
+    {
+      "path": "internal/metrics/aggregate_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "36f0b17da9e64e5aec7151d4aadb5eecdf9c099e"
+    },
+    {
+      "path": "internal/metrics/attribute.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "ae8b6bc0ab8d64a9f729b47b4164e142ccf33080"
+    },
+    {
+      "path": "internal/metrics/attribute_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "01a2d9cfe0e7927ac24a453467374a931bbb1ae6"
+    },
+    {
+      "path": "internal/metrics/catalog.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "ef047ee637dc2d1c6f4d176597dd16a7e850a9a1"
+    },
+    {
+      "path": "internal/metrics/compare.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "8634bc78114631a2d5b1fd0d0eee13c4167fc2cb"
+    },
+    {
+      "path": "internal/metrics/compare_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "79081556c5605e56e6d5ff85246a7fcfe57b4274"
+    },
+    {
+      "path": "internal/metrics/duration.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "62857c892e63a91981f2297ef280df9cc03f5a62"
+    },
+    {
+      "path": "internal/metrics/duration_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "0e00e6dd8da5ddf4590f28e37b5224b6b4b1db57"
+    },
+    {
+      "path": "internal/metrics/live.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "13c437aec7a6b20e9f3a282b6e6be62322ad5692"
+    },
+    {
+      "path": "internal/metrics/models.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "993dc62d9ca4d3f97479097611620c057d8491a2"
+    },
+    {
+      "path": "internal/metrics/report.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3179684fb4938f3ddf0779278d8fb3a2677fa083"
+    },
+    {
+      "path": "internal/metrics/report_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "4cc1e90cf83d8d9ed926ee3c3cc581b60e8d28c7"
+    },
+    {
+      "path": "internal/metrics/session.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "8dad5f411ba3324af849fa221d6c7848032155f1"
+    },
+    {
+      "path": "internal/metrics/session_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "23c0380279a518b2377b03ff224a49eac97feb5d"
+    },
+    {
+      "path": "internal/metrics/store.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c0f34af691622e5fb1ae98b66447d5158042014d"
+    },
+    {
+      "path": "internal/metrics/store_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "0d5a844937194856d85a6a692a98790740fa210b"
+    },
+    {
+      "path": "internal/metrics/testdata/antigravity_synthetic.jsonl",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "51de7fccc058f6d2ae36e941458f39120c4672ac"
+    },
+    {
+      "path": "internal/metrics/testdata/antigravity_synthetic_full.jsonl",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "4665efacc70561e78dea7698db7ccdef105ca312"
+    },
+    {
+      "path": "internal/metrics/testdata/claude_declared.jsonl",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a5f5244e3f9842848682f041808441fa5ed5d776"
+    },
+    {
+      "path": "internal/metrics/testdata/pi_partial_offline.jsonl",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a778c9ce06e23c6148e4ac71bc7d6784ae7eaa00"
+    },
+    {
+      "path": "internal/metrics/testdata/pi_poisoned_total.jsonl",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "474f267146d51bad49d2c5963c726800021d6d2d"
+    },
+    {
+      "path": "internal/proposal/build.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "af8430aae789a3e0aefdf8b4d05106d0b02ff49c"
+    },
+    {
+      "path": "internal/proposal/build_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "09aef841b9a31ae8451d3dc61ae81443bd52af58"
+    },
+    {
+      "path": "internal/proposal/group.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "559230d6b70cd14b3432bdd35c74e3e4775dfd2d"
+    },
+    {
+      "path": "internal/proposal/intervals.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "6086b9daed86a3344f947be5136bc9300ff95f17"
+    },
+    {
+      "path": "internal/proposal/intervals_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "4f6cfa618e1fe3f548d5ff02a59bb4fa0f5d4f7a"
+    },
+    {
+      "path": "internal/proposal/model.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "08d6c480d69ac885590b0d2b745313f63e05418c"
+    },
+    {
+      "path": "internal/proposal/narrative_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d055efb5b0567c81a5c70182df4f9ac5684ce46a"
+    },
+    {
+      "path": "internal/proposal/project.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "5914fe716cc7f34042a88e15158b5a4a10bbd2a2"
+    },
+    {
+      "path": "internal/proposal/project_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "b088ad6a72784ff60faa046f9cbc2a0bb965cd41"
+    },
+    {
+      "path": "internal/review/actions_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "f61aec192143d569e929d403fe64025ccd59f92a"
+    },
+    {
+      "path": "internal/review/link_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2c5021ee7831e9c13e70a27df751032f360e82e4"
+    },
+    {
+      "path": "internal/review/readiness.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e055caf8b5b400b4d873067e8d2343ac1354803f"
+    },
+    {
+      "path": "internal/review/readiness_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "72eac63516f4a81a5d9c160beb04acfe2cfe133d"
+    },
+    {
+      "path": "internal/review/review.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "70dddb0f41eb0abd1e7f3efeddde646eeecfc333"
+    },
+    {
+      "path": "internal/review/review_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3653af00f8b7ef646c60a31cdca7ce33b86c8b7c"
+    },
+    {
+      "path": "internal/rewrite/approval.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "8feaa2f2890ec667a7b1fe9fbc8b7a77699c0c73"
+    },
+    {
+      "path": "internal/rewrite/approval_test.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "07021f565d583ac5ef676281d3b3e1a7416c04e6"
+    },
+    {
+      "path": "internal/rewrite/calendar.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "6e952cd1ab93f6c055aeede877ac7cf4e7a04528"
+    },
+    {
+      "path": "internal/rewrite/config.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "0b89643ed243df263833dc492f52be1ea76b7c22"
+    },
+    {
+      "path": "internal/rewrite/f7_test.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "c6f57afecd3346266b6236eb5832a3ca8194c984"
+    },
+    {
+      "path": "internal/rewrite/github.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "37100e1b554be4ea2035a4ab371d9c1ddd45ce5b"
+    },
+    {
+      "path": "internal/rewrite/gradion.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "efd84971098e015fec654333486a8b6a28f1db0b"
+    },
+    {
+      "path": "internal/rewrite/migration.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "93e8f50ee3acc0a6184ab9305e297f4730cd5894"
+    },
+    {
+      "path": "internal/rewrite/migration_test.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "f01320e88fedb752f49653f59ebcdcf293d7d0d2"
+    },
+    {
+      "path": "internal/rewrite/model.go",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "bd695eda4d657273d7132e763e16d08bb80ae2ed"
+    },
+    {
+      "path": "internal/rewrite/plan.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "1040758e0ace1340ea5c78be12da5d58a9c7dcf4"
+    },
+    {
+      "path": "internal/rewrite/plan_test.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "2613f7ed9c2490da0bb943644f10e3c987ccfdcc"
+    },
+    {
+      "path": "internal/rewrite/repair2_test.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "30eb04461b7c2ff578335479796d40f4ea6a0b32"
+    },
+    {
+      "path": "internal/rewrite/repair_test.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "2302e81181fe48ebd50848ff10c35df6be10800b"
+    },
+    {
+      "path": "internal/rewrite/session.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "7e5b57c6e2c07fe33071578e6f583d379bb8ac24"
+    },
+    {
+      "path": "internal/rewrite/store.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "79eb0389cf2f1dd1614d28f33c3cfad2c239e4b1"
+    },
+    {
+      "path": "internal/rewrite/submission.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "f141dede16a78f32456544eaba0df855ecca79c4"
+    },
+    {
+      "path": "internal/rewrite/submission_test.go",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "c5489cd7ab42eba609bb5dc66370905bdb446854"
+    },
+    {
+      "path": "internal/run/calendar_source_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "eb58009be868085d3fec249153fdf6c575ebe89e"
+    },
+    {
+      "path": "internal/run/collect.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a6408834a19b7498f2dc4f6511645305eed11339"
+    },
+    {
+      "path": "internal/run/collect_remote_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "96d8d40fb62c9be0ede11194b1a1c09973ab7c14"
+    },
+    {
+      "path": "internal/run/collect_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "5ccd9fdf7236a63b5cd8b7476d379bc5b05b88f6"
+    },
+    {
+      "path": "internal/run/date_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "255e69103927dc5e89e32569562b08b6fdaaebce"
+    },
+    {
+      "path": "internal/run/git_timezone_window_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "6c0a3696cc78dfa6bb2a4ef418113fcac14940f9"
+    },
+    {
+      "path": "internal/run/guided_decisions_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "5bd95920015bbd6c0992a8eb6a6482876398c63a"
+    },
+    {
+      "path": "internal/run/journal_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "de60e440f733863ee5e343e238de18bc147e7341"
+    },
+    {
+      "path": "internal/run/preflight.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "480cbdc5608f2a733638ec4523c84905e405938d"
+    },
+    {
+      "path": "internal/run/preflight_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a0113ab55c4f783194f46d114de02ca910e6804e"
+    },
+    {
+      "path": "internal/run/proof_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "596cb4ed1fce4e238848b95988055a907b5a9e65"
+    },
+    {
+      "path": "internal/run/propose.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "5bb55b44b77a12fb784f94bab8b8bdf5fa049cf0"
+    },
+    {
+      "path": "internal/run/propose_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "fb6ce04aee001744e98870e5be4a17a35d3a6362"
+    },
+    {
+      "path": "internal/run/review.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d857c4a03ffc556a0a19a979353627f4ec39288f"
+    },
+    {
+      "path": "internal/run/review_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "bc04a0149198f2799a2b037fcb58770a4090896d"
+    },
+    {
+      "path": "internal/run/run.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e4c26a61d1f5412168ef16c22625fbd40b139a3d"
+    },
+    {
+      "path": "internal/run/run_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "41c3893c1683d343e0ea285df2a77c6c909d34a3"
+    },
+    {
+      "path": "internal/run/submit.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "0ec7b7504868a9a2b478e4fadf6e88cd54f64339"
+    },
+    {
+      "path": "internal/run/submit_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "7db262577cdb0626496e51e2c5d20dd35bf10d42"
+    },
+    {
+      "path": "internal/run/synthesize.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "cc363acd2a0c16d154cd80fbafb608c85a487c8f"
+    },
+    {
+      "path": "internal/run/synthesize_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "6ce796d5591ca4598ea5622c60cfc7d11de8b24e"
+    },
+    {
+      "path": "internal/selection/selection.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "9c75a8bdf8b28de1addd7b3729fdf7104d644df2"
+    },
+    {
+      "path": "internal/selection/selection_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "1af6d5b46134a28483869f7a6f00e8da8fd13caf"
+    },
+    {
+      "path": "internal/storage/daily_note.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e56aa30d26b51d3461b0f521be9df38d7e631f60"
+    },
+    {
+      "path": "internal/storage/daily_note_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "17e1901e90d1be805b93cafae8f96b3a3ede6ce5"
+    },
+    {
+      "path": "internal/submit/approval.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c6a0975df41ee8fcdeac1828bd1a1f700f1c1191"
+    },
+    {
+      "path": "internal/submit/approval_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e72cac33fda4422ff9c37586ef43101352d53025"
+    },
+    {
+      "path": "internal/submit/catalog.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c91f48fabed6e61c89278e1dc9b2f0cc5cdab515"
+    },
+    {
+      "path": "internal/submit/catalog_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "0df948b2997d473f86e1cb13659a591d030300eb"
+    },
+    {
+      "path": "internal/submit/execute.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "4fc172a54053964c1f0048e1cb43416339598b8c"
+    },
+    {
+      "path": "internal/submit/execute_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "60afd2802d268836deef3a68dfa967ea610415cc"
+    },
+    {
+      "path": "internal/submit/fakes_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "17141870096ee791aae667aee3e741c568b93b05"
+    },
+    {
+      "path": "internal/submit/integration_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2fc80da97b0cf09afda599596ae786e8bd9db2d0"
+    },
+    {
+      "path": "internal/submit/observer.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a3b2f6295340b95a9b5c84d84d140010d22f6889"
+    },
+    {
+      "path": "internal/submit/plan.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "79c011df1e0b80176e8650c6eca98dd8cac4c3d8"
+    },
+    {
+      "path": "internal/submit/plan_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "51f65ccee845720e4fd95e4081d1612cfcfaa010"
+    },
+    {
+      "path": "internal/submit/proof_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "0a284e26be3e43a8baca7464ac8d471f9db6d7de"
+    },
+    {
+      "path": "internal/submit/reconcile.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "14132d9723423e8da99aad5e383c4ba2f8c39e1a"
+    },
+    {
+      "path": "internal/submit/reconcile_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "a74ad0164011ecd3f2dc9bd5c329d7d01dac19c7"
+    },
+    {
+      "path": "internal/submit/resolve.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2d4b88b36777da8d93c1c52c5e99078a1a162984"
+    },
+    {
+      "path": "internal/submit/resolve_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2d133438e65440c271c6fa75d231070d2b78aa2d"
+    },
+    {
+      "path": "internal/workflow/editorial_persistence_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "334c6a80380c4879c8c78543beb71423a43c9550"
+    },
+    {
+      "path": "internal/workflow/evidence_persistence_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "392d23a3c387eb4618acae275e880a9691e7d3b1"
+    },
+    {
+      "path": "internal/workflow/file_store.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "14648543788ac62a42ea17a3f3382a8eaedb3142"
+    },
+    {
+      "path": "internal/workflow/file_store_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "98a4e1686209a4201db2704c018da2a34efa5303"
+    },
+    {
+      "path": "internal/workflow/lock.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "69e95103ecde5d7be1ef47ac073e27d402a14806"
+    },
+    {
+      "path": "internal/workflow/lock_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "7cc50dfb8c769ecb246e53f994738ef2f77cc969"
+    },
+    {
+      "path": "internal/workflow/merge.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "6d393eabe5f00a681c50342cb561c570a96f3ba9"
+    },
+    {
+      "path": "internal/workflow/merge_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "b69446a7eb70a40e1b29b353e4414f158fd310bf"
+    },
+    {
+      "path": "internal/workflow/metadata_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "93375383881de546a90d2db9d0dab2f127f049ed"
+    },
+    {
+      "path": "internal/workflow/models.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "50c3d383a942f67881208372efe4ad49e5781ea4"
+    },
+    {
+      "path": "internal/workflow/plan_approval_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "bf1f8b95143d4954a7c003fbdbf50e73a711e802"
+    },
+    {
+      "path": "internal/workflow/review_persistence_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "29ea3bf83ed151e868252123c10de13222055175"
+    },
+    {
+      "path": "internal/workflow/session_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "cafcae2f0020dcb4e31180b74e8c45461720c831"
+    },
+    {
+      "path": "internal/workflow/store.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "34e228c31548850073dc5c2ddab1fc5ff2045d6e"
+    },
+    {
+      "path": "pi/.gitignore",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "2ccbe4656c6078ded72491cf2ee9c5ec20219624"
+    },
+    {
+      "path": "pi/README.md",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "cec262b7d50ef4a3fef3cb014900d00354a144a1"
+    },
+    {
+      "path": "pi/launch.mjs",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "fce8c41b0c824a623fa44f13c3f64961c0eea78c"
+    },
+    {
+      "path": "pi/package-lock.json",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "8754f5f49a9049f0407c2b831ecb82e41e21f7cc"
+    },
+    {
+      "path": "pi/package.json",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "b358975bcf611482a4d4f1be0e0cc5b392aa403c"
+    },
+    {
+      "path": "pi/timesheet.ts",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "5560adb0d4cb9c0119ddaa440c3679b9395eec86"
+    },
+    {
+      "path": "pi/transport.ts",
+      "action": "bounded_edit",
+      "git_mode": "100644",
+      "git_blob": "840651b876a1a08a7e6d0edaff9ceaf97d9447ba"
+    },
+    {
+      "path": "pi/view.ts",
+      "action": "read_only",
+      "git_mode": "100644",
+      "git_blob": "afceae8e6bdfa20fde2efcc4275c91345218721e"
+    },
+    {
+      "path": "scripts/sync-vault.sh",
+      "action": "retire",
+      "git_mode": "100755",
+      "git_blob": "fd4896e92830b8ef00a3ac6112c210d5fb33ba0f"
+    },
+    {
+      "path": "scripts/vaultgen/main.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c49878d7ee55663d0b803be7e74e69a311a7022f"
+    },
+    {
+      "path": "scripts/vaultgen/main_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "264c6ec43c873d947902f2e74f6a553658bcf9dd"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/docs/adr/0001-example.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "2a62807affe3fa30f5a59820604e2c6c36bf6cd9"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/docs/adr/0002-other.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "8f12800f63fbbcbfda856d6cc072416b1413ac76"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/docs/adr/0003-legacy.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3b8485824812bc9c206af2010cc3a80333505eae"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/docs/lessons-learned.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "4d1bfa4d63723da5f1f357c175c3fe06f1e94454"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/docs/orchestration/status.yaml",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3451b1b4deb5225b788acf9ff801693f4645fdcb"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/empty/docs/adr/.gitkeep",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "8b1de2e4845681c3b0b74335bfd1df2f4f02a076"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/empty/docs/lessons-learned.md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3876f6ef52707956ca136c1a60c0c822213f7098"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/empty/docs/orchestration/status.yaml",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "e4a6297777cc0f6f4d6816f01b9ae652afa7a96b"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/want/assignment-1 (generated index).md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "93233ca9d8db9a0e215c7e223dabcaf00fcb449a"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/want/assignment-1 (generated).md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "9e2c441e2dd56cf282989266a9d514b6c93d265a"
+    },
+    {
+      "path": "scripts/vaultgen/testdata/want/assignment-1 lessons (generated).md",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "04738a48f00e64ef8cb011d67a2113f7486f9fe3"
+    },
+    {
+      "path": "tests/acceptance_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3da9133625303c504bf7fc690dd29f2505b8bf2d"
+    },
+    {
+      "path": "tests/e2e_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "d6b0a3d52b4d26c80c3bb10181e9a63dffcbe554"
+    },
+    {
+      "path": "tests/evidence_window_doc_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "c760fc5a3be4cf9092e3db36d64f2c01ba6b7806"
+    },
+    {
+      "path": "tests/skill_test.go",
+      "action": "retire",
+      "git_mode": "100644",
+      "git_blob": "3f221fbc2f7ca7eabdf6cb6b50c65277f283340e"
+    }
+  ]
+}

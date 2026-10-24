@@ -1,44 +1,45 @@
 {
-  "evidence": {
-    "id": "default",
-    "timezone": "America/Los_Angeles",
-    "sources": [
-      {
-        "id": "cal-work",
-        "type": "calendar",
-        "enabled": true,
-        "config": {
-          "url_ref": "keychain:calendar_feed_url",
-          "timezone": "America/Los_Angeles",
-          "user_email": "you@example.com"
-        }
-      },
-      {
-        "id": "git-local",
-        "type": "git",
-        "enabled": true,
-        "config": {
-          "mode": "local",
-          "local_repos": ".",
-          "author": "you@example.com"
-        }
-      }
-    ]
+  "timezone": "Europe/Amsterdam",
+  "state_path": "/Users/example/.timesheet/rewrite/state.json",
+  "projects": [
+    {
+      "id": "SYN-1",
+      "name": "Synthetic Project",
+      "default_classification": "DEV"
+    },
+    {
+      "id": "SYN-2",
+      "name": "Second Synthetic Project",
+      "default_classification": "OPS"
+    }
+  ],
+  "required_env": [
+    "GITHUB_TOKEN",
+    "GCAL_ICS_URL"
+  ],
+  "sources": {
+    "enabled": true,
+    "github": {
+      "enabled": true,
+      "user": "synthetic-user",
+      "repositories": [
+        "example-org/example-repo"
+      ],
+      "api_base": "https://api.github.com"
+    },
+    "calendar": {
+      "enabled": true,
+      "user": "synthetic@example.invalid"
+    }
   },
-  "storage_dir": "~/.timesheet/records",
-  "vault": "~/vault",
-  "daily_dir": "02 - Daily & Logs",
-  "gradion": {
-    "endpoint": "https://mcp.gradion.example/mcp",
-    "credential_ref": "keychain:gradion.workspace.ApiKey"
-  },
-  "editorial": {
+  "migration": {
     "enabled": false,
-    "adapter": "command",
-    "command": ["/path/to/editorial-agent"],
-    "credential_ref": "keychain:editorial"
+    "legacy_root": "/Users/example/.timesheet/legacy-records",
+    "legacy_timezone": "Europe/Amsterdam"
   },
-  "classifications": {
-    "Personal Pilot": "cls-personal-pilot"
+  "gradion": {
+    "enabled": false,
+    "endpoint": "https://mcp.example.invalid/mcp",
+    "token_env": "GRADION_MCP_TOKEN"
   }
 }

@@ -1,113 +1,79 @@
-# Keychain credentials
+# Credentials and environment (active policy)
 
-Owner decision (2026-10-09): store all three pipeline credentials in the macOS
-Keychain and have the pipeline read them from there.
+Owner policy (superseded the 2026-10-09 Keychain-only note): pipeline
+credentials live in a local `.env.local` file and are read **only** by the
+compiled `bin/timesheet` binary. The model, the Pi adapter and the launcher
+never read the file; they receive its path.
 
-## Conflict resolution (2026-10-09)
+## Active rules
 
-An earlier revision of this note prohibited plaintext credentials and then, in
-the same document, retained an `env → Keychain → .env` precedence that lets a
-plaintext `.env` value win. That was self-contradictory. Resolution:
+- **One owner-authored file.** `.env.local` at the repository root is
+  git-ignored and owner-authored. Nothing in this repository creates, rewrites
+  or logs it.
+- **Binary-owned.** `timesheet serve --env-file <path>` is the only reader.
+  The path is a fixed launcher input, never a protocol request field and never
+  a model argument.
+- **Precedence.** An inherited process-environment value overrides the file
+  value for the same name, including an explicitly empty value. A file-only
+  value is reported present. Validation is lazy: `check_environment` reports
+  missing **names**; local review and `save` never require a credential.
+- **Config holds names only.** A config file may reserve credential variable
+  **names** (`required_env`, and `gradion.token_env` for the remote endpoint).
+  It never contains a secret value.
+- **Never echoed.** No credential value, dotenv line, authenticated URL or
+  config dump appears in diagnostics, errors, receipts, state or reports. Only
+  variable names are ever reported.
+- **Linux and macOS use the same path.** macOS-first is a platform-
+  verification requirement, not permission to revive the retired Keychain
+  resolver. The current build links no Keychain code and has no fallback to
+  one.
 
-- **Keychain-only secrets.** The three secrets live in macOS Keychain and
-  nowhere else.
-- **Configuration holds references only.** A config file (`.env` or otherwise)
-  may carry endpoint settings and non-secret *references* — Keychain service and
-  account names, base URLs, tracked repos — but never a secret value.
-- Existing environment / `.env` secret inputs are retained **only** as
-  deprecated, transitional overrides for tests and CI. They are not the
-  recommended path and should be removed in favor of the Keychain items.
+## Names used by the current build
 
-Recommended steady-state order is therefore `explicit flag → Keychain`; the
-environment step below exists only for backward compatibility.
+| Variable | Used by | Notes |
+| --- | --- | --- |
+| `GITHUB_TOKEN` | `sources.github` collection | Bearer credential for the configured `api_base`. |
+| `GCAL_ICS_URL` | `sources.calendar` collection | Private feed URL; never stored in config or state. |
+| `GRADION_MCP_TOKEN` | `gradion` read/submit boundary | Variable name configurable via `gradion.token_env`; default shown. |
 
-## Items (all three created by the owner)
+`required_env` in the config document is a name-only reservation. Declaring a
+name never makes a local operation fail and never reaches the network by
+itself.
 
-| Credential | Keychain service | account | Status |
-| --- | --- | --- | --- |
-| Gradion Workspace bearer | `gradion.workspace.ApiKey` | `$USER` | created |
-| GitHub access token | `gh_auth_token` | `$USER` | created |
-| Google Calendar secret iCal URL | `calendar_feed_url` | `$USER` | created |
+## File syntax
 
-`gh_auth_token` is the service read by the GitHub preflight resolver
-(`internal/git/preflight.go` via `keychain.ServiceGitHubToken`). The Gradion item
-was created as `gradion.workspace.ApiKey` before this note, so that name is
-fixed. The `.agents/skills/timesheet/SKILL.md` item name `timesheet_api_token`
-is **superseded and stale**; use `gradion.workspace.ApiKey`.
+Read by the compiled binary as data:
 
-## Resolver — implemented (`internal/keychain`)
+- blank lines and `#` comment lines are ignored;
+- `KEY=VALUE`, keys matching `[A-Za-z_][A-Za-z0-9_]*`;
+- unquoted values are trimmed and end at a whitespace-prefixed `#`;
+- single-quoted values are literal;
+- double-quoted values support `\\`, `\"`, `\n`, `\t`.
 
-One shared resolver reads secrets from the Keychain:
+Not supported: `export` prefixes, command substitution, variable expansion,
+sourcing, or other dotenv extensions. Invalid syntax reports only a line number
+and a reason, never the raw line or value.
 
-- It execs `security find-generic-password -s <service> -a "$USER" -w`, reads
-  stdout into process memory, discards stderr, and bounds the subprocess
-  (3s timeout + 16 KiB output cap + process-group kill).
-- It returns a typed, redacted `*keychain.OperatingError` on failure. Exit 44
-  (item absent) and an unavailable `security` binary both map to
-  `OutcomeNotFound`; other failures are `OutcomeTerminal` with stable codes
-  (`KEYCHAIN_ERR_*`).
-- The secret is never placed on argv, never written to stdout/logs, and never
-  included in an error string. `keychain.Redact`, and the API client's
-  response-body sanitizer, are available as defense in depth.
-- **Redaction is literal only.** These helpers replace exact occurrences of the
-  known token; encoded, escaped, split, or otherwise transformed forms are not
-  detected. Neither is a universal secret filter, and neither output is
-  guaranteed secret-free.
-- Service names are non-secret references: `keychain.ServiceGitHubToken`,
-  `keychain.ServiceCalendarFeed`, `keychain.ServiceGradionMCP`.
-
-## Resolution order (as implemented)
-
-| Call site | Order (highest priority first) |
-| --- | --- |
-| GitHub preflight (`internal/git/preflight.go`) | `-token` → `GITHUB_TOKEN` → `GH_TOKEN` → Keychain `gh_auth_token` → `gh auth token` |
-| Calendar (`cmd/fetch-calendar`) | `-file` → `-url` → `GCAL_ICS_URL` → Keychain `calendar_feed_url` |
-| Gradion sync (`cmd/sync-timesheet`) | `-token` → `TIMESHEET_API_TOKEN` → Keychain `gradion.workspace.ApiKey` |
-
-The environment step (including `.env`-loaded values) is the deprecated,
-transitional override described above.
-
-**Keychain failure handling.** A collector falls through to the next, weaker
-source **only** when the Keychain result is a genuine NotFound (absent item, or
-the `security` binary unavailable). Any other failure — timeout, access denial,
-malformed/oversized output, empty secret — stops resolution and is surfaced as
-a typed, secret-free `KEYCHAIN_ERR_*` error. A transient Keychain problem must
-never silently downgrade a collector to a legacy environment/`.env` credential.
-
-## Create (owner runs; `security` prompts, so the secret is never an argv value)
-
-```bash
-security add-generic-password -s "<service>" -a "$USER" -l "<service>" -w
-```
-
-## Look up
-
-```bash
-security find-generic-password -s "<service>" -a "$USER" -w   # -w prints only the secret
-security find-generic-password -s "<service>" -a "$USER" >/dev/null 2>&1; echo $?   # 0 present, 44 absent
-```
+`cmd/timesheet/timesheet.example.json` and `.env.example` list synthetic
+placeholder names and values only.
 
 ## Safety
 
-- Never echo, log, or write a secret. The code never passes a secret as a
-  subprocess argument, and the resolver's `security` invocation carries only the
-  non-secret service/account.
-- CLI flags (`-token`, `-url`) accept a secret directly and therefore expose it
-  in the process argument list (`ps`). They exist for tests/CI only; the
-  recommended path is the Keychain.
-- Never modify or replace a Keychain item without explicit approval.
-- Verified MCP capability matrix and sanitized reproduction:
-  `docs/gradion-mcp-verification.md`.
+- Never echo, log or commit a credential, and never pass one on a command line
+  (process arguments are visible to `ps`).
+- Never read, copy or modify `.env.local`, an owner profile, a real config or
+  a real record outside an explicitly authorized task.
+- The remote boundary performs no write without an exact-plan approval and a
+  verified read-back; a credential never authorizes a write by itself.
 
-## Verification status
+## Historical record (retired)
 
-Read-only verification of all three sources (calendar fetch, GitHub access, MCP
-listing) is recorded in the pull request for this change. No Keychain item was
-created, modified, or replaced by the implementing agents, and no remote write
-was performed. Gradion remote submission remains deferred behind the temporary
-`cmd/sync-timesheet -approve` mutation gate.
-
-`-approve` is **not** revision-bound approval: it is a per-run gate, not
-approval tied to an exact preview or to a specific local record revision, and no
-durable mapping/revision store exists yet (ADR-005 and the redesign remain
-`not-started` for that part). Production submission remains **not ready**.
+Owner decision of 2026-10-09 stored the three credentials in the macOS
+Keychain and the then-legacy pipeline read them with
+`internal/keychain` (`security find-generic-password`, service names
+`gradion.workspace.ApiKey`, `gh_auth_token`, `calendar_feed_url`). That
+resolver, its package and the legacy CLI call sites were retired in R6 and are
+**not** part of the current product. Do not reintroduce Keychain-only
+resolution or add a Keychain fallback; the active policy above is the
+supported path. The owner remains the only party who creates or changes
+credential values.
