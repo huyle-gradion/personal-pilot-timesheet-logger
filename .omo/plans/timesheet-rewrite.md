@@ -2,7 +2,7 @@
 
 Governing specification: `docs/timesheet-rewrite-spec.md`, product design accepted on 2026-10-22.
 
-Execution mode: owner-mediated. R1/R2 retain qualified acceptance; R3 dev.9 is accepted for reviewed Linux/hermetic migration/reconciliation/planning behavior after its second repair converged. F1-F9 and current C1 hygiene are closed within that evidence scope. The owner authorized GitHub issue/PR tracking and release of R4 after publishing the accepted baseline. R4 implementation is owner-mediated, not direct child dispatch; no application source repair by the directing session. Publication of accepted R1-R3 and tracking docs is authorized; merge, release, credential-read, live-read and production-write authority remain separate.
+Execution mode: owner-mediated. R1/R2, R3 dev.9 and R4 dev.12 have qualified Linux/hermetic acceptance. R3's second repair and R4's second repair converged; their named findings are closed within the pinned evidence scopes. No application source repair or child dispatch by the directing session. R1-R3 publication is PR #138; accepted R4 remains uncommitted and needs its own publication gate/PR. R5 implementation is not released. Merge, release, credential-read, live-read and production-write authority remain separate.
 
 ## Baseline
 
@@ -36,9 +36,9 @@ Prefer standard-library JSON/filesystem/process support. No generic plugin frame
 
 One source writer at a time. Independent work may be prepared concurrently only with explicit direct-dispatch authority and isolated ownership. Each slice's packet must name the exact integration files, frozen snapshot, and next review gate before execution.
 
-Accepted records: `docs/orchestration/timesheet-rewrite-r1-acceptance.md`, `docs/orchestration/timesheet-rewrite-r2-acceptance.md`, `docs/orchestration/timesheet-rewrite-r3-acceptance.md`. Next authorized slice: `docs/orchestration/timesheet-rewrite-r4-handoff.md`, exact native approval, durable write intent, verified submission and explicit recovery against hermetic providers. Owner-mediated execution starts from the published accepted baseline, not the historical kickoff HEAD. No child dispatch, worker commits/publication or live submission. Do not rerun historical R3 repair packets.
+Accepted records: `docs/orchestration/timesheet-rewrite-r1-acceptance.md`, `docs/orchestration/timesheet-rewrite-r2-acceptance.md`, `docs/orchestration/timesheet-rewrite-r3-acceptance.md`, `docs/orchestration/timesheet-rewrite-r4-acceptance.md`. R4 dev.12 passed independent second re-review: F1-F8 and evidence V1 closed, no further repair loop or adjudication needed. Preserve published baseline `496a6ab`, accepted uncommitted R4 source and frozen evidence. Next gates: separate R4 publication under publication authority, then a bounded R5 packet with pinned upstream API verification and owner release. No automatic R5 work, child dispatch, worker commits/publication, merge or live submission. Historical repair packets must not be rerun.
 
-GitHub tracking: [rewrite epic #131](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/131); R1 #132, R2 #133 and R3 #134 source-accepted pending implementation PR merge; R4 #135 owner-released; R5 #136 and R6 #137 dependent and not authorized. Close implementation issues through merged PRs, not worker completion reports. The initial publication combines the already-integrated accepted R1-R3 snapshot; do not fabricate historical per-slice commits.
+GitHub tracking: [rewrite epic #131](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/131); R1 #132, R2 #133 and R3 #134 source-accepted pending PR #138 merge; R4 #135 source-accepted dev.12 pending separate PR/merge; R5 #136 and R6 #137 dependent and not authorized. Close implementation issues through merged PRs, not worker completion reports. Do not fabricate historical per-slice commits or append R4 changes to PR #138.
 
 ## Release milestones
 

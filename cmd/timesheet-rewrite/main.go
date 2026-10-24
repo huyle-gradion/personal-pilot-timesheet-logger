@@ -19,14 +19,17 @@ Usage:
   timesheet-rewrite version
   timesheet-rewrite serve --config <path> --env-file <path>
 
-R3 adds explicit, repeat-safe migration of confirmed legacy workflow records and
-a read-only Gradion boundary for reconciliation and exact submission-plan
-previews. Migration is disabled unless configured, preserves unresolved writes as
-blockers and historical approvals as inert data, and never writes into the legacy
-root. Remote access verifies read capabilities only; no approval, submission or
-remote write exists in this build. The local manual workflow and R2 evidence
-collection are unchanged. The serve protocol in docs/agents/rewrite-interface.md
-is the authoritative interface.
+R4 adds the native approval ledger and one verified submission path. The
+'approve_plan' request binds a unique approval to the exact current rendered plan
+after fresh precondition proof; it never dispatches. The 'submit_plan' request
+revalidates everything fresh, commits a durable pre-write intent per operation
+before one never-retried dispatch, and confirms a write only after an identified
+acknowledgment AND a matching complete read-back. Unverifiable writes stay
+durable unresolved references resolved only by explicit 'resolve_write'
+decisions; they never auto-retry, never replay across restarts, and never block
+silently. Migrated legacy approvals remain inert audit data. The R1-R3 local
+workflow, migration and read boundary are unchanged. The serve protocol in
+docs/agents/rewrite-interface.md is the authoritative interface.
 
 Fixed configuration and environment-file paths are launcher inputs. They are
 never accepted as protocol request fields.

@@ -4,6 +4,128 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
 
 ## Unreleased
 
+### Second R4 repair round (`0.1.0-dev.12`)
+
+Boundary-scoped repairs to the first R4 repair (R4-F2 continuation, R4-F7,
+R4-F8) without changing the closed R4F1/F3/F4/F5/F6 behaviors, schemas or
+R1-R3 surfaces:
+
+- A dirty session's DURABLE saved allocation footprint now participates in the
+  plan dirty guard (R4F2 continuation). Confirming a final interval removal —
+  including removing a prior-day spill whose allocation renders on the planned
+  date — without saving emptied both session lists, so the guard previously saw
+  nothing while the preview still rendered the saved work. Approval and
+  consumption both re-render through the guard, so the stale saved view can no
+  longer be approved or submitted; the durable state and the existing approval
+  stay intact, and unrelated dirty dates stay usable.
+- Zero-operation consumption reports its persistence outcome truthfully (R4F7).
+  A commit failure BEFORE activation previously fell through to `all_confirmed`
+  with an execution id and no durable execution. It now returns the new
+  `persistence_failed` status with a `write_failed` blocker, no execution id, an
+  honest `next_action`, and zero remote calls; the approval remains `active`
+  because nothing was consumed, and a later explicit submit consumes it exactly
+  once. Post-rename `durability_uncertain` remains sticky and unchanged.
+- A zero-operation approval's legitimate EMPTY classification-choice proof is
+  now durable (R4F8): the approval summary encodes `choices` explicitly as `{}`
+  instead of omitting an empty map, so the established empty proof survives
+  restart as a non-nil empty map. Pre-proof dev.10/dev.11 rows (absent/null)
+  still reload as nil and cannot authorize anything; they are never
+  reconstructed or backfilled at load. Non-empty dev.11 proofs remain valid and
+  are still revalidated against the current catalog.
+- New receipt status: `persistence_failed`. `version` reports `0.1.0-dev.12`;
+  protocol schema remains `1` and state schema remains `3`. No state field is
+  added or removed: the existing `choices` field is simply written even when
+  empty (legacy rows that lack it may materialize it as `null` on a later
+  rewrite, which still reloads as missing proof and stays unauthorized). Existing
+  state loads unchanged; no migration is created or implied.
+
+### First R4 repair round (`0.1.0-dev.11`)
+
+Boundary-scoped repairs to the R4 slice (review findings R4-F1 through R4-F6)
+without changing R1-R3 behavior:
+
+- Selected classification choices carry relevant semantic identity (R4F1):
+  every planned operation binds the selected option's id/code/name/activity
+  type, the plan identity and approval summary record that binding, and fresh
+  authoritative results are compared per-option at BOTH approval and
+  consumption. A relevant change (`classification_choice_changed`) or a choice
+  that cannot be established (`classification_choice_unverifiable`) forces
+  explicit reselection and a new preview/approval; unrelated catalog rows,
+  queries and timestamps never invalidate an unchanged choice. Dev.10
+  approvals predate the bound-choice field and fail closed for consumption
+  instead of being trusted.
+- Plan previews guard ALL open sessions by saved AND staged allocation
+  footprint (R4F2): prior-day spill drafts, changed cross-midnight
+  allocations, moved/removed contributions and unsaved confirmations touching
+  the plan's affected dates block preview, approval and consumption with zero
+  remote calls; unrelated dirty dates never block, and cancellation restores
+  eligibility.
+- Batch drift checks compare FULL entry content (R4F3): a re-read date is
+  compared against the consumption baseline advanced only by this run's
+  verified self-effects, so an outside change to an existing entry — including
+  a previously confirmed self entry — stops later operations instead of being
+  absorbed; the consumption baseline itself is never replaced.
+- Edit verification requires the acknowledged identity to equal the approved
+  bound one (R4F4): a different acknowledged id (`edit_identity_mismatch`)
+  stays unresolved with both ids as distinct audit, never confirmed, never
+  bound, never updating `LastObserved`. Write acknowledgments now parse only
+  the documented `entry` resource kind.
+- Unresolved-write readiness is scoped by affected allocation dates (R4F5):
+  pending migrated and native writes gate a plan when their recorded date OR
+  their locally resolved allocation dates touch the plan's dates, so a
+  spill-day outcome whose recorded date is its origin still blocks an empty
+  spill-day plan; `submission_status` surfaces the same relevance.
+- Migrated adoption resolves the actual contribution (R4F6): the row's local
+  identity must be confirmed durable work that timezone-resolves onto the
+  recorded write date with the intended representable span, backed by the
+  claimed migration crosswalk when one is named; wrong dates, missing local
+  contributions, unknown crosswalks and cross-bindings all fail closed while
+  the original outcome and its uncertainty stay preserved beside the explicit
+  resolution.
+- New stable codes: `classification_choice_changed`,
+  `classification_choice_unverifiable`; new native intent error string
+  `edit_identity_mismatch`.
+
+### Native approval and verified submission (`0.1.0-dev.10`)
+
+R4 slice: exact-plan approval, durable pre-write intent, and one verified
+submission path. No R1/R2 behavior changes.
+
+- Added the native approval ledger (state schema `3`, new `approvals`,
+  `intents` and `executions` sections): `approve_plan` binds a unique
+  occurrence approval (`apr-…`, never a plan alias) to the exact current
+  rendered plan content after fresh precondition proof (plan identity,
+  complete readable coverage, and the current authoritative catalog proving
+  every selected classification). It never dispatches; `revoke_approval`
+  revokes explicitly, and both records are immutable audit.
+- Deriving plan status from the ledger: persisted plans no longer carry
+  `approved`/`approval_available` flags; the preview result derives both from
+  real approval state, while every plan operation now hashes its exact body
+  including the deterministic edit audit reason.
+- Added `submit_plan`: full fresh revalidation before any call, then one
+  durable `in_flight` intent per operation committed BEFORE a single,
+  never-retried dispatch, followed by a mandatory complete read-back whose
+  content must match the exact intended body before a write is confirmed,
+  bounded per-run re-checks for outside drift, and honest receipt statuses
+  (`all_confirmed`, `partial_stopped`, `blocked_before_dispatch`,
+  `durability_uncertain`). Zero-op plans consume their approval without
+  dispatching anything.
+- Added `submission_status` and `resolve_write`: every dispatched-but-unverifiable
+  write is a durable unresolved reference (`wr-…`), visibly blocking further
+  writing; recovery is an explicit human decision against the current complete
+  observation (`adopt` an observed ID, or `not_applied` refused when a matching
+  effect is visible), recorded as additive audit that never erases the original
+  attempt or dispatches anything. Migrated legacy outcome rows are addressable
+  through stable `mw-…` references by the same gate; rows without usable intent
+  information stay visible blockers rather than resolved facts.
+- Schema-2 files are converted in memory to schema `3` after their own
+  validation: obsolete always-false plan authorization flags are stripped and a
+  file carrying approval sections or any non-false/non-boolean claim is
+  rejected (`state_invalid`). Approval authority is never read from migrated
+  data.
+- New stable codes: `stale_plan`, `plan_not_ready`, `unknown_approval`,
+  `stale_approval`, `classification_unverified`, `unknown_write`.
+
 ### R3 continuation (`0.1.0-dev.9`)
 
 Narrow continuation of the first R3 repair packet; no R1/R2 behavior changes:

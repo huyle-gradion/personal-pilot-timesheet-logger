@@ -21,15 +21,19 @@ import (
 // Application identity. AppVersion is an unreleased development build, not a
 // release tag. ProtocolSchema is negotiated independently and fails closed.
 //
-// stateSchema is the schema this build writes. legacyStateSchema is the one
-// schema it still reads: an R1/R2 file loads, is validated in its own shape, and
-// is upgraded in memory. The on-disk file is only rewritten as schema 2 by a
-// successful durable save/transaction, never by startup.
+// stateSchema is the schema this build writes. It still reads the accepted
+// rewrite schemas 1 and 2: each legacy file loads, is validated in its own
+// shape, is upgraded in memory through an explicit conversion, and the on-disk
+// file is only rewritten as schema 3 by a successful durable transaction, never
+// by startup. Older loaders fail closed on schema 3 with state_invalid, which
+// is intentional: they have no semantics for native approvals, write intents or
+// execution history.
 const (
-	AppVersion        = "0.1.0-dev.9"
+	AppVersion        = "0.1.0-dev.12"
 	ProtocolSchema    = 1
-	stateSchema       = 2
+	stateSchema       = 3
 	legacyStateSchema = 1
+	schemaTwoState    = 2
 
 	maxDescriptionRunes = 500
 	maxEvidenceRefs     = 20
@@ -84,6 +88,18 @@ const (
 	CodeStaleCatalog      = "stale_catalog"
 	CodeNoConfirmedWork   = "no_confirmed_work"
 	CodeDirtySession      = "dirty_session"
+
+	// R4 native approval and verified-submission codes. They carry names and
+	// stable codes only, never credential values, authenticated URLs or
+	// provider bodies.
+	CodeStalePlan                = "stale_plan"
+	CodePlanNotReady             = "plan_not_ready"
+	CodeUnknownApproval          = "unknown_approval"
+	CodeStaleApproval            = "stale_approval"
+	CodeClassificationUnverified = "classification_unverified"
+	CodeClassificationChanged    = "classification_choice_changed"
+	CodeSelectionUnverifiable    = "classification_choice_unverifiable"
+	CodeUnknownWrite             = "unknown_write"
 
 	CodeInternal = "internal"
 )
@@ -226,19 +242,29 @@ type Project struct {
 //
 // Schema 2 (R3) adds Migration (explicit legacy import receipts and audit),
 // Remote (stable bindings, read-only observations, resolutions and preserved
-// write outcomes) and Plans (immutable previews for R4). A schema-1 file is
-// validated in its own shape, upgraded in memory, and only written as schema 2
-// by a successful durable transaction. A schema-2 file fails closed
-// (state_invalid) in a schema-1-only loader, which is intentional: it has no
-// semantics for migration receipts, remote identity decisions or plans.
+// write outcomes) and Plans (immutable previews). A schema-1 or schema-2 file
+// is validated in its own shape, upgraded in memory through an explicit
+// conversion, and only written as schema 3 by a successful durable
+// transaction.
+//
+// Schema 3 (R4) adds Approvals (the native exact-plan approval ledger), Intents
+// (durable pre-write intents with unique write references and attempt state)
+// and Executions (native submission history). Plan records no longer carry
+// persisted R3 authorization flags: the approval ledger is the only authority.
+// A schema-3 file fails closed (state_invalid) in a schema-1/2-only loader,
+// which is intentional: it has no semantics for native approvals, write
+// intents or execution history.
 type State struct {
-	Schema    int                     `json:"schema"`
-	SavedAt   string                  `json:"saved_at,omitempty"`
-	Days      map[string]*Day         `json:"days"`
-	Evidence  map[string]*DayEvidence `json:"evidence,omitempty"`
-	Migration *MigrationState         `json:"migration,omitempty"`
-	Remote    *RemoteState            `json:"remote,omitempty"`
-	Plans     map[string]*PlanRecord  `json:"plans,omitempty"`
+	Schema     int                     `json:"schema"`
+	SavedAt    string                  `json:"saved_at,omitempty"`
+	Days       map[string]*Day         `json:"days"`
+	Evidence   map[string]*DayEvidence `json:"evidence,omitempty"`
+	Migration  *MigrationState         `json:"migration,omitempty"`
+	Remote     *RemoteState            `json:"remote,omitempty"`
+	Plans      map[string]*PlanRecord  `json:"plans,omitempty"`
+	Approvals  []ApprovalRecord        `json:"approvals,omitempty"`
+	Intents    []WriteIntent           `json:"intents,omitempty"`
+	Executions []ExecutionRecord       `json:"executions,omitempty"`
 }
 
 // Day is the durable record for one calendrical day (the day an interval
@@ -1007,6 +1033,16 @@ const (
 	maxResolutions        = 500
 )
 
+// R4 native approval/submission bounds. The approval ledger grows only with
+// explicit operator approvals and is never pruned (a consumed or revoked
+// approval is immutable audit); intents and executions are pruned only when
+// entirely resolved or terminal, never while they still block replay.
+const (
+	maxStoredApprovals  = 2000
+	maxStoredIntents    = 1000
+	maxStoredExecutions = 1000
+)
+
 // Migration audit capacity bounds. A candidate that exceeds one is rejected with
 // an explicit migration_capacity conflict before activation; audit rows are never
 // silently truncated. Limits are per category and per activated receipt.
@@ -1343,9 +1379,85 @@ type WriteOutcome struct {
 	OriginErrorCode  string `json:"origin_error_code,omitempty"`
 	ClassificationID string `json:"classification_id,omitempty"`
 	Resolved         bool   `json:"resolved"`
-	RecordedAt       string `json:"recorded_at,omitempty"`
-	IntentAt         string `json:"intent_at,omitempty"`
-	MigrationID      string `json:"migration_id,omitempty"`
+	// R4 explicit human resolution of an unresolved migrated outcome. The
+	// original uncertainty/reason above is never erased; these fields only
+	// record the addressed decision as audit (adopt | not_applied).
+	Resolution              string `json:"resolution,omitempty"`
+	ResolvedAt              string `json:"resolved_at,omitempty"`
+	ResolutionObservationID string `json:"resolution_observation_id,omitempty"`
+	RecordedAt              string `json:"recorded_at,omitempty"`
+	IntentAt                string `json:"intent_at,omitempty"`
+	MigrationID             string `json:"migration_id,omitempty"`
+}
+
+// WriteIntent is one durable native write attempt. A row is committed with
+// status in_flight BEFORE its single dispatch; only an explicitly verified
+// outcome (or an explicit human resolution) ever moves it past in_flight, and
+// an in_flight/uncertain/unidentified row always blocks replay until it is
+// addressed. Operation is the exact approved operation, including the edit
+// audit reason; the request never supplies or alters it.
+type WriteIntent struct {
+	WriteRef    string `json:"write_ref"`
+	ExecutionID string `json:"execution_id"`
+	ApprovalID  string `json:"approval_id"`
+	PlanID      string `json:"plan_id"`
+	Date        string `json:"date"`
+	OpIndex     int    `json:"op_index"`
+	LocalID     string `json:"local_id"`
+	Action      string `json:"action"`
+	RemoteID    string `json:"remote_id,omitempty"`
+	// AcknowledgedID is an identity the provider acknowledged, when one arrived.
+	// It is never derived, guessed or copied from planned content, and it is
+	// never presented as a verified outcome: identity alone cannot confirm.
+	AcknowledgedID string        `json:"acknowledged_id,omitempty"`
+	OpDigest       string        `json:"op_digest"`
+	Operation      PlanOperation `json:"operation"`
+	// Preconditions is the plan's remote fingerprint (the expected remote
+	// content/coverage preconditions the approval was bound to).
+	Preconditions string       `json:"preconditions"`
+	Status        string       `json:"status"`
+	ErrorCode     string       `json:"error_code,omitempty"`
+	Observed      *RemoteEntry `json:"observed,omitempty"`
+	AttemptedAt   string       `json:"attempted_at,omitempty"`
+	RecordedAt    string       `json:"recorded_at,omitempty"`
+	// Explicit human resolution (resolve_write). Original attempt audit is
+	// never erased by it.
+	Resolved                bool   `json:"resolved,omitempty"`
+	Resolution              string `json:"resolution,omitempty"`
+	ResolvedAt              string `json:"resolved_at,omitempty"`
+	ResolutionObservationID string `json:"resolution_observation_id,omitempty"`
+}
+
+// unresolved reports whether a native attempt still needs explicit
+// reconciliation. It is the single native predicate: the restart gate, plan
+// readiness, submission_status and resolve_write all defer to it.
+func (i *WriteIntent) unresolved() bool {
+	if i.Resolved {
+		return false
+	}
+	switch i.Status {
+	case IntentInFlight, IntentUncertain, IntentUnidentified:
+		return true
+	}
+	return false
+}
+
+// ExecutionRecord is one native submission audit row. State is lifecycle only;
+// it never authorizes anything and never becomes approval authority.
+type ExecutionRecord struct {
+	ExecutionID string `json:"execution_id"`
+	ApprovalID  string `json:"approval_id"`
+	PlanID      string `json:"plan_id"`
+	Date        string `json:"date"`
+	State       string `json:"state"`
+	Attempts    int    `json:"attempts"`
+	Confirmed   int    `json:"confirmed"`
+	Unresolved  int    `json:"unresolved"`
+	Unattempted int    `json:"unattempted"`
+	Outcome     string `json:"outcome,omitempty"`
+	StartedAt   string `json:"started_at"`
+	FinishedAt  string `json:"finished_at,omitempty"`
+	NextAction  string `json:"next_action,omitempty"`
 }
 
 // CatalogRecord is a bounded authoritative classification fetch. A catalog that
@@ -1366,6 +1478,38 @@ type ClassificationOption struct {
 	Name         string `json:"name,omitempty"`
 	Code         string `json:"code,omitempty"`
 	ActivityType string `json:"activity_type,omitempty"`
+}
+
+// ClassificationChoice is the bound relevant semantic identity of one
+// explicitly selected classification option: the exact id/code/name/activity
+// tuple the operator chose, which every later fresh authoritative proof must
+// still match before anything references it (R4F1). Empty reference fields are
+// never silently skipped: an option whose selected semantics cannot be
+// established is fail-closed, never substituted by name, code or default.
+type ClassificationChoice struct {
+	ID           string `json:"id"`
+	Name         string `json:"name,omitempty"`
+	Code         string `json:"code,omitempty"`
+	ActivityType string `json:"activity_type,omitempty"`
+}
+
+// choiceFromOption trims a catalog option into its bound semantic identity.
+func choiceFromOption(o ClassificationOption) ClassificationChoice {
+	return ClassificationChoice{
+		ID:           strings.TrimSpace(o.ID),
+		Name:         strings.TrimSpace(o.Name),
+		Code:         strings.TrimSpace(o.Code),
+		ActivityType: strings.TrimSpace(o.ActivityType),
+	}
+}
+
+// choiceEqual compares the RELEVANT content of two references to one selected
+// option. A relevant change (name, code or activity type) is meaningful and
+// must force reselection; other catalog content, queries and audit timestamps
+// never enter the comparison, so unrelated rows do not invalidate a choice.
+func choiceEqual(a, b ClassificationChoice) bool {
+	return a.ID == b.ID && a.Name == b.Name &&
+		a.Code == b.Code && a.ActivityType == b.ActivityType
 }
 
 // Blocker is one explicit reason a plan or reconciliation is not ready. It is
@@ -1398,11 +1542,23 @@ type PlanOperation struct {
 	OriginRevisions    map[string]int `json:"origin_revisions,omitempty"`
 	ExpectedRemote     *RemoteEntry   `json:"expected_remote,omitempty"`
 	PreserveRemoteOnly []string       `json:"preserve_remote_only,omitempty"`
+	// Reason is a previewed edit's required audit reason. It is rendered by the
+	// binary, never supplied by a request, and is part of the operation's exact
+	// approved body and canonical content. A create has no reason.
+	Reason string `json:"reason,omitempty"`
+	// SelectedChoice is the explicitly selected classification's relevant
+	// semantic identity (id/code/name/activity type) resolved from the stored
+	// selection reference (R4F1). It is canonical plan content and part of the
+	// approval's precondition proof.
+	SelectedChoice *ClassificationChoice `json:"selected_choice,omitempty"`
 }
 
-// PlanRecord is the immutable persisted preview. State distinguishes ready from
-// approved; R3 can only ever persist ready or blocked, and Approved is always
-// false.
+// PlanRecord is the immutable persisted preview. State distinguishes ready
+// from blocked; the record deliberately carries NO authorization flag. Approval
+// authority lives only in the native approval ledger: whether a plan has been
+// approved is a derived ledger query, never a second durable truth. This
+// removes the obsolete always-false persisted R3 flags through the schema-2
+// conversion, so an old plan record in memory never becomes "approved".
 type PlanRecord struct {
 	PlanID             string            `json:"plan_id"`
 	Date               string            `json:"date"`
@@ -1416,8 +1572,6 @@ type PlanRecord struct {
 	Blockers           []Blocker         `json:"blockers,omitempty"`
 	SurfacedRemotes    []RemoteEntry     `json:"surfaced_remotes,omitempty"`
 	CreatedAt          string            `json:"created_at"`
-	Approved           bool              `json:"approved"`
-	ApprovalAvailable  bool              `json:"approval_available"`
 }
 
 // cloneState deep-copies a durable snapshot. Callers build a candidate from it
@@ -1445,6 +1599,24 @@ func (s *State) cloneState() *State {
 	for k, v := range s.Plans {
 		out.Plans[k] = v.clonePlan()
 	}
+	out.Approvals = make([]ApprovalRecord, len(s.Approvals))
+	for i, a := range s.Approvals {
+		c := a
+		c.Summary.SourceRevisions = deepCopyIntMap(a.Summary.SourceRevisions)
+		c.Summary.RemoteObservations = cloneStringMap(a.Summary.RemoteObservations)
+		c.Summary.OperationDigests = append([]string(nil), a.Summary.OperationDigests...)
+		c.Summary.Classifications = cloneStringMap(a.Summary.Classifications)
+		c.Summary.Choices = cloneClassChoiceMap(a.Summary.Choices)
+		out.Approvals[i] = c
+	}
+	out.Intents = make([]WriteIntent, len(s.Intents))
+	for i, it := range s.Intents {
+		c := it
+		c.Operation = clonePlanOperation(it.Operation)
+		c.Observed = cloneEntry(it.Observed)
+		out.Intents[i] = c
+	}
+	out.Executions = append([]ExecutionRecord(nil), s.Executions...)
 	return out
 }
 

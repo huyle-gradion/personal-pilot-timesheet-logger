@@ -1,18 +1,22 @@
-# Rewrite interface (R3: explicit migration and read-only remote plans)
+# Rewrite interface (R4: exact-plan approval and verified submission)
 
-Application version: `0.1.0-dev.8` (unreleased development build, not a release tag).
-Protocol schema: `1`. State schema: `2`.
+Application version: `0.1.0-dev.11` (unreleased development build, not a release tag).
+Protocol schema: `1`. State schema: `3`.
 
-This document is the public interface for the R3 slice of the timesheet rewrite.
-R3 builds on the accepted local review-first workflow and R2 verification-only
-evidence collection. It adds an explicit, repeat-safe migration of confirmed
-legacy workflow records and a read-only Gradion boundary for reconciliation,
-explicit identity/content resolution and exact submission-plan previews.
+This document is the public interface for the R4 slice of the timesheet rewrite.
+R4 builds on the accepted local review-first workflow, R2 verification-only
+evidence collection and the R3 migration/read-only boundary. It adds a native
+approval ledger (an approval authorizes exactly ONE rendered plan), durable
+pre-write intent records, and ONE verified submission path: every remote write is
+acknowledged, re-read from the provider, content-checked, and only then recorded
+as confirmed — with explicit, operator-driven recovery for writes whose outcome
+could not be verified.
 
-R3 does **not** implement approval, submission, or any remote write. A plan can be
-`ready` or `blocked`; it can never be `approved`, and no request can authorize a
-remote mutation. Historical legacy approvals are inert audit data. Commands,
-responses, or notes that mention later slices are limits, not features.
+No automatic submission exists in any form: approval never dispatches, startup
+never resumes, and a restart never replays a batch. Imported legacy approvals
+remain inert audit data. A write that cannot be verified stays an explicit
+unresolved blocker until a human resolves it by reference against a current
+complete observation.
 
 ## Command line
 
@@ -77,9 +81,14 @@ non-empty, at most 128 bytes, and contain no control characters.
 | `select_classification` | `day`, `revision`, `interval_id`, `catalog_id`, `classification_id` | Records an explicit reviewed remote classification choice for an option the catalog returned, in staged work. Follows confirm/save semantics. |
 | `reconcile_remote` | `day` | One fresh read-only observation of the day. Persists the observation and reports mapped, changed, missing and orphaned identities, unbound remotes, overlap/text candidates, unresolved-write history and blockers. A read never binds an identity. |
 | `resolve_remote` | `day`, `revision`, `observation_id`, `remote_id`, `local_id` (omitted for `foreign`), `decision` | Records one explicit identity/content decision (`adopt`, `accept_observed`, `foreign`) against the current observation. Rejects stale revision/observation IDs and identity conflicts without mutation. |
-| `preview_plan` | `day` | Renders exact create/edit operations and blockers from saved confirmed durable work, explicit classification choices and a fresh read-only observation. Never plans from an unsaved day, never saves a draft, and never exposes an approval. |
+| `preview_plan` | `day` | Renders exact create/edit operations and blockers from saved confirmed durable work, explicit classification choices and a fresh read-only observation. Never plans from an unsaved day, never saves a draft. Reports `approved`/`approval_available` as DERIVED ledger facts (never persisted authorities). |
+| `approve_plan` | `day`, `plan_id` | Creates one NEW native approval occurrence (a unique `approval_id`) bound to the exact current rendered plan identity, after fresh precondition proof. Creates no remote write and never auto-submits. |
+| `revoke_approval` | `day`, `approval_id` | Explicitly revokes one unconsumed approval. Revocation is immutable audit. |
+| `submit_plan` | `day`, `approval_id` | Revalidates every precondition fresh, then executes the approved batch: one durable pre-write intent per operation, one dispatch, one verification read-back per write. Returns a bounded receipt; never retries a dispatched write. |
+| `submission_status` | `day` | Lists this date's approval ledger, execution audit and every unresolved write reference (native `wr-…` and migrated `mw-…`). Unresolved references block all further writing. |
+| `resolve_write` | `write_ref`, `observation_id`, `decision` (`adopt` requires `remote_id`) | Explicitly resolves ONE unresolved write reference against the CURRENT COMPLETE observation: `adopt` binds the observed remote ID (one-to-one checks apply), `not_applied` records a human attestation that the intended effect is absent (refused when a matching effect is visible). Never dispatches. |
 | `cancel` | `day`, `revision` | Discards staged edits and restores the last confirmed revision. |
-| `status` | none | Reports loaded days, protocol identity, `store_schema`/`durable_schema`, `durability_uncertain`, and compact migration/binding/unresolved-write/plan counts. |
+| `status` | none | Reports loaded days, protocol identity, `store_schema`/`durable_schema`, `durability_uncertain`, and compact migration/binding/unresolved-write/plan/approval counts (`approvals`, `native_unresolved_writes`). |
 | `check_environment` | none | Reports required variable **names** and which are missing. |
 | `close` | none | Replies, then ends the process. Unsaved state is not written. |
 
@@ -359,12 +368,13 @@ synchronized. Failures are split at the rename boundary:
   with whatever the state file contains. `status` reports
   `"durability_uncertain": true` until restart.
 
-## Durable state, migration, and remote reads (R3)
+## Durable state, migration, remote reads, and approval (R3/R4)
 
-### State schema 2
+### State schema 3
 
-State schema `2` is the durable contract for migration, remote identity and plan
-records. It adds three optional sections to schema `1`:
+State schema `3` is the durable contract for migration, remote identity, plan
+records and the native approval ledger. It keeps schema `2`'s three optional
+sections:
 
 - `migration`: append-only receipts (source hashes, dates/timezone, counts, a
   date-scoped ID crosswalk plus the legacy per-date revisions/audit, inert plans,
@@ -374,21 +384,37 @@ records. It adds three optional sections to schema `1`:
   binding snapshot plus `last_observed` content, the latest observation per date,
   explicit resolutions, preserved write outcomes and bounded classification
   catalogs.
-- `plans`: immutable content-addressed previews. `approved` and
-  `approval_available` are always `false`; R3 has no approval.
+- `plans`: immutable content-addressed previews with per-operation exact content
+  including the edit audit `reason`. They carry NO approval flags.
+
+and adds three more:
+
+- `approvals`: immutable native approval occurrences (`apr-…` IDs, exact plan
+  binding, context digest, state `active`/`executing`/`revoked`, revocation
+  timestamps, bound execution ID).
+- `intents`: durable pre-write attempt records (`wr-…` references, exact body,
+  state `in_flight`/`confirmed`/`uncertain`/`unidentified`, plus additive
+  resolution audit `resolved`/`resolution`/`resolved_at`/`resolution_observation_id`).
+- `executions`: one bounded run summary per submission (state
+  `started`/`completed`/`stopped`, per-attempt counts, outcome).
 
 A schema-1 file is validated in its own shape, upgraded **in memory**, and left
-byte-identical on disk. Schema `2` is activated only by a successful durable save
+byte-identical on disk. Schema `2` files are converted in memory to schema `3`
+(above). Schema `3` is activated only by a successful durable save
 or transaction (the same atomic rename + directory-sync path as a work save), never
-by startup. `status` reports `store_schema: 2` (the running schema) and
-`durable_schema` (what is actually on disk: `1` until that first write).
+by startup. `status` reports `store_schema: 3` (the running schema) and
+`durable_schema` (what is actually on disk: the declared header schema until that
+first write).
 
 A schema-2 file fails closed (`state_invalid`) in a schema-1-only loader. That
 forward incompatibility is intentional: a build without migration/remote/plan
 semantics must not load receipts, identity decisions, unresolved-write history or
-plans it cannot honour. A schema-1 declaration that carries schema-2 sections is
-also rejected. A state file claiming `approved: true` or
-`approval_available: true` is rejected.
+plans it cannot honour. A schema-1 declaration that carries any later section is
+also rejected. Under the schema-2 conversion, an R2 file is rejected when it
+contains `approvals`, `intents` or `executions` sections, or any persisted plan
+`approved`/`approval_available` flag that is non-boolean or true (always-false R3
+flags are stripped); state claiming approval authority fails closed. A schema-2
+file's schema header is not silently upgraded before its own validation.
 
 ### Explicit legacy migration
 
@@ -470,8 +496,8 @@ Preserved:
   including the approval binding's own `record_revision` and
   `remote_observed_at` (preserved verbatim, never inferred from the linked
   plan, whose values may differ), plus approval/revocation timestamps and
-  status. They approve nothing, and
-  R3 has no approval or submission operation.
+  status. They approve nothing and never authorize anything; only native
+  `approve_plan` creates usable approvals.
 - Unconfirmed legacy carry fragments as unconfirmed durable carries. A separately
   confirmed carry fragment is an ordinary confirmed interval and is not duplicated.
 
@@ -506,7 +532,7 @@ Future interval allocation cannot reuse a migrated ID: the day's counter is
 advanced past preserved `iv-<date>-<n>` shapes and allocation additionally rejects
 any staged/confirmed collision.
 
-### Read-only Gradion boundary
+### Gradion boundary
 
 ```json
 {
@@ -524,11 +550,12 @@ through the documented dotenv/inherited precedence, including inherited-empty. A
 missing credential reports the name only. No Keychain dependency, real settings
 read, or implicit live call exists; `version` works without any of it.
 
-The boundary wraps the existing MCP transport and verifies **read capabilities
-only**. It requires exactly `timesheet__get_my_week` and
-`timesheet__get_classifications`, does not require or call `log_time`, `edit_time`,
-a delete tool, a REST fallback or an arbitrary tool name, and exposes no generic
-MCP call operation. There are no new retries or dependencies.
+The boundary wraps the existing MCP transport. The read path verifies exactly
+`timesheet__get_my_week` and `timesheet__get_classifications`; the submit path
+(used only by explicit `submit_plan`) additionally verifies
+`timesheet__log_time` and `timesheet__edit_time`. There is no delete tool, no
+REST fallback, no arbitrary tool name, and no generic MCP call operation. Writes
+are never retried. There are no new retries or dependencies.
 
 The verified week shape is the structured
 `{days:[{date,entries:[{id,startTime,endTime,classificationId,description,
@@ -587,7 +614,8 @@ only — it never grants permission for physical overlap. Stale revisions or
 observation IDs, an unobserved remote ID, a time-slot identity substitution, an
 adoption that would steal another allocation's remote ID or replace an existing
 binding, and malformed local/remote pairs are all rejected without mutation.
-Resolutions never clear a migrated unresolved-write blocker and never authorize a
+Resolutions never by themselves clear an unresolved-write blocker (only the
+explicit `resolve_write` operation does, in R4) and never authorize a
 remote mutation.
 
 ### Exact plan previews
@@ -630,8 +658,155 @@ observations with unchanged decisions keep canonical content and the same
 A blocked preview and the ready preview that follows an explicit decision are
 therefore distinct immutable records — persisting the ready one never reuses or
 overwrites the blocked record under the same ID. Persisted plans are immutable and
-distinguish `ready` from `blocked`. `approved` and `approval_available` are always
-`false`; there is no usable approval and no remote write in R3.
+distinguish `ready` from `blocked`. Every plan operation also carries the exact
+deterministic audit `reason` an edit will use (`timesheet review update <date>
+<local_id>`), as part of the hashed, approved content.
+
+`approved` and `approval_available` in the RESULT are derived from the native
+approval ledger, never a second persisted authority flag: `approved` is true only
+while an `active`/`executing` approval binds this exact `plan_id`, and
+`approval_available` mirrors `ready`. The persisted plan record carries neither
+flag; a state file that does is rejected at load (`state_invalid`).
+
+## Approval and verified submission
+
+The approval ledger (`approvals`, `intents`, `executions` state sections) is the
+only authorization authority. Approval IDs are unique occurrences (`apr-…`),
+never plan aliases: reapproving identical content after a resolved failure
+creates a NEW approval ID and never reactivates or overwrites the old record.
+Historical consumed/revoked approvals are immutable audit.
+
+- An approval binds the exact plan content hash, the contributing source
+  revisions, the operation digests, and a context digest of the effective
+  endpoint/credential configuration (hash-only; raw values are never stored or
+  printed). Any effective endpoint/credential change invalidates the approval
+  even if the provider returns identical data.
+- Approval is gated on fresh proof at approval time: the exact plan identity
+  (any drift fails `stale_plan`), complete readable remote coverage
+  (`plan_not_ready`), and the currently authoritative catalog still proving every
+  selected classification with unchanged relevant content — the option's
+  id/code/name/activity-type identity is bound into the preview, the approval
+  and the plan identity (`classification_unverified` for non-proof,
+  `classification_choice_changed` when the selected option's relevant content
+  changed, `classification_choice_unverifiable` when the bound choice cannot be
+  established). A relevant change forces explicit reselection and a new
+  preview/approval; unrelated catalog rows, queries and timestamps never
+  invalidate an unchanged choice. The approval summary records each bound
+  choice (`choices`), and every plan operation carries `selected_choice`.
+  A zero-operation plan has a legitimate EMPTY proof, so `choices` is encoded
+  explicitly as `{}` (never omitted) and reloads as a non-nil empty map; a
+  legacy dev.10/dev.11 row whose proof is absent or null reloads as nil, is
+  never reconstructed or backfilled as approved, and still fails closed with
+  `stale_approval`. Non-empty proofs recorded by dev.11 remain valid and are
+  still revalidated against the current catalog.
+- Preview, approval and consumption all guard open sessions by saved AND staged
+  allocation footprint (dev.11/dev.12): any open session whose saved or unsaved
+  (staged/unsaved-confirmed) allocations touch the plan's affected allocation
+  dates — including prior-day spill drafts, moved or removed contributions and
+  unsaved confirmations — blocks it with zero remote calls until it is saved or
+  cancelled. Unrelated dirty dates never block. The DURABLE saved footprint of
+  that dirty origin is included as well: an unsaved confirmation that removes
+  the final interval (or removes a prior-day spill) empties the session lists
+  while the plan still renders the saved work, and it must never authorize that
+  stale saved view. Each view is resolved with its own timezone, and the guard
+  never persists a draft.
+- Approval never dispatches. A persisted unconsumed approval can only be used by
+  a new explicit `submit_plan` that passes EVERY current precondition.
+- `revoke_approval` explicitly revokes one unconsumed approval; a later
+  `submit_plan` is blocked before dispatch with zero remote calls. Revoking an
+  executed/unknown approval fails (`stale_approval` / `unknown_approval`); a
+  revoked approval can never be revoked again or reactivated.
+
+`submit_plan{day, approval_id}` revalidates everything fresh, and on success runs
+the whole batch in one bounded run:
+
+1. Consumption re-renders the plan (fresh observations, dirty-session and
+   readiness gates) and requires the identical plan identity; a changed
+   precondition is `stale_plan` before any call.
+2. A fresh classification proof against the CURRENT catalog gates dispatch and
+   must still match the choice the approval bound
+   (`classification_unverified` / `classification_choice_changed` /
+   `classification_choice_unverifiable` block before any dispatch).
+3. Each operation's durable `in_flight` intent (unique `wr-…` reference, exact
+   dispatched body digest, operation context) is committed BEFORE dispatch; the
+   first committing transition also marks the approval `executing` and appends
+   the execution record.
+4. One dispatch per operation — a write tool is NEVER retried, whatever the
+   failure, and no generic call path exists (only `timesheet__log_time`,
+   `timesheet__edit_time`, plus the read tools).
+5. A write is `confirmed` only when the tool acknowledgment identifies an entry
+   AND a fresh, complete read-back matches the exact intended content
+   (date/start/end/classification/description). For an edit the acknowledged
+   entry id must ALSO equal the approved bound remote identity: a different
+   acknowledged id is `edit_identity_mismatch`, stays unresolved with both ids
+   as distinct audit, and never updates the binding or its `LastObserved`. A
+   tool error that acknowledges nothing is never proof of absence. Confirmed
+   state, the durable observation and the binding are persisted in ONE
+   transition per operation.
+6. Before each later dispatch the run re-checks the batch against the FULL
+   content of the consumption baseline advanced only by verified self-effects:
+   an observed change to an existing entry — including a previously confirmed
+   self entry — stops the batch explicitly (`external_remote_drift`), and no
+   operation is ever silently skipped.
+7. A zero-operation plan consumes the approval without dispatching anything.
+   Its single persistence transition is reported honestly: a clean commit is
+   `all_confirmed`; a post-rename failure keeps the existing sticky
+   `durability_uncertain` behavior; a failure BEFORE activation is
+   `persistence_failed` — no consumption and no execution are durable, no
+   remote call is made, the approval stays `active`, and the same approval must
+   be submitted again explicitly after the filesystem is available. Nothing is
+   replayed automatically.
+
+Receipt statuses: `all_confirmed`; `partial_stopped` (verified prefix, explicit
+stop, honest per-reference outcomes); `blocked_before_dispatch` (zero remote
+calls); `durability_uncertain` (only when local persistence is itself
+unconfirmed; nothing is claimed, and a restart is required);
+`persistence_failed` (a zero-operation consumption whose pre-activation local
+commit failed: nothing was consumed, no execution is durable, the approval
+remains reusable by a new explicit submit, and no remote call was made). The
+receipt carries
+per-reference outcome rows (`confirmed`, `uncertain`, `unidentified`,
+`in_flight`, `stopped_unattempted`), blocker codes, a bounded call inventory, and
+`next_action`. Acknowledgment-shape failures never confirm a write: a response
+whose entry id cannot be decoded is `write_unidentified`, and an ack/read-back
+content mismatch is `write_content_mismatch` / `write_content_unverified` — all
+remain resolving blockers.
+
+Recovery is explicit and human-driven. `submission_status{day}` lists every
+unresolved write reference — native intents (`wr-…`) and migrated legacy outcome
+rows (`mw-<legacy operation key>`; rows without a stable key get a stable
+content-derived reference) — scoped by the date's affected allocations: a row is
+listed when its recorded write date, or an allocation its local interval
+timezone-resolves, touches the requested date; a row with unknown provenance stays
+listed for every date. Every unresolved reference blocks every new approval and
+submission whose plan touches the affected dates (dev.11 scopes readiness by
+affected allocation dates as well as contributing origins, so a pending
+spill-day outcome recorded with its origin's date still blocks an empty spill-day
+plan). `resolve_write` requires the CURRENT COMPLETE observation for the date
+(`stale_observation` otherwise):
+
+- `adopt` with the explicitly selected observed `remote_id` binds the outcome's
+  local allocation to that exact entry: the local identity must be confirmed
+  durable work whose timezone-resolved allocation covers the recorded write
+  date with the intended representable span, backed by the claimed migration
+  crosswalk when one is named, and one-to-one checks apply. Contradictions,
+  wrong allocation dates, missing local contributions and unknown crosswalks
+  fail `identity_conflict` / `unknown_remote` / `unknown_local` with the
+  blocker staying visible.
+- `not_applied` records the human attestation that the intended effect is absent;
+  it is REFUSED when the current observation already shows a matching effect.
+- Never a guess: migrated rows that lack usable intent information remain
+  visible blockers rather than resolved facts.
+- `resolve_write` is additive audit in every path: the original status, error
+  code and content are preserved beside the resolution, decision, resolution time
+  and the exact observation identity used. Resolution never dispatches anything.
+
+Schema-2 migration feeds the same gate: legacy unresolved writes are preserved as
+migrated blocker rows; legacy rows that are already confirmed/failed history are
+not pending. A schema-2 file's obsolete always-false plan authorization flags are
+stripped on conversion, and a schema-2 file containing `approvals`, `intents`,
+`executions` sections or any persisted `approved`/`approval_available` flag that
+is non-boolean or true is rejected with `state_invalid`.
 
 ## Configuration
 
@@ -692,7 +867,7 @@ echoing file contents.
 | `migration.legacy_root` | if enabled | Records root containing the authoritative `workflow/YYYY-MM-DD.json` files. Read-only; never created or written. |
 | `migration.legacy_timezone` | if enabled | IANA timezone that governed the legacy records. Recorded on migrated days; never replaced by the current `timezone`. |
 | `migration.project_map` / `migration.classification_map` | no | Explicit legacy-value translations. A value not directly representable and not mapped is a visible conflict, never an invented replacement. |
-| `gradion` | no | Disabled-by-default read-only remote boundary. |
+| `gradion` | no | Disabled-by-default remote boundary. Reads verify capability-only; writes exist only behind the approval ledger. |
 | `gradion.endpoint` | if enabled | Launcher-provisioned MCP endpoint. Never echoed into a response, receipt, error or state document. |
 | `gradion.token_env` | no | Credential variable **name**, default `GRADION_MCP_TOKEN`. Only the binary resolves its value. |
 
@@ -751,7 +926,7 @@ dotenv lines, authenticated URLs, or a full config dump.
 | `store_locked` | Another process owns the single-writer state lock. |
 | `state_invalid` | Local state is unreadable, has an unsupported schema, or contains work invalid in its recorded timezone. |
 | `write_failed` | Local save failed before activation; previous durable state remains. |
-| `write_uncertain` | Local save may have activated a new file but directory durability is unconfirmed; restart before saving again. |
+| `write_uncertain` | Local save may have activated a new file but directory durability is unconfirmed; restart before saving again. A dispatched-but-unverifiable remote write attempt stores the same uncertainty durably. |
 | `config_invalid` | Configuration is missing, unreadable, or invalid. |
 | `dotenv_invalid` | Environment file syntax or parsing failed. |
 | `migration_disabled` | Explicit legacy migration is not enabled in configuration. |
@@ -765,23 +940,32 @@ dotenv lines, authenticated URLs, or a full config dump.
 | `remote_unreadable` | The read failed or returned an unrecognized shape; this is not an empty timesheet. |
 | `stale_observation` | The observation identity is not the current successful observation for that date. |
 | `unknown_remote` | The remote ID is not present in the current observation. |
-| `unknown_local` | The local interval is not confirmed durable work contributing to that date. |
+| `unknown_local` | The local interval is not confirmed durable work that resolves an allocation contributing to the recorded date (resolution requires the actual allocation identity). |
 | `identity_conflict` | The resolution would break one-to-one identity or substitute by time slot. |
 | `unknown_classification` | The option was not returned by the named catalog; a partial catalog cannot prove it absent. |
 | `stale_catalog` | The catalog identity is not stored; fetch the catalog again. |
 | `no_confirmed_work` | There is no saved confirmed work that renders on the requested date. |
-| `dirty_session` | An origin day has unsaved changes; save or cancel before previewing a plan. |
+| `dirty_session` | An open session's saved or staged allocation footprint touches the plan's affected dates (unsaved changes); save or cancel before previewing a plan. |
+| `stale_plan` | The current rendered plan differs from the plan the request/approval binds (`approve_plan`, `submit_plan`); zero remote mutations follow. |
+| `plan_not_ready` | The plan is blocked or its remote coverage is not complete and readable; approval is refused. |
+| `classification_unverified` | The current authoritative catalog does not prove a selected classification exists; dispatch is refused. |
+| `classification_choice_changed` | The selected classification's relevant content (id/code/name/activity type) changed since the bound choice; explicit reselection and a new preview/approval are required. |
+| `classification_choice_unverifiable` | The selected classification's bound choice cannot be established from the referenced catalog or fresh results; explicit reselection and a new preview are required. |
+| `unknown_approval` | `approval_id` does not name a native approval for the date. |
+| `stale_approval` | The approval is revoked, already executing/spent, or the context changed; it can never be consumed again. |
+| `unknown_write` | `write_ref` does not name an addressable unresolved write. |
 | `internal` | Unexpected failure with no safe detail. |
 
-## Security boundaries and R3 limits
+## Security boundaries and R4 limits
 
 - stdout is protocol output only in `serve` mode; diagnostics stay on stderr.
 - Requests cannot supply paths, executable names, shell commands, or arbitrary
   dispatch.
-- No shell is launched. Network access is collection-only and goes exclusively
-  to the configured GitHub API base, the credential-held ICS feed URL, and the
-  launcher-provisioned read-only MCP endpoint, over HTTPS unless an explicitly
-  configured local endpoint targets a local service. Credentials are read only
+- No shell is launched. Network access is collection/submission-only and goes
+  exclusively to the configured GitHub API base, the credential-held ICS feed
+  URL, and the launcher-provisioned MCP endpoint, over HTTPS unless an
+  explicitly configured local endpoint targets a local service. Credentials are
+  read only
   through the documented dotenv/process precedence and are never logged, echoed,
   or included in receipts, state or errors. Collection/remote receipts and error
   details carry stable codes, HTTP status and bound counts only; raw provider
@@ -794,17 +978,28 @@ dotenv lines, authenticated URLs, or a full config dump.
   requires a fresh acknowledgment.
 - Evidence is verify-only: collection never creates, edits, or extends worked
   minutes. Meeting decisions and attendance flags are not minutes.
-- The remote boundary is read-only. It verifies exactly the two read tools and
-  has no approval, submission, delete or arbitrary-call operation. Preserved
-  legacy approvals are inert (`usable: false`) and cannot authorize anything; a
-  state file claiming approval authority fails closed.
-- State schema is `2`. A schema-1 file loads unchanged and is upgraded in memory;
-  schema `2` is written only by a successful durable save/transaction. A
-  schema-1-only loader rejects a schema-2 file with `state_invalid` and leaves it
-  intact. A pre-R2 build rejects an R2 evidence file the same way.
+- The remote boundary verifies exactly FOUR tools: the two read tools plus the
+  two write tools (`timesheet__log_time`, `timesheet__edit_time`), which exist
+  only behind explicit submit paths. There is no delete, no generic call, and no
+  arbitrary dispatch; a write is at most ONE dispatch per operation, never
+  retried.
+- Approval is the only remote-write authority, it is ledger state (never a plan
+  flag or a UI flag), binds exactly one rendered plan, and never auto-fires. A
+  write is confirmed only after an identified acknowledgment AND a fresh complete
+  read-back matching the intended content; unverifiable writes are durable
+  unresolved blockers resolved only by explicit `resolve_write` decisions from a
+  human against the current observation. Preserved legacy approvals remain inert
+  (`usable: false`) and cannot authorize anything; a state file claiming approval
+  authority fails closed.
+- State schema is `3`. A schema-1 file loads unchanged and is upgraded in memory;
+  a schema-2 file is converted in memory (never by startup activation) after its
+  own validation; schema `3` is written only by a successful durable
+  save/transaction. A schema-1-only loader rejects a later-schema file with
+  `state_invalid` and leaves it intact. A pre-R2 build rejects an R2 evidence
+  file the same way.
 - The production CLI (`cmd/timesheet`) and legacy packages are unchanged; the
   development entry point `cmd/timesheet-rewrite` carries only usage text, and
-  its text now describes the implemented R3 scope. The `serve` protocol in this
+  its text now describes the implemented R4 scope. The `serve` protocol in this
   document is the authoritative interface.
-- Later slices must add approval/submission execution and Pi integration. Do not
-  present those as implemented: R3 plans are previews, never approvals.
+- Later slices must add Pi integration. R4's native approval/submission path is
+  the implemented one; legacy approval rows are inert audit, never approvals.

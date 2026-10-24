@@ -217,15 +217,8 @@ func validateWeekDayContainers(rawDays json.RawMessage) error {
 // failed read replaces any previous complete observation so it can never stand in
 // as current proof of absence.
 func (r *GradionReader) ObserveDate(ctx context.Context, date string) *RemoteObservation {
-	obs := &RemoteObservation{Date: date, ObservedAt: time.Now().UTC().Format(time.RFC3339)}
-	fail := func(detail string) *RemoteObservation {
-		obs.Complete = false
-		obs.Failed = true
-		obs.Detail = truncateRunes(detail, maxDetailRunes)
-		obs.ObservationID = observationID(date, nil, false, detail)
-		return obs
-	}
 	if err := r.verifyReadCapabilities(ctx); err != nil {
+		obs := &RemoteObservation{Date: date, ObservedAt: time.Now().UTC().Format(time.RFC3339)}
 		obs.Complete = false
 		obs.Failed = true
 		obs.Detail = err.Error()
@@ -236,8 +229,24 @@ func (r *GradionReader) ObserveDate(ctx context.Context, date string) *RemoteObs
 		return obs
 	}
 	res, err := r.session.CallTool(ctx, toolGetMyWeek, map[string]any{"weekStart": date})
-	if err != nil {
-		return fail("the week read failed (" + errorCode(remoteError(err)) + ")")
+	return dateObservationFromWeekCall(date, res, err)
+}
+
+// dateObservationFromWeekCall builds the durable observation record from one
+// week read result, or records a failed/incomplete read. It is shared by the
+// read boundary and the R4 writer read-back so both produce identical
+// observation records from identical transport behavior.
+func dateObservationFromWeekCall(date string, res mcp.CallResult, callErr error) *RemoteObservation {
+	obs := &RemoteObservation{Date: date, ObservedAt: time.Now().UTC().Format(time.RFC3339)}
+	fail := func(detail string) *RemoteObservation {
+		obs.Complete = false
+		obs.Failed = true
+		obs.Detail = truncateRunes(detail, maxDetailRunes)
+		obs.ObservationID = observationID(date, nil, false, detail)
+		return obs
+	}
+	if callErr != nil {
+		return fail("the week read failed (" + errorCode(remoteError(callErr)) + ")")
 	}
 	if res.IsError {
 		return fail("the week read returned a tool-level error")
@@ -362,12 +371,18 @@ func (r *GradionReader) Classifications(ctx context.Context, query string) (*Cat
 	if err := r.verifyReadCapabilities(ctx); err != nil {
 		return nil, err
 	}
+	return classificationsCall(ctx, r.session, query)
+}
+
+// classificationsCall is the shared catalog call body used by both the read
+// boundary and the R4 write path's fresh classification proof.
+func classificationsCall(ctx context.Context, session *mcp.Session, query string) (*CatalogRecord, error) {
 	q := strings.TrimSpace(query)
 	args := map[string]any{}
 	if q != "" {
 		args["search"] = q
 	}
-	res, err := r.session.CallTool(ctx, toolGetClassifications, args)
+	res, err := session.CallTool(ctx, toolGetClassifications, args)
 	if err != nil {
 		return nil, remoteError(err)
 	}

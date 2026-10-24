@@ -74,10 +74,11 @@ func newState() *State {
 	return &State{Schema: stateSchema, Days: map[string]*Day{}, Evidence: map[string]*DayEvidence{}}
 }
 
-// load reads the durable state. A schema-1 (R1/R2) file is validated in its own
-// shape and upgraded in memory; the file is not rewritten here. Any other schema
-// fails closed. A file with trailing data, unknown fields, or a schema-2 shape
-// under a schema-1 declaration is rejected without mutation.
+// load reads the durable state. A schema-1 or schema-2 file is validated in its
+// own shape and upgraded in memory through an explicit conversion; the file is
+// not rewritten here. Any other schema fails closed. A file with trailing data,
+// unknown fields, a persisted authorization claim, or a schema-3-only section
+// under an older schema declaration is rejected without mutation.
 func (s *Store) load() error {
 	info, err := os.Stat(s.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -90,6 +91,22 @@ func (s *Store) load() error {
 	if err != nil {
 		return newError(CodeStateInvalid, "local state file cannot be read")
 	}
+	var header struct {
+		Schema int `json:"schema"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return newError(CodeStateInvalid, "local state file is not valid JSON for the supported schema")
+	}
+	loaded := header.Schema
+	// The schema-2 conversion drops the obsolete always-false persisted plan
+	// authorization flags after validating them. A persisted true claim is a
+	// state-invalid failure, never permission.
+	if loaded == schemaTwoState {
+		data, err = convertSchemaTwoState(data)
+		if err != nil {
+			return err
+		}
+	}
 	var state State
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -99,13 +116,20 @@ func (s *Store) load() error {
 	if err := ensureJSONEOF(dec); err != nil {
 		return newError(CodeStateInvalid, "local state file has trailing data")
 	}
-	loaded := state.Schema
+	if loaded == legacyStateSchema {
+		state.Schema = legacyStateSchema
+	}
 	switch loaded {
 	case legacyStateSchema:
-		if state.Migration != nil || state.Remote != nil || len(state.Plans) > 0 {
-			return newError(CodeStateInvalid, "local state declares schema 1 but carries schema 2 sections")
+		if state.Migration != nil || state.Remote != nil || len(state.Plans) > 0 ||
+			len(state.Approvals) > 0 || len(state.Intents) > 0 || len(state.Executions) > 0 {
+			return newError(CodeStateInvalid, "local state declares schema 1 but carries later-schema sections")
 		}
 		if err := validateLegacyState(&state); err != nil {
+			return err
+		}
+	case schemaTwoState:
+		if err := validateStateBody(&state); err != nil {
 			return err
 		}
 	case stateSchema:
@@ -121,12 +145,73 @@ func (s *Store) load() error {
 	if state.Evidence == nil {
 		state.Evidence = map[string]*DayEvidence{}
 	}
-	// Upgrade is in-memory only. A schema-1 file stays schema 1 on disk until a
-	// later successful durable save or transaction activates schema 2.
+	// Upgrade is in-memory only. A legacy file stays its own schema on disk
+	// until a later successful durable save or transaction activates schema 3.
 	state.Schema = stateSchema
 	s.state = &state
 	s.durableSchema = loaded
 	return nil
+}
+
+// convertSchemaTwoState is the explicit in-memory conversion of an accepted
+// schema-2 file. It rejects authorization claims and schema-3-only sections,
+// then strips the obsolete always-false persisted plan flags
+// (approved/approval_available) so the strict decode accepts the rest of the
+// file unchanged. Old plan identity, migration history, observations and
+// outcomes are all preserved.
+func convertSchemaTwoState(data []byte) ([]byte, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, newError(CodeStateInvalid, "local state file is not valid JSON for the supported schema")
+	}
+	for _, section := range []string{"approvals", "intents", "executions"} {
+		if _, has := obj[section]; has {
+			return nil, newError(CodeStateInvalid, "local state declares schema 2 but carries schema 3 sections")
+		}
+	}
+	plansRaw, has := obj["plans"]
+	if !has {
+		return data, nil
+	}
+	var plans map[string]json.RawMessage
+	if err := json.Unmarshal(plansRaw, &plans); err != nil {
+		return nil, newError(CodeStateInvalid, "local state file is not valid JSON for the supported schema")
+	}
+	changed := false
+	for key, raw := range plans {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return nil, newError(CodeStateInvalid, "local state file is not valid JSON for the supported schema")
+		}
+		for _, flag := range []string{"approved", "approval_available"} {
+			value, ok := fields[flag]
+			if !ok {
+				continue
+			}
+			var b bool
+			if err := json.Unmarshal(value, &b); err != nil || b {
+				return nil, newError(CodeStateInvalid, "local state claims an approval authority this build does not have")
+			}
+			delete(fields, flag)
+			changed = true
+		}
+		if changed {
+			rebuilt, err := json.Marshal(fields)
+			if err != nil {
+				return nil, newError(CodeStateInvalid, "local state file cannot be converted")
+			}
+			plans[key] = rebuilt
+		}
+	}
+	if !changed {
+		return data, nil
+	}
+	plansBytes, err := json.Marshal(plans)
+	if err != nil {
+		return nil, newError(CodeStateInvalid, "local state file cannot be converted")
+	}
+	obj["plans"] = plansBytes
+	return json.Marshal(obj)
 }
 
 // validateEvidence checks one persisted day's evidence collection for
@@ -237,7 +322,156 @@ func validateStateBody(state *State) error {
 	if err := validateRemoteState(state.Remote); err != nil {
 		return err
 	}
-	return validatePlans(state.Plans)
+	if err := validatePlans(state.Plans); err != nil {
+		return err
+	}
+	if err := validateApprovals(state.Approvals); err != nil {
+		return err
+	}
+	if err := validateIntents(state.Intents); err != nil {
+		return err
+	}
+	return validateExecutions(state.Executions)
+}
+
+// validateApprovals validates the native approval ledger. Unique occurrence
+// IDs, valid lifecycle states and timestamps; the ledger is the only approval
+// authority and is never pruned while any row is consumed or revoked audit.
+func validateApprovals(rows []ApprovalRecord) error {
+	if len(rows) > maxStoredApprovals {
+		return newError(CodeStateInvalid, "local state contains too many native approvals")
+	}
+	seen := map[string]bool{}
+	for _, a := range rows {
+		if a.ApprovalID == "" || seen[a.ApprovalID] {
+			return newError(CodeStateInvalid, "local state contains a duplicate or missing native approval id")
+		}
+		seen[a.ApprovalID] = true
+		if a.PlanID == "" {
+			return newError(CodeStateInvalid, "local state contains an approval without a plan identity")
+		}
+		if _, err := parseDate(a.Date); err != nil {
+			return newError(CodeStateInvalid, "local state contains an approval under an invalid date")
+		}
+		switch a.State {
+		case ApprovalActive:
+			if a.ExecutionID != "" || a.ConsumedAt != "" || a.RevokedAt != "" {
+				return newError(CodeStateInvalid, "local state contains an active approval with consumption markers")
+			}
+		case ApprovalExecuting:
+			if a.ExecutionID == "" || a.ConsumedAt == "" || a.RevokedAt != "" {
+				return newError(CodeStateInvalid, "local state contains an executing approval without its consumption markers")
+			}
+		case ApprovalRevoked:
+			if a.RevokedAt == "" || a.ExecutionID != "" || a.ConsumedAt != "" {
+				return newError(CodeStateInvalid, "local state contains an inconsistent revoked approval")
+			}
+		default:
+			return newError(CodeStateInvalid, "local state contains an approval in an unknown state")
+		}
+		if a.ContextDigest == "" {
+			return newError(CodeStateInvalid, "local state contains an approval without its bound context digest")
+		}
+	}
+	return nil
+}
+
+// validateIntents validates the durable write-intent ledger. A confirmed row
+// must carry verified observation content; a resolved row carries an explicit
+// resolution and observation identity; anything unresolved (including
+// in_flight) is a blocker and is never pruned.
+func validateIntents(rows []WriteIntent) error {
+	if len(rows) > maxStoredIntents {
+		return newError(CodeStateInvalid, "local state contains too many native write intents")
+	}
+	seen := map[string]bool{}
+	for _, it := range rows {
+		if it.WriteRef == "" || seen[it.WriteRef] {
+			return newError(CodeStateInvalid, "local state contains a duplicate or missing write reference")
+		}
+		seen[it.WriteRef] = true
+		if it.ExecutionID == "" || it.ApprovalID == "" || it.PlanID == "" {
+			return newError(CodeStateInvalid, "local state contains a write intent without its submission identity")
+		}
+		if _, err := parseDate(it.Date); err != nil {
+			return newError(CodeStateInvalid, "local state contains a write intent under an invalid date")
+		}
+		if it.OpIndex < 0 || it.LocalID == "" {
+			return newError(CodeStateInvalid, "local state contains an incomplete write intent")
+		}
+		if it.Action != "create" && it.Action != "edit" {
+			return newError(CodeStateInvalid, "local state contains a write intent with an unknown action")
+		}
+		if it.Action == "edit" && it.RemoteID == "" {
+			return newError(CodeStateInvalid, "local state contains an edit write intent without its intended remote identity")
+		}
+		if it.OpDigest == "" || it.Preconditions == "" {
+			return newError(CodeStateInvalid, "local state contains a write intent without its exact preconditions")
+		}
+		switch it.Status {
+		case IntentInFlight:
+		case IntentConfirmed:
+			if it.Observed == nil || it.Observed.RemoteID == "" {
+				return newError(CodeStateInvalid, "local state contains a confirmed write intent without verified content")
+			}
+		case IntentUncertain, IntentUnidentified:
+			if it.ErrorCode == "" {
+				return newError(CodeStateInvalid, "local state contains an unresolved write intent without its stable reason")
+			}
+		default:
+			return newError(CodeStateInvalid, "local state contains a write intent in an unknown attempt state")
+		}
+		if it.Resolved {
+			if (it.Resolution != DecisionWriteAdopt && it.Resolution != DecisionWriteNotApplied) ||
+				it.ResolvedAt == "" || it.ResolutionObservationID == "" {
+				return newError(CodeStateInvalid, "local state contains a resolved write intent without its complete decision record")
+			}
+			// A resolved row must be one that was unresolved: a confirmed write
+			// is history, never a pending decision.
+			if it.Status == IntentConfirmed {
+				return newError(CodeStateInvalid, "local state contains a resolution recorded on an already confirmed write")
+			}
+		} else if it.Resolution != "" || it.ResolvedAt != "" || it.ResolutionObservationID != "" {
+			return newError(CodeStateInvalid, "local state contains a write intent with resolution fields but no resolved marker")
+		}
+		if it.AttemptedAt == "" && it.Status != IntentInFlight {
+			return newError(CodeStateInvalid, "local state contains a dispatched write intent without its attempt timestamp")
+		}
+	}
+	return nil
+}
+
+// validateExecutions validates native submission audit rows.
+func validateExecutions(rows []ExecutionRecord) error {
+	if len(rows) > maxStoredExecutions {
+		return newError(CodeStateInvalid, "local state contains too many native submission records")
+	}
+	seen := map[string]bool{}
+	for _, e := range rows {
+		if e.ExecutionID == "" || seen[e.ExecutionID] {
+			return newError(CodeStateInvalid, "local state contains a duplicate or missing submission record id")
+		}
+		seen[e.ExecutionID] = true
+		if e.ApprovalID == "" || e.PlanID == "" {
+			return newError(CodeStateInvalid, "local state contains a submission record without its approval identity")
+		}
+		if _, err := parseDate(e.Date); err != nil {
+			return newError(CodeStateInvalid, "local state contains a submission record under an invalid date")
+		}
+		switch e.State {
+		case ExecutionStarted:
+			if e.FinishedAt != "" {
+				return newError(CodeStateInvalid, "local state contains a started submission record with a finish timestamp")
+			}
+		case ExecutionCompleted, ExecutionStopped:
+			if e.FinishedAt == "" {
+				return newError(CodeStateInvalid, "local state contains a finished submission record without its finish timestamp")
+			}
+		default:
+			return newError(CodeStateInvalid, "local state contains a submission record in an unknown state")
+		}
+	}
+	return nil
 }
 
 func validateMigrationState(m *MigrationState) error {
@@ -413,9 +647,6 @@ func validatePlans(plans map[string]*PlanRecord) error {
 		}
 		if p.State != PlanReady && p.State != PlanBlocked {
 			return newError(CodeStateInvalid, "local state contains a plan in an unknown state")
-		}
-		if p.Approved || p.ApprovalAvailable {
-			return newError(CodeStateInvalid, "local state claims an approval authority this build does not have")
 		}
 		if _, err := parseDate(p.Date); err != nil {
 			return newError(CodeStateInvalid, "local state contains a plan under an invalid date")

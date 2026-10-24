@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 )
@@ -26,6 +27,34 @@ type fakeMCP struct {
 	catText     string
 	catError    bool
 	calls       []string
+
+	// R4 verified-submission fixture state. Zero values preserve the read-only
+	// two-tool fixture behavior that earlier tests rely on.
+	writeTools bool
+	failMode   string // "", "tool", "malformed", "reset", "ackonly-noentry"
+	// wrongAckID makes edit acknowledgments name a DIFFERENT entry id than the
+	// actually mutated one (R4F4 fixture); the read-back still shows the real
+	// mutated entry under its true id.
+	wrongAckID string
+	injectWeek func() // runs (mutex held) before each week read; simulates external changes
+	// injectCat runs (mutex held) when the classifications tool is served. It
+	// lets a test arm a local durability fault AFTER the submission's fresh
+	// preview has persisted, so the fault lands at the consumption barrier
+	// rather than at preview persistence (R4F7 in-process boundary).
+	injectCat   func()
+	writeCalls  []string
+	writeBodies []map[string]any
+	nextCreate  int
+}
+
+// setWriteMultiDays enables the two write tools and serves a mutable multi-day
+// week document.
+func (f *fakeMCP) setWriteMultiDays(days map[string][]map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writeTools = true
+	f.days = days
+	f.gap, f.omitEntries, f.nullEntries, f.weekError = false, false, false, false
 }
 
 func (f *fakeMCP) setWeek(entries []map[string]any) {
@@ -96,10 +125,16 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"serverInfo":      map[string]any{"name": "fake", "version": "1"},
 		}
 	case "tools/list":
-		result = map[string]any{"tools": []any{
+		names := []any{
 			map[string]any{"name": toolGetMyWeek},
 			map[string]any{"name": toolGetClassifications},
-		}}
+		}
+		if f.writeTools {
+			names = append(names,
+				map[string]any{"name": toolLogTime},
+				map[string]any{"name": toolEditTime})
+		}
+		result = map[string]any{"tools": names}
 	case "tools/call":
 		var p struct {
 			Name      string         `json:"name"`
@@ -109,6 +144,9 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.calls = append(f.calls, p.Name)
 		switch p.Name {
 		case toolGetMyWeek:
+			if f.injectWeek != nil {
+				f.injectWeek()
+			}
 			if f.weekError {
 				result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "synthetic tool failure"}}}
 				break
@@ -135,7 +173,10 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					days = append(days, map[string]any{"date": d, "entries": entries})
 				}
 			default:
-				entries := append([]map[string]any(nil), f.entries...)
+				entries := f.entries
+				if entries == nil {
+					entries = []map[string]any{}
+				}
 				days = append(days, map[string]any{"date": f.day, "entries": entries})
 			}
 			result = map[string]any{
@@ -147,15 +188,125 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "synthetic catalog failure"}}}
 				break
 			}
+			if f.injectCat != nil {
+				f.injectCat()
+			}
 			result = map[string]any{
 				"structuredContent": map[string]any{"resources": f.catOptions},
 				"content":           []any{map[string]any{"type": "text", "text": f.catText}},
+			}
+		case toolLogTime, toolEditTime:
+			if !f.writeTools {
+				result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "unexpected tool"}}}
+				break
+			}
+			f.writeCalls = append(f.writeCalls, p.Name)
+			body := map[string]any{}
+			for k, v := range p.Arguments {
+				body[k] = v
+			}
+			f.writeBodies = append(f.writeBodies, body)
+			switch f.failMode {
+			case "tool":
+				result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "synthetic write failure"}}}
+			case "malformed":
+				// No mutation: a well-formed HTTP 200 whose structured content
+				// is a bare string, so no id can ever be decoded from it.
+				result = map[string]any{
+					"structuredContent": "not-an-object",
+					"content":           []any{map[string]any{"type": "text", "text": "odd"}},
+				}
+			case "reset":
+				// Applied-then-reset: the synthetic effect IS applied, then the
+				// connection corrupts the response with trailing garbage, which
+				// is a decode failure carrying no acknowledgment.
+				_ = f.applyWrite(p.Name, body)
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": result})
+				_, _ = w.Write([]byte("SUFFIX-NOT-JSON"))
+				return
+			default:
+				result = f.applyWrite(p.Name, body)
 			}
 		default:
 			result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "unexpected tool"}}}
 		}
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": result})
+}
+
+// applyWrite performs the synthetic mutation for one write call and returns a
+// full structured acknowledgment ({"entry": {...}}).
+func (f *fakeMCP) applyWrite(name string, body map[string]any) map[string]any {
+	date, _ := body["date"].(string)
+	start, _ := body["startTime"].(string)
+	end, _ := body["endTime"].(string)
+	desc, _ := body["description"].(string)
+	class, _ := body["classificationId"].(string)
+	if name == toolEditTime {
+		id, _ := body["entryId"].(string)
+		mutate := func(e map[string]any) map[string]any {
+			res := mutateEntry(e, start, end, desc, class)
+			if f.wrongAckID != "" {
+				// R4F4 fixture: the provider acknowledges a different entry
+				// identity than the one it actually mutated.
+				sc := res["structuredContent"].(map[string]any)
+				sc["entry"] = map[string]any{"id": f.wrongAckID, "startTime": e["startTime"], "endTime": e["endTime"],
+					"classificationId": e["classificationId"], "description": e["description"], "status": "logged"}
+			}
+			return res
+		}
+		if f.days == nil {
+			for _, e := range f.entries {
+				if e["id"] == id {
+					return mutate(e)
+				}
+			}
+			return map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "no such entry"}}}
+		}
+		for _, list := range f.days {
+			for _, e := range list {
+				if e["id"] == id {
+					return mutate(e)
+				}
+			}
+		}
+		return map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "no such entry"}}}
+	}
+	f.nextCreate++
+	id := "r-new-" + strconv.Itoa(f.nextCreate)
+	entry := map[string]any{
+		"id": id, "startTime": start, "endTime": end,
+		"classificationId": class, "description": desc, "status": "logged",
+	}
+	if f.days == nil {
+		f.days = map[string][]map[string]any{}
+	}
+	f.days[date] = append(f.days[date], entry)
+	return map[string]any{
+		"structuredContent": map[string]any{"entry": map[string]any{"id": id, "startTime": start, "endTime": end, "classificationId": class, "description": desc, "status": "logged"}},
+		"content":           []any{map[string]any{"type": "text", "text": "created"}},
+	}
+}
+
+// mutateEntry applies approved-field edits to one synthetic entry and returns
+// the structured full acknowledgment.
+func mutateEntry(e map[string]any, start, end, desc, class string) map[string]any {
+	if start != "" {
+		e["startTime"] = start
+	}
+	if end != "" {
+		e["endTime"] = end
+	}
+	if desc != "" {
+		e["description"] = desc
+	}
+	if class != "" {
+		e["classificationId"] = class
+	}
+	return map[string]any{
+		"structuredContent": map[string]any{"entry": map[string]any{"id": e["id"], "startTime": e["startTime"], "endTime": e["endTime"], "classificationId": e["classificationId"], "description": e["description"], "status": "logged"}},
+		"content":           []any{map[string]any{"type": "text", "text": "updated"}},
+	}
 }
 
 func intervalFixture(t *testing.T, text string) (*Session, *fakeMCP, *Store, string) {
@@ -353,8 +504,11 @@ func TestReconcileAdoptSelectAndExactPlan(t *testing.T) {
 	if edited.PlanID == first.PlanID {
 		t.Fatal("changed remote content must change the plan identity")
 	}
-	if edited.Approved || edited.ApprovalAvailable {
-		t.Fatal("an R3 plan can never be approved")
+	if edited.Approved {
+		t.Fatal("a plan preview is never approved on its own: approval is ledger state, and no approval exists here")
+	}
+	if !edited.ApprovalAvailable {
+		t.Fatal("a ready plan reports approval_available as a derived ledger fact") // R4
 	}
 
 	// A stale observation id is rejected without mutation.
