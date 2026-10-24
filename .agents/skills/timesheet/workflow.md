@@ -5,12 +5,19 @@ compiled binary or a fixed script — the same input always yields the same
 output) or **[AI]** (needs judgment). Principle: deterministic work is a
 script; only real decisions go to the model.
 
-Fixed inputs (substitute once per machine; never commit their values):
+**Run exactly what is written.** This file is the complete procedure: the
+commands below show every flag they need. Do not run `--help`, discover
+flags, or read other repository documentation mid-run — the first agent
+run spent tokens on exactly that (see the improvement log, 2026-10-25).
+If a command fails, read its error message; it names the fix.
+
+Fixed inputs (resolve once per machine; never commit their values). On a
+normal setup these are already:
 
 ```text
 TS_BINARY=<repo>/bin/timesheet
-TS_CONFIG=<owner timesheet config.json path>
-TS_ENV=<owner .env.local path (may be an empty file for local-only days)>
+TS_CONFIG=$HOME/.timesheet/config.json
+TS_ENV=$HOME/.timesheet/.env.local   # may be an empty file for local-only days
 ```
 
 ## Steps
