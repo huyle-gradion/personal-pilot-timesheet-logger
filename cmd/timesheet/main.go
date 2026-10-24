@@ -16,6 +16,18 @@ func usage() {
 Usage:
   timesheet version
   timesheet serve --config <path> --env-file <path>
+  timesheet collect --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet draft --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet record --config <path> --date <YYYY-MM-DD> --file <reviewed.json>
+  timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
+
+The collect/draft/record/status subcommands are the deterministic headless
+surface used by the timesheet skill: collect performs one bounded collection
+attempt, draft prints the compact one-day draft the skill's single judgment
+step reviews, record merges the reviewed result into the per-day entries file
+(idempotent per time block), and status reports store state plus recorded
+entries. They hold the same fixed-path, no-shell, credential-safe contract as
+serve and perform no approval or submission.
 
 R4 adds the native approval ledger and one verified submission path. The
 'approve_plan' request binds a unique approval to the exact current rendered plan
@@ -53,6 +65,38 @@ func main() {
 			}
 			// AppError carries a stable code and a safe message. Startup errors
 			// never echo configuration or credential values.
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "collect":
+		if err := runCollect(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "draft":
+		if err := runDraft(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "record":
+		if err := runRecord(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "status":
+		if err := runStatus(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
 			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
 			os.Exit(1)
 		}

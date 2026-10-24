@@ -1,6 +1,7 @@
 # Timesheet
 
-Application version: **`0.1.1`**. Protocol schema `1`, state schema `3`.
+Application version: **`0.2.0-dev.1`** (unreleased development stamp; the
+published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
 
 This repository is one timesheet product: a single compiled Go binary owns all
 accounting, validation and persistence, and one pinned Pi consumer renders the
@@ -19,13 +20,36 @@ go build -trimpath -o bin/timesheet ./cmd/timesheet
 bin/timesheet version   # prints the application version and protocol schema, exits 0
 ```
 
-`bin/timesheet` is the production-named executable. It has exactly two
-commands: `version` and `serve --config <path> --env-file <path>`. A normal
-`version` run, a normal `serve` close/EOF and `serve` help exit `0`. No
-top-level command, an unknown top-level command, or extra `version` arguments
-exit `2`. `serve` argument validation (an unknown flag, an extra positional, a
-missing required flag), startup failure and stream failure exit `1`. Usage
-errors make no remote call.
+`bin/timesheet` is the production-named executable. Its server commands are
+`version` and `serve --config <path> --env-file <path>`, plus the four
+headless skill subcommands described below (`collect`, `draft`, `record`,
+`status`). A normal `version` run, a normal `serve` close/EOF and `serve`
+help exit `0`. No top-level command, an unknown top-level command, or extra
+`version` arguments exit `2`. `serve` argument validation (an unknown flag,
+an extra positional, a missing required flag), startup failure and stream
+failure exit `1`. Usage errors make no remote call.
+
+## Daily log skill
+
+The assignment deliverable is a runner-agnostic skill folder:
+`.agents/skills/timesheet/SKILL.md` + `workflow.md`, picked up by Claude Code
+through the `.claude/skills/timesheet` link and executable by any agent
+runtime with shell access — including the Pi agent. Every deterministic
+step is a fixed binary subcommand; the single judgment step reviews only the
+compact one-day draft JSON produced by:
+
+```bash
+bin/timesheet collect --config <config> [--env-file <env>] --date <date>
+bin/timesheet draft   --config <config> [--env-file <env>] --date <date>
+bin/timesheet record  --config <config> --date <date> --file reviewed.json
+bin/timesheet status  --config <config> [--date <date>]
+```
+
+Entries land in `<state dir>/entries/<date>.json`, merged idempotently per
+time block with full source references. `scripts/tokens.py` records the
+day's model token usage from Claude Code or Pi transcripts into
+`benchmarks/tokens.csv`. The skill never approves or submits: remote
+submission stays on the interactive, human-approved workflow below.
 
 ## Launch
 

@@ -2,7 +2,25 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
-## Unreleased
+## Unreleased (0.2.0-dev.1)
+
+- Add the headless skill surface: `timesheet collect`, `draft`, `record` and
+  `status` subcommands that construct the same session `serve` uses and drive
+  its dispatcher in-process. No protocol, state-schema, store or submission
+  behavior changes.
+- Add the timesheet skill deliverable (`.agents/skills/timesheet/SKILL.md` +
+  `workflow.md`, picked up through `.claude/skills/timesheet` and executable by
+  any agent runtime with shell access, including the Pi agent): every
+  deterministic step is a fixed binary subcommand; the single judgment step
+  reviews only the compact one-day draft JSON. `workflow.md` states the
+  ≤ 1,000 tokens/day target for that step.
+- Recorded entries live in `<state dir>/entries/<date>.json`, merged
+  idempotently per time block with full source references kept for checking.
+- Add `scripts/tokens.py`: idempotent per-(date, runtime, session) token
+  capture from Claude Code or Pi transcripts into `benchmarks/tokens.csv`.
+- Development stamp `0.2.0-dev.1`; release stamping, adapter version and
+  publication remain owner-gated. Existing state, entries and credential paths
+  are untouched.
 
 R6 improvements and upstream Pi dependency remediation remain tracked in
 [issue #137](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/137).
