@@ -921,6 +921,78 @@ func ReadEntries(statePath, date string) (*EntriesFile, error) {
 	return &f, nil
 }
 
+// --- SUBMIT-1 stage-map sidecar -------------------------------------------------
+//
+// The stage command converts the day's recorded entries into staged intervals.
+// The sidecar maps each block_id to the staged interval_id it became, for
+// same-process restage (edit/remove in place instead of duplicating) and for
+// audit. It does NOT make staged state survive a process: Day.Staged is
+// session-only, so every fresh command re-derives the staged set from the
+// entries ledger and re-adds it; the interval ids that re-derivation produces
+// are stable in practice only while nothing is saved. Like the entries file
+// the sidecar lives under the entries directory, carries no state-schema
+// weight, and is never read by serve or the plan builder.
+
+// StagePath returns the per-day stage-map sidecar path derived from the state
+// path: entries/<date>.stage.json, next to the day's entries file.
+func StagePath(statePath, date string) string {
+	return strings.TrimSuffix(EntriesPath(statePath, date), ".json") + ".stage.json"
+}
+
+// StageMapFile is the durable block_id → interval_id sidecar for one day.
+type StageMapFile struct {
+	Date       string            `json:"date"`
+	AppVersion string            `json:"app_version"`
+	UpdatedAt  string            `json:"updated_at"`
+	Map        map[string]string `json:"map"`
+}
+
+// ReadStageMap loads the day's stage map. A missing file is (nil, nil).
+func ReadStageMap(statePath, date string) (map[string]string, error) {
+	data, err := os.ReadFile(StagePath(statePath, date))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, newError(CodeStateInvalid, "the stage map file cannot be read")
+	}
+	var f StageMapFile
+	if err := json.Unmarshal(data, &f); err != nil || f.Date != date {
+		return nil, newError(CodeStateInvalid, "the stage map file is not valid for this date")
+	}
+	return f.Map, nil
+}
+
+// WriteStageMap persists the day's stage map atomically, mirroring the entries
+// file's write discipline: one temporary file, one rename.
+func WriteStageMap(statePath, appVersion, date string, mapping map[string]string, now time.Time) error {
+	if mapping == nil {
+		mapping = map[string]string{}
+	}
+	f := StageMapFile{
+		Date:       date,
+		AppVersion: appVersion,
+		UpdatedAt:  now.UTC().Format(time.RFC3339),
+		Map:        mapping,
+	}
+	path := StagePath(statePath, date)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return newError(CodeStateInvalid, "the entries directory cannot be created")
+	}
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return newError(CodeInternal, "the stage map cannot be encoded")
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return newError(CodeStateInvalid, "the stage map file cannot be written")
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return newError(CodeStateInvalid, "the stage map file cannot be replaced")
+	}
+	return nil
+}
+
 // --- record-time source re-attachment -----------------------------------------
 
 // stateEvidenceView is a minimal read-only projection of the durable state

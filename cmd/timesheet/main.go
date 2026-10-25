@@ -21,6 +21,11 @@ Usage:
   timesheet run --config <path> [--env-file <path>] --date <YYYY-MM-DD>
   timesheet record --config <path> --date <YYYY-MM-DD> (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>)
   timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
+  timesheet stage --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
+  timesheet acknowledge --config <path> [--env-file <path>] --date <YYYY-MM-DD> --source <github|calendar> --collection-id <id>
+  timesheet decide --config <path> [--env-file <path>] --date <YYYY-MM-DD> --meeting-id <id> --decision <attended|skipped> --collection-id <id>
+  timesheet confirm --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
+  timesheet save --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
 
 The collect/draft/run/record/status subcommands are the deterministic headless
 surface used by the timesheet skill: collect performs one bounded collection
@@ -37,6 +42,28 @@ descriptions-only --descriptions file, or taking the full reviewed --file
 (recovery path) — and status reports store state plus recorded
 entries. They hold the same fixed-path, no-shell, credential-safe contract as
 serve and perform no approval or submission.
+
+The stage/acknowledge/decide/confirm/save subcommands finalize one recorded
+day (campaign issue #160, slice SUBMIT-1). Natural order: run --date first so
+collect has attempted every enabled source; then stage converts the day's
+recorded entries into staged intervals; then acknowledge (and decide) with
+the --collection-id copied verbatim from that collect receipt; then confirm;
+then save. stage converts entries with both a start and an end into intervals
+through the same session ops serve uses (the description text carries any PRs
+list verbatim); entries without time anchors are skipped and listed in the
+receipt — times are never invented. The entries file stays the single human
+ledger: each command re-derives the staged set from the entries ledger in its
+own process, the entries/<date>.stage.json block-to-interval sidecar serves
+same-process restage and audit, and a day that already has confirmed
+intervals is never restaged. Interval ids in receipts are valid only against
+the entries file as it stood when the receipt printed; editing entries before
+confirm renumbers them (later commands fail closed on stale ids). confirm
+runs the source gate: every enabled source needs a collection attempt for the
+date, and a non-complete attempt needs an explicit acknowledgment — a missing
+one fails with the gate error naming what is missing. save commits the
+confirmed day durably. Each of these commands is one process (open day, ops,
+close) and holds the store's exclusive lock: it cannot run while a serve
+process holds the store. Nothing here approves or submits anything.
 
 R4 adds the native approval ledger and one verified submission path. The
 'approve_plan' request binds a unique approval to the exact current rendered plan
@@ -111,6 +138,46 @@ func main() {
 		}
 	case "status":
 		if err := runStatus(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "stage":
+		if err := runStage(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "acknowledge":
+		if err := runAcknowledge(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "decide":
+		if err := runDecide(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "confirm":
+		if err := runConfirm(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "save":
+		if err := runSave(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return
 			}
