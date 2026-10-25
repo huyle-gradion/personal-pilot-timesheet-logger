@@ -64,7 +64,7 @@ func writeTestConfigTwoProjects(t *testing.T) string {
 func seedEntries(t *testing.T, cfg, date string, blocks []timesheet.ReviewedBlock) {
 	t.Helper()
 	_, err := timesheet.RecordEntries(statePathFor(cfg), timesheet.AppVersion,
-		timesheet.ReviewedDraft{Date: date, Blocks: blocks}, time.Now())
+		timesheet.ReviewedDraft{Date: date, Blocks: blocks}, false, time.Now())
 	if err != nil {
 		t.Fatalf("seed entries: %v", err)
 	}

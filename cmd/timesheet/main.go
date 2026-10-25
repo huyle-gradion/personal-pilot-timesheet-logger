@@ -19,7 +19,7 @@ Usage:
   timesheet collect --config <path> [--env-file <path>] --date <YYYY-MM-DD>
   timesheet draft --config <path> [--env-file <path>] --date <YYYY-MM-DD>
   timesheet run --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-  timesheet record --config <path> --date <YYYY-MM-DD> (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>)
+  timesheet record --config <path> --date <YYYY-MM-DD> (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>) [--replace]
   timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet stage --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
   timesheet classifications --config <path> [--env-file <path>] --query <text>
@@ -44,19 +44,30 @@ the draft JSON on stdout (the collect source report is not printed; its
 substance is already in the draft's flags and per-block completeness) while
 also writing the same draft bytes to the deterministic artifacts directory
 $TMPDIR/timesheet/<date>/draft.json (created as needed; the path is printed
-on stderr, so redirecting stdout yields exactly the draft bytes), record
+on stderr, so redirecting stdout yields exactly the draft bytes) — collect
+and run also print the fresh collection_id as one stderr line (issue #162),
+so acknowledge/decide can copy it without reading state.json — record
 merges the reviewed result into the per-day entries file
 (idempotent per time block) — composing it from --draft plus the
 descriptions-only --descriptions file, or taking the full reviewed --file
-(recovery path) — and status reports store state plus recorded
-entries. They hold the same fixed-path, no-shell, credential-safe contract as
+(recovery path) — or, with --replace, treats the reviewed result as the day's
+COMPLETE content: all blocks for --date are replaced with the reviewed blocks
+(block ids from the reviewed input; blocks absent from it are removed from
+the entries file). Use --replace only after re-collecting a day, when the new
+generation supersedes the old; without it the merge behavior is unchanged —
+and status reports store state plus recorded entries; with --date it also
+carries the day's per-source latest collection attempt (status and
+collection_id) for the acknowledge/decide steps. They hold the same
+fixed-path, no-shell, credential-safe contract as
 serve and perform no approval or submission.
 
 The stage/acknowledge/decide/confirm/save subcommands finalize one recorded
 day (campaign issue #160, slice SUBMIT-1). Natural order: run --date first so
-collect has attempted every enabled source; then stage converts the day's
+collect has attempted every enabled source (the run stderr and status --date
+both surface the fresh collection_id); then stage converts the day's
 recorded entries into staged intervals; then acknowledge (and decide) with
-the --collection-id copied verbatim from that collect receipt; then confirm;
+the --collection-id copied verbatim from that collect receipt or the status
+surface; then confirm;
 then save. stage converts entries with both a start and an end into intervals
 through the same session ops serve uses (the description text carries any PRs
 list verbatim); entries without time anchors are skipped and listed in the

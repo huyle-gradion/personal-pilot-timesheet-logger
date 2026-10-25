@@ -794,11 +794,14 @@ type EntriesFile struct {
 	Entries    []EntryRecord `json:"entries"`
 }
 
-// RecordReceipt reports one recording run.
+// RecordReceipt reports one recording run. Removed counts the day's prior
+// blocks a --replace run dropped (issue #162); merge runs never remove, so
+// the field stays absent there.
 type RecordReceipt struct {
 	Date         string `json:"date"`
 	EntriesTotal int    `json:"entries_total"`
 	Written      int    `json:"written"`
+	Removed      int    `json:"removed,omitempty"`
 	Path         string `json:"path"`
 }
 
@@ -810,11 +813,17 @@ func EntriesPath(statePath, date string) string {
 // RecordEntries validates the reviewed draft and merges it into the day's
 // entries file atomically. It is idempotent per block_id: an existing block is
 // replaced, other blocks are preserved, and a second run of the same input
-// changes nothing but UpdatedAt. Before merging it re-attaches each block's
+// changes nothing but UpdatedAt. With replace (issue #162), the reviewed draft
+// is the day's complete content: all blocks for the date are replaced with the
+// draft's blocks (block ids from the draft; blocks absent from it are removed
+// from the entries file) — the re-collected-day case where the new generation
+// supersedes the old. The property within one replace run is unchanged:
+// re-running the same replace is idempotent, and per-block validation is
+// identical. Before merging it re-attaches each block's
 // audit-only source references from the day's durable evidence (the
 // AI-visible draft no longer carries them); recording never writes state and
 // never blocks on a running serve.
-func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, now time.Time) (RecordReceipt, error) {
+func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, replace bool, now time.Time) (RecordReceipt, error) {
 	if _, err := time.Parse("2006-01-02", reviewed.Date); err != nil {
 		return RecordReceipt{}, newError(CodeInvalidDate, "record: date must be YYYY-MM-DD")
 	}
@@ -863,8 +872,21 @@ func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, now tim
 	stamp := now.UTC().Format(time.RFC3339)
 	merged := EntriesFile{Date: reviewed.Date, AppVersion: appVersion, UpdatedAt: stamp}
 	kept := map[string]EntryRecord{}
-	for _, e := range existing.Entries {
-		kept[e.BlockID] = e
+	// Merge mode preserves blocks the draft does not mention; replace mode
+	// (issue #162) starts empty, so blocks absent from the draft are removed
+	// and the draft is the day's complete content.
+	if !replace {
+		for _, e := range existing.Entries {
+			kept[e.BlockID] = e
+		}
+	}
+	removed := 0
+	if replace {
+		for _, e := range existing.Entries {
+			if !seen[e.BlockID] {
+				removed++
+			}
+		}
 	}
 	written := 0
 	for _, b := range reviewed.Blocks {
@@ -901,7 +923,7 @@ func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, now tim
 		return RecordReceipt{}, newError(CodeStateInvalid, "record: the entries file cannot be replaced")
 	}
 	return RecordReceipt{
-		Date: reviewed.Date, EntriesTotal: len(merged.Entries), Written: written, Path: path,
+		Date: reviewed.Date, EntriesTotal: len(merged.Entries), Written: written, Removed: removed, Path: path,
 	}, nil
 }
 

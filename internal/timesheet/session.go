@@ -155,17 +155,28 @@ type EvidenceReview struct {
 	Meetings []ProposedMeeting      `json:"meetings"`
 }
 
+// DaySourceStatus is one enabled source's latest collection attempt state for
+// the day (issue #162): it surfaces the attempt's status and collection_id so
+// acknowledge/decide can copy the id without reading state.json. A source with
+// no recorded attempt reports "unattempted" and no collection_id.
+type DaySourceStatus struct {
+	Source       string `json:"source"`
+	Status       string `json:"status"`
+	CollectionID string `json:"collection_id,omitempty"`
+}
+
 // DayStatus is a compact status entry for one loaded day.
 type DayStatus struct {
-	Date               string `json:"date"`
-	Timezone           string `json:"timezone"`
-	Revision           int    `json:"revision"`
-	SavedRevision      int    `json:"saved_revision"`
-	Dirty              bool   `json:"dirty"`
-	ConfirmedIntervals int    `json:"confirmed_intervals"`
-	StagedIntervals    int    `json:"staged_intervals"`
-	ConfirmedMinutes   int    `json:"confirmed_minutes"`
-	StagedMinutes      int    `json:"staged_minutes"`
+	Date               string            `json:"date"`
+	Timezone           string            `json:"timezone"`
+	Revision           int               `json:"revision"`
+	SavedRevision      int               `json:"saved_revision"`
+	Dirty              bool              `json:"dirty"`
+	ConfirmedIntervals int               `json:"confirmed_intervals"`
+	StagedIntervals    int               `json:"staged_intervals"`
+	ConfirmedMinutes   int               `json:"confirmed_minutes"`
+	StagedMinutes      int               `json:"staged_minutes"`
+	Sources            []DaySourceStatus `json:"sources,omitempty"`
 }
 
 // StatusResult reports loaded days and the protocol identity. It exposes no
@@ -1078,6 +1089,7 @@ func (s *Session) status() (StatusResult, error) {
 			StagedIntervals:    len(day.Staged),
 			ConfirmedMinutes:   confirmed.TotalMinutes,
 			StagedMinutes:      staged.TotalMinutes,
+			Sources:            s.daySourceStatuses(day.Date),
 		})
 	}
 	migrationReceipts, remoteBindings, unresolvedWrites, approvals, nativeUnresolved := 0, 0, 0, 0, 0
@@ -1113,6 +1125,40 @@ func (s *Session) status() (StatusResult, error) {
 		NativeUnresolved:    nativeUnresolved,
 		Days:                days,
 	}, nil
+}
+
+// daySourceStatuses reports each enabled source's latest collection attempt
+// for the date (issue #162): the persisted SourceAttempt's status and
+// collection_id, or "unattempted" when no attempt is recorded. Disabled
+// sources are omitted — they can never collect and never need acknowledgment.
+func (s *Session) daySourceStatuses(date string) []DaySourceStatus {
+	githubOn, calendarOn := s.cfg.EnabledSources()
+	if !githubOn && !calendarOn {
+		return nil
+	}
+	ev := s.store.Evidence(date)
+	sources := []DaySourceStatus{}
+	for _, src := range []struct {
+		name    string
+		enabled bool
+	}{
+		{SourceGithub, githubOn},
+		{SourceCalendar, calendarOn},
+	} {
+		if !src.enabled {
+			continue
+		}
+		if a := latestAttempt(ev, src.name); a != nil {
+			sources = append(sources, DaySourceStatus{
+				Source:       src.name,
+				Status:       a.Status,
+				CollectionID: a.CollectionID,
+			})
+		} else {
+			sources = append(sources, DaySourceStatus{Source: src.name, Status: "unattempted"})
+		}
+	}
+	return sources
 }
 
 func (s *Session) checkEnvironment() EnvCheckResult {
