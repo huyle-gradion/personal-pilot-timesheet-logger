@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
@@ -155,13 +156,25 @@ func (h *headlessSession) call(op string, req timesheet.Request) (any, error) {
 	return resp.Result, nil
 }
 
-func printJSON(v any) error {
+// jsonBytes renders one headless result exactly as it appears on stdout:
+// indented JSON plus one trailing newline. run writes these same bytes to the
+// artifacts file, so a redirect of run's stdout and the stored artifact are
+// byte-identical by construction.
+func jsonBytes(v any) ([]byte, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+func printJSON(v any) error {
+	data, err := jsonBytes(v)
 	if err != nil {
 		return err
 	}
-	fmt.Println(string(data))
-	return nil
+	_, err = os.Stdout.Write(data)
+	return err
 }
 
 // runCollect performs one collection attempt and prints its bounded result.
@@ -186,33 +199,78 @@ func runCollect(args []string) error {
 	return printJSON(res)
 }
 
+// buildDayDraft is the shared core of the draft and run subcommands: it opens
+// the store, runs exactly one bounded collection attempt for the day, builds
+// the compact draft and closes the store. Neither caller duplicates this flow.
+func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, error) {
+	h, err := openHeadless(configPath, envFile)
+	if err != nil {
+		return timesheet.Draft{}, err
+	}
+	defer h.done()
+	if _, err := h.call("open_day", timesheet.Request{Day: date}); err != nil {
+		return timesheet.Draft{}, err
+	}
+	if _, err := h.call("collect", timesheet.Request{Day: date}); err != nil {
+		return timesheet.Draft{}, err
+	}
+	res, err := h.call("review", timesheet.Request{Day: date})
+	if err != nil {
+		return timesheet.Draft{}, err
+	}
+	review, ok := res.(timesheet.Review)
+	if !ok {
+		return timesheet.Draft{}, fmt.Errorf("draft: unexpected review payload")
+	}
+	_, _ = h.call("close", timesheet.Request{})
+	return timesheet.BuildDraft(review, timesheet.AppVersion), nil
+}
+
 // runDraft collects the day and prints the compact draft for the judgment step.
 func runDraft(args []string) error {
 	f, err := parseHeadlessFlags("draft", args, true, false)
 	if err != nil {
 		return err
 	}
-	h, err := openHeadless(f.configPath, f.envFile)
+	draft, err := buildDayDraft(f.configPath, f.envFile, f.date)
 	if err != nil {
 		return err
 	}
-	defer h.done()
-	if _, err := h.call("open_day", timesheet.Request{Day: f.date}); err != nil {
-		return err
-	}
-	if _, err := h.call("collect", timesheet.Request{Day: f.date}); err != nil {
-		return err
-	}
-	res, err := h.call("review", timesheet.Request{Day: f.date})
+	return printJSON(draft)
+}
+
+// runRun composes the collect and draft subcommands' single shared flow in one
+// process: one bounded collection attempt, then the compact draft. stdout
+// carries ONLY the draft JSON — the collect source report is not printed; its
+// substance is already in the draft's flags and per-block completeness. The
+// same draft bytes are also written to the deterministic artifacts directory
+// `$TMPDIR/timesheet/<date>/draft.json` (created as needed), and the artifacts
+// path is printed on stderr so stdout stays pure draft JSON: redirecting
+// stdout yields exactly the draft bytes.
+func runRun(args []string) error {
+	f, err := parseHeadlessFlags("run", args, true, false)
 	if err != nil {
 		return err
 	}
-	review, ok := res.(timesheet.Review)
-	if !ok {
-		return fmt.Errorf("draft: unexpected review payload")
+	draft, err := buildDayDraft(f.configPath, f.envFile, f.date)
+	if err != nil {
+		return err
 	}
-	_, _ = h.call("close", timesheet.Request{})
-	return printJSON(timesheet.BuildDraft(review, timesheet.AppVersion))
+	data, err := jsonBytes(draft)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(os.TempDir(), "timesheet", f.date)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("run: the artifacts directory cannot be created")
+	}
+	artifacts := filepath.Join(dir, "draft.json")
+	if err := os.WriteFile(artifacts, data, 0o600); err != nil {
+		return fmt.Errorf("run: the artifacts draft file cannot be written")
+	}
+	fmt.Fprintf(os.Stderr, "run: artifacts: %s\n", artifacts)
+	_, err = os.Stdout.Write(data)
+	return err
 }
 
 // runRecord validates the reviewed result and merges it into the day's
