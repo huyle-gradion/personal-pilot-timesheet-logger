@@ -956,41 +956,70 @@ type ClassifyApplied struct {
 
 // ClassifyReceipt is classify's stdout receipt, in interval_id order.
 type ClassifyReceipt struct {
-	Date            string            `json:"date"`
-	File            string            `json:"file"`
-	SidecarFile     string            `json:"sidecar_file"`
-	Applied         []ClassifyApplied `json:"applied"`
-	Selections      int               `json:"selections"`
-	Revision        int               `json:"revision"`
-	StagedIntervals int               `json:"staged_intervals"`
-	// Note carries the honest no-op wording when the file named no
-	// selections; it is empty whenever at least one selection applied.
+	Date string `json:"date"`
+	File string `json:"file"`
+	// SidecarFile is the sidecar the not-yet-finalized path wrote the
+	// selections to. Empty on the finalized-day path: no sidecar is written
+	// there because its selections become durable in the same process.
+	SidecarFile string            `json:"sidecar_file"`
+	Applied     []ClassifyApplied `json:"applied"`
+	Selections  int               `json:"selections"`
+	// Revision is the day's revision after the command: the unchanged open
+	// revision on the not-yet-finalized path and on a finalized-day no-op, or
+	// the NEW saved revision a finalized-day re-finalize produced.
+	Revision        int `json:"revision"`
+	StagedIntervals int `json:"staged_intervals"`
+	// Refinalized is true only on the finalized-day path when confirm and
+	// save ran: the day was already durable and is now durable at the new
+	// Revision with the selections applied to its confirmed intervals.
+	Refinalized bool `json:"refinalized"`
+	// Note carries the honest no-op wording when the file named no selections
+	// and the finalized-day re-finalize wording; it is empty when the
+	// not-yet-finalized path applied at least one selection.
 	Note string `json:"note,omitempty"`
 }
 
-// runClassify re-derives the day's staged set exactly as stage/confirm/save
-// do (same entries ledger, same sidecar-backed derivation, so interval ids
-// match the ids a stage receipt printed for the same entries state), then
-// applies each selection in choices.json through the select_classification op
-// in interval_id order, and persists the selections — each content-bound to
-// the recorded block it was chosen for via BlockContentDigest — to the
-// entries/<date>.classify.json sidecar so confirm and save can replay them.
-// Selection ids must be copied verbatim from the current stage or classify
-// receipt: an unknown or renumbered interval id fails closed with the op's
-// own error, untouched, and the sidecar is not written. A `{}` choices file
-// is a valid honest no-op: nothing is selected, and the sidecar is rewritten
-// empty (clearing any earlier selections). After classify the day remains
-// staged; nothing durable happens until confirm and save.
+// runClassify applies the day's classification choices through the
+// select_classification op, and has two paths:
+//
+//   - Not yet finalized (the day carries no durable confirmed intervals): it
+//     re-derives the day's staged set exactly as stage/confirm/save do (same
+//     entries ledger, same sidecar-backed derivation, so interval ids match
+//     the ids a stage receipt printed for the same entries state), then
+//     applies each selection in choices.json in interval_id order, and
+//     persists the selections — each content-bound to the recorded block it
+//     was chosen for via BlockContentDigest — to the
+//     entries/<date>.classify.json sidecar so confirm and save can replay
+//     them. Selection ids must be copied verbatim from the current stage or
+//     classify receipt: an unknown or renumbered interval id fails closed
+//     with the op's own error, untouched, and the sidecar is not written. A
+//     `{}` choices file is a valid honest no-op: nothing is selected, and the
+//     sidecar is rewritten empty (clearing any earlier selections). After
+//     classify the day remains staged; nothing durable happens until confirm
+//     and save.
+//
+//   - Already finalized (a saved day that carries durable confirmed
+//     intervals, e.g. it was confirmed and saved before any classification
+//     was selected — previously this day could never become plan-ready, a
+//     deadlock): the day is opened normally (open_day semantics, so Staged is
+//     the clone of the durable confirmed intervals — never re-derived, never
+//     restaged), the selections key off the durable interval ids exactly as
+//     `status --date` prints them, and the command drives the day to a NEW
+//     durable revision inside this process — confirm then save, the serve
+//     flow's reopen → select → confirm → save revision step — because the
+//     selections live only on Staged otherwise. No sidecar is written on this
+//     path: the selections become durable immediately. A `{}` choices file is
+//     still an honest no-op: nothing is selected and the saved day is left
+//     untouched at its current revision. A stale or unknown interval id fails
+//     closed with the op's own error before anything durable happens
+//     (select_classification mutates only the in-memory staged clone, so the
+//     saved revision is unchanged and no receipt prints).
 func runClassify(args []string) error {
 	f, err := parseClassifyFlags(args)
 	if err != nil {
 		return err
 	}
 	cfg, err := timesheet.LoadConfig(f.configPath)
-	if err != nil {
-		return err
-	}
-	project, err := resolveProject("classify", cfg, f.project)
 	if err != nil {
 		return err
 	}
@@ -1007,7 +1036,18 @@ func runClassify(args []string) error {
 		return err
 	}
 	defer h.done()
-	summary, err := openFinalizeDay(h, "classify", f.date)
+	res, err := h.call("open_day", timesheet.Request{Day: f.date})
+	if err != nil {
+		return err
+	}
+	summary, ok := res.(timesheet.DaySummary)
+	if !ok {
+		return fmt.Errorf("classify: unexpected open_day payload")
+	}
+	if len(summary.Confirmed.Segments) > 0 {
+		return runClassifyFinalized(h, f, summary, selections)
+	}
+	project, err := resolveProject("classify", cfg, f.project)
 	if err != nil {
 		return err
 	}
@@ -1054,6 +1094,67 @@ func runClassify(args []string) error {
 	if len(applied) == 0 {
 		receipt.Note = "no selections in the choices file; nothing was classified"
 	}
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// runClassifyFinalized is classify's finalized-day path. The day was opened
+// via open_day, so its staged set is the clone of the durable confirmed
+// intervals — stable ids the entries ledger plays no part in — and the
+// selections apply directly against those ids at the day's current (saved)
+// revision. With at least one applied selection the day is driven to a new
+// durable revision: confirm then save within this same process, mirroring the
+// serve flow's reopen → select_classification → confirm → save revision step
+// (staged selections are session-only, so skipping the re-finalize would
+// silently drop them). An empty applied set is an honest no-op: no confirm
+// and no save run, and the receipt says the saved day was left unchanged.
+// Every op refusal passes through verbatim, so a stale or unknown interval id
+// (unknown_interval), a catalog that is not stored (stale_catalog) or a
+// classification the catalog did not return (unknown_classification) fails
+// closed with the day untouched at its saved revision.
+func runClassifyFinalized(h *headlessSession, f *finalizeFlags, summary timesheet.DaySummary, selections map[string]timesheet.ClassificationChoiceEntry) error {
+	applied, err := applySelections(h, f.date, summary.Revision, selections)
+	if err != nil {
+		return err
+	}
+	durable := 0
+	for _, seg := range summary.Confirmed.Segments {
+		if seg.OriginDate == f.date {
+			durable++
+		}
+	}
+	receipt := ClassifyReceipt{
+		Date:            f.date,
+		File:            f.file,
+		Applied:         applied,
+		Selections:      len(applied),
+		Revision:        summary.Revision,
+		StagedIntervals: durable,
+	}
+	if len(applied) == 0 {
+		receipt.Note = fmt.Sprintf("no selections in the choices file; nothing was classified; the saved day was left unchanged at revision %d", summary.Revision)
+		_, _ = h.call("close", timesheet.Request{})
+		return printJSON(receipt)
+	}
+	confirmed, err := h.call("confirm", timesheet.Request{Day: f.date, Revision: &summary.Revision})
+	if err != nil {
+		return err
+	}
+	confirmReceipt, ok := confirmed.(timesheet.ConfirmReceipt)
+	if !ok {
+		return fmt.Errorf("classify: unexpected confirm payload")
+	}
+	saved, err := h.call("save", timesheet.Request{Day: f.date, Revision: &confirmReceipt.Revision})
+	if err != nil {
+		return err
+	}
+	saveReceipt, ok := saved.(timesheet.SaveReceipt)
+	if !ok {
+		return fmt.Errorf("classify: unexpected save payload")
+	}
+	receipt.Refinalized = true
+	receipt.Revision = saveReceipt.Revision
+	receipt.Note = fmt.Sprintf("day was already finalized; the selections keyed off the durable interval ids and the day was re-finalized at revision %d", saveReceipt.Revision)
 	_, _ = h.call("close", timesheet.Request{})
 	return printJSON(receipt)
 }
