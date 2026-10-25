@@ -71,7 +71,13 @@ surface; then confirm;
 then save. stage converts entries with both a start and an end into intervals
 through the same session ops serve uses (the description text carries any PRs
 list verbatim); entries without time anchors are skipped and listed in the
-receipt — times are never invented. Entries longer than the Gradion remote's
+receipt — times are never invented. Overlapping ledger entries (the remote
+forbids overlaps) resolve at the bridge: specific shorter blocks claim their
+time first and broader spans split around them, so a meeting inside an
+evidence span splits that evidence span — the ledger keeps the human's
+overlapping truth, no minute is lost or doubled, and an entry fully covered
+by more specific entries is skipped with that reason. Entries longer than the
+Gradion remote's
 four-hour policy (live-verified, issue #167) are staged as contiguous chunk
 intervals of at most 240 minutes each — the entries ledger keeps the human's
 true block untouched, and the receipt lists every chunk. The entries file stays
