@@ -1,33 +1,27 @@
 ---
 name: timesheet
-description: Log today's work into the personal timesheet from real git, pull-request and calendar evidence. Run once per day when the user asks to "log today's work" or "log the timesheet", or on request for a past working day.
+description: Log today's work into the personal timesheet from real git, pull-request and calendar evidence. Run when the user asks to "log today's work" or "log the timesheet", or a past working day.
 ---
 
-Run exactly what is written — no `--help`, flag discovery, or other repo docs; a command error names its fix. Once per day, never twice per time block (recording is idempotent per block). Runner-agnostic: Pi (demonstrated), Claude Code (`.claude/skills/timesheet` link), any shell runtime. Steps are **[Script]** (deterministic binary subcommands) or **[AI]** (judgment): only real decisions go to the model. Never: remote submission — approval-gated, stays with the interactive human flow (`pi/launch.mjs`); editing evidence, block times, or PR lists during review.
+Run exactly what is written - no flag discovery; errors name their fix. Once per day, never twice per block (idempotent per block). Steps are **[Script]** or **[AI]** (judgment). Never: the TTY-gated `approve`/`submit`/`resolve-write` (human-only); editing evidence, block times, or PR lists during review.
 
-Inputs (resolve once; never commit): `TS_BINARY=<repo>/bin/timesheet`, `TS_CONFIG=$HOME/.timesheet/config.json`, `TS_ENV=$HOME/.timesheet/.env.local` (may be empty for local-only days). Never read, print, or copy the env file's contents; only the binary reads it (`--env-file`). If `bin/timesheet version` exits 0, never `go build` during a run; if it fails, rebuild: `go build -trimpath -o bin/timesheet ./cmd/timesheet`.
+Inputs (resolve once; never commit): `TS_BINARY=<repo>/bin/timesheet`, `TS_CONFIG=$HOME/.timesheet/config.json`, `TS_ENV=$HOME/.timesheet/.env.local` - never read/print/copy the env file; only the binary reads it (`--env-file`). If `bin/timesheet version` fails: `go build -trimpath -o bin/timesheet ./cmd/timesheet`; else never build mid-run.
 
-1. **[Script] Run**: one bounded collect attempt plus the draft (meetings; confirmed intervals outside them; unallocated topics; whole-day if none); re-runnable; a failed source is recorded honestly, never blocks the day:
-   `"$TS_BINARY" run --config "$TS_CONFIG" --env-file "$TS_ENV" --date "$DAY" > "$TMP/draft.json"`
-   stdout is the **entire** judgment input; redirect it to your run file; artifacts dir: `$TMPDIR/timesheet/$DAY/` (same bytes in `draft.json`; path on stderr).
+1. **[Script] Run** (re-runnable; a failed source never blocks the day): `"$TS_BINARY" run --config "$TS_CONFIG" --env-file "$TS_ENV" --date "$DAY" > "$TMP/draft.json"` - stdout is the **entire** judgment input.
 
-2. **[AI] Review**: only `$TMP/draft.json` enters the judgment step (never raw `git log`, calendar payloads, earlier days); write ONLY `$TMP/descriptions.json`: `{"notes": "<one plain string>", "descriptions": {"<block_id>": "<prose>"}}`
-   - One entry per block keyed by `block_id`: short grouped-topic summary of `topic_candidates` (combine small items); every block needs one (`record` names missing ids).
-   - Do NOT reproduce draft fields (times, titles, candidates, flags, `prs_inline`) or a `PRs:` list; `record` appends `prs_inline` to the description itself.
-   - `notes`: one plain JSON string (never an array): day-level remark (event that is not work, incomplete day per `flags`: `source_incomplete:*`, `no_confirmed_intervals`); omit if nothing to say; run-context only, not persisted; durable content goes in a block description.
-   - Do not re-read the draft or write a reviewed file; `record` composes it (`--file reviewed.json` = recovery only).
+2. **[AI] Review**: judge ONLY `$TMP/draft.json` (never raw git log/calendar/prior days); write ONLY `$TMP/descriptions.json`: `{"notes": "<one plain string>", "descriptions": {"<block_id>": "<prose>"}}` - one grouped-topic entry per block; no draft fields or `PRs:` list (`record` appends `prs_inline`); `notes` = one plain JSON string or omit; `--file reviewed.json` = recovery only.
 
-3. **[Script] Record**: idempotent per block (re-run updates in place, never a second entry); entries: `<state dir>/entries/<date>.json` with source references:
-   `"$TS_BINARY" record --config "$TS_CONFIG" --date "$DAY" --draft "$TMP/draft.json" --descriptions "$TMP/descriptions.json"`
-   Composition rejection (missing/empty description, unknown `block_id`): fix the named block in `$TMP/descriptions.json`, re-run. `--file reviewed.json` recovery keeps the original contract: empty description, missing `PRs:` list, duplicate block.
+3. **[Script] Record** (idempotent per block): `"$TS_BINARY" record --config "$TS_CONFIG" --date "$DAY" --draft "$TMP/draft.json" --descriptions "$TMP/descriptions.json"` - rejection (missing/empty description, unknown `block_id`) => fix, re-run. **[Script] Verify**: `"$TS_BINARY" status --config "$TS_CONFIG" --date "$DAY"`.
 
-4. **[Script] Verify**: confirm entries and descriptions:
-   `"$TS_BINARY" status --config "$TS_CONFIG" --date "$DAY"`
+4. **[Script] Tokens**: `python3 scripts/tokens.py` (add `--pi-dir "$HOME/.pi/agent/sessions"` on Pi); both if both ran; appends to `benchmarks/tokens.csv` (idempotent per session; manual runs: none).
 
-5. **[Script] Token usage**: appends runtime-prefixed session totals to `benchmarks/tokens.csv` (idempotent per session); run the form matching the runtime (both if both ran); manual runs add no row:
-   ```sh
-   python3 scripts/tokens.py --pi-dir "$HOME/.pi/agent/sessions"   # Pi (default)
-   python3 scripts/tokens.py                                        # Claude Code
-   ```
+Step 2 bound: **<= 1,000 tokens/day (input + output)**, cache separate; [Script] steps: no model tokens.
 
-Step 2: **≤ 1,000 tokens/day (input + output)**, cache separate, any runtime; input is exactly the day's draft (300–800 tokens); [Script] steps use no model tokens. Run fuses collect and draft. Measured: 113,187 → 50,751 (runs 1–2; labeled drops run-3/run-4); run-4 judgment artifact ~340 B/~100 tokens vs ~2.7 KB pre-#152.
+**Submission tail** - commands: `"$TS_BINARY" <cmd> --config "$TS_CONFIG" [--env-file "$TS_ENV"] --date "$DAY"` (except classifications/resolve-write), one process, exclusive store lock (never beside serve); ids verbatim from receipts. Flow: run -> record -> stage -> classifications/classify -> confirm -> save -> plan -> [reconcile/resolve if blockers] -> plan (new plan_id) -> approve -> submit -> submit-status.
+
+5. **[Script]** `stage`: staged intervals re-derive from the entries ledger (entries/ = human log AND staging source); no start+end => skipped, times never invented.
+6. **[Script]** `classifications --query <text>` (live: network+credential); **[AI]** picks; **[Script]** `classify --file choices.json`; edits later => stage+classify.
+7. **[Script]** `confirm` = source gate (incomplete collect => `acknowledge --source <github|calendar> --collection-id <id>`; meetings => `decide --meeting-id <id> --decision <attended|skipped> --collection-id <id>`); `save`.
+8. **[Script]** `plan` (live, read-only; plan_id/ops/blockers). Blockers => `reconcile`; **[AI/human]** `resolve --file decision.json` (adopt|accept_observed|foreign; receipt ids); any resolve => plan again.
+9. **Human gates - agent stops.** `approve`, `submit --approval-id <id>`, `resolve-write --file <f>` are human-only [Script] prompts needing tty stdin+stdout and the exact plan_id/approval_id/write_ref typed - a deliberate-act barrier, not human-presence proof (a pty wrapper defeats it). The agent MUST NOT attempt them: attempting = contract violation; the gate refuses anyway. `submit-status` is read-only, not gated.
+10. **Failure discipline**: never auto-retry a submit; uncertain/unidentified/in_flight stay unresolved until human resolution (submit-status shows next_action; resolve-write needs a fresh reconcile/plan observation); persistence_failed is not consumption (a re-submit consumes the still-active approval); post-save entries divergence is caught by the plan content hash.

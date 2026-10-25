@@ -21,13 +21,17 @@ bin/timesheet version   # prints the application version and protocol schema, ex
 ```
 
 `bin/timesheet` is the production-named executable. Its server commands are
-`version` and `serve --config <path> --env-file <path>`, plus the four
-headless skill subcommands described below (`collect`, `draft`, `record`,
-`status`). A normal `version` run, a normal `serve` close/EOF and `serve`
-help exit `0`. No top-level command, an unknown top-level command, or extra
-`version` arguments exit `2`. `serve` argument validation (an unknown flag,
-an extra positional, a missing required flag), startup failure and stream
-failure exit `1`. Usage errors make no remote call.
+`version` and `serve --config <path> --env-file <path>`, plus the headless
+skill subcommands described below (`collect`, `draft`, `record`, `status` for
+local logging; `stage`, `classifications`, `classify`, `acknowledge`, `decide`,
+`confirm`, `save`, `plan`, `reconcile`, `resolve` and `submit-status` for the
+path from a recorded day to a printed plan; `approve`, `submit` and
+`resolve-write` are TTY-gated and interactive-only). A normal `version` run, a
+normal `serve` close/EOF and `serve` help exit `0`. No top-level command, an
+unknown top-level command, or extra `version` arguments exit `2`. `serve`
+argument validation (an unknown flag, an extra positional, a missing required
+flag), startup failure and stream failure exit `1`. Usage errors make no
+remote call.
 
 ## Daily log skill
 
@@ -45,11 +49,40 @@ bin/timesheet record  --config <config> --date <date> --file reviewed.json
 bin/timesheet status  --config <config> [--date <date>]
 ```
 
+The submission tail adds one headless step per line (campaign issue #160,
+slices SUBMIT-1..4; full flow: run → record → stage → classifications/classify
+→ confirm → save → plan → [reconcile/resolve if blockers] → plan with a new
+plan_id → approve → submit, with submit-status for recovery):
+
+```bash
+bin/timesheet stage          --config <config> [--env-file <env>] --date <date> [--project <id>]
+bin/timesheet classifications --config <config> [--env-file <env>] --query <text>
+bin/timesheet classify       --config <config> [--env-file <env>] --date <date> --file <choices.json> [--project <id>]
+bin/timesheet acknowledge    --config <config> [--env-file <env>] --date <date> --source <github|calendar> --collection-id <id>
+bin/timesheet decide         --config <config> [--env-file <env>] --date <date> --meeting-id <id> --decision <attended|skipped> --collection-id <id>
+bin/timesheet confirm        --config <config> [--env-file <env>] --date <date> [--project <id>]
+bin/timesheet save           --config <config> [--env-file <env>] --date <date> [--project <id>]
+bin/timesheet plan           --config <config> [--env-file <env>] --date <date>
+bin/timesheet reconcile      --config <config> [--env-file <env>] --date <date>
+bin/timesheet resolve        --config <config> [--env-file <env>] --date <date> --file <decision.json>
+bin/timesheet approve        --config <config> [--env-file <env>] --date <date>                     # interactive-only
+bin/timesheet submit         --config <config> [--env-file <env>] --date <date> --approval-id <id>  # interactive-only
+bin/timesheet submit-status  --config <config> [--env-file <env>] --date <date>
+bin/timesheet resolve-write  --config <config> [--env-file <env>] --file <decision.json>            # interactive-only
+```
+
 Entries land in `<state dir>/entries/<date>.json`, merged idempotently per
-time block with full source references. `scripts/tokens.py` records the
-day's model token usage from Claude Code or Pi transcripts into
-`benchmarks/tokens.csv`. The skill never approves or submits: remote
-submission stays on the interactive, human-approved workflow below.
+time block with full source references; `entries/` stays the human ledger and
+is the staging source, with post-save divergence caught by the plan content
+hash. `scripts/tokens.py` records the day's model token usage from Claude Code
+or Pi transcripts into `benchmarks/tokens.csv`. Gate discipline: the skill may
+run every step above except `approve`, `submit` and `resolve-write` — those
+are deliberate-act barriers (a terminal on both stdin and stdout plus the
+exact typed `plan_id`/`approval_id`/`write_ref`; not proof of human presence —
+a pty wrapper defeats it), so the agent stops after
+`plan`, hands the human the plan_id, and never attempts them; a submit is
+never auto-retried, and unknown outcomes stay unresolved until a human
+resolves them.
 
 ## Launch
 
