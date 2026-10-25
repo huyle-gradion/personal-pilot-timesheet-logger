@@ -921,6 +921,286 @@ func ReadEntries(statePath, date string) (*EntriesFile, error) {
 	return &f, nil
 }
 
+// --- SUBMIT-1 stage-map sidecar -------------------------------------------------
+//
+// The stage command converts the day's recorded entries into staged intervals.
+// The sidecar maps each block_id to the staged interval_id it became, for
+// same-process restage (edit/remove in place instead of duplicating) and for
+// audit. It does NOT make staged state survive a process: Day.Staged is
+// session-only, so every fresh command re-derives the staged set from the
+// entries ledger and re-adds it; the interval ids that re-derivation produces
+// are stable in practice only while nothing is saved. Like the entries file
+// the sidecar lives under the entries directory, carries no state-schema
+// weight, and is never read by serve or the plan builder.
+
+// StagePath returns the per-day stage-map sidecar path derived from the state
+// path: entries/<date>.stage.json, next to the day's entries file.
+func StagePath(statePath, date string) string {
+	return strings.TrimSuffix(EntriesPath(statePath, date), ".json") + ".stage.json"
+}
+
+// StageMapFile is the durable block_id → interval_id sidecar for one day.
+type StageMapFile struct {
+	Date       string            `json:"date"`
+	AppVersion string            `json:"app_version"`
+	UpdatedAt  string            `json:"updated_at"`
+	Map        map[string]string `json:"map"`
+}
+
+// ReadStageMap loads the day's stage map. A missing file is (nil, nil).
+func ReadStageMap(statePath, date string) (map[string]string, error) {
+	data, err := os.ReadFile(StagePath(statePath, date))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, newError(CodeStateInvalid, "the stage map file cannot be read")
+	}
+	var f StageMapFile
+	if err := json.Unmarshal(data, &f); err != nil || f.Date != date {
+		return nil, newError(CodeStateInvalid, "the stage map file is not valid for this date")
+	}
+	return f.Map, nil
+}
+
+// WriteStageMap persists the day's stage map atomically, mirroring the entries
+// file's write discipline: one temporary file, one rename.
+func WriteStageMap(statePath, appVersion, date string, mapping map[string]string, now time.Time) error {
+	if mapping == nil {
+		mapping = map[string]string{}
+	}
+	f := StageMapFile{
+		Date:       date,
+		AppVersion: appVersion,
+		UpdatedAt:  now.UTC().Format(time.RFC3339),
+		Map:        mapping,
+	}
+	path := StagePath(statePath, date)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return newError(CodeStateInvalid, "the entries directory cannot be created")
+	}
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return newError(CodeInternal, "the stage map cannot be encoded")
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return newError(CodeStateInvalid, "the stage map file cannot be written")
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return newError(CodeStateInvalid, "the stage map file cannot be replaced")
+	}
+	return nil
+}
+
+// --- SUBMIT-2 classification-choices sidecar ------------------------------------
+//
+// classify applies reviewed classification selections to the day's staged
+// intervals. Like the staged set itself, a selection made on a staged interval
+// is session-only: it lives on Day.Staged entries and becomes durable only
+// when confirm+save commit the day. Because every command is a one-shot
+// process that re-derives the staged set from the entries ledger, the raw
+// selections must survive the process boundary on their own: this sidecar —
+// entries/<date>.classify.json, next to the entries file — persists the
+// interval_id → {catalog_id, classification_id} map, each selection
+// content-bound to the recorded block it was chosen for (BlockContentDigest),
+// so confirm and save can replay it against a provably identical re-derived
+// staged set and fail closed on any entries drift. It is the same pattern as
+// the stage map, carries no state-schema weight, and is never read by serve
+// or the plan builder.
+
+// ChoicesPath returns the per-day classification-choices sidecar path derived
+// from the state path: entries/<date>.classify.json, next to the day's entries
+// file and stage map.
+func ChoicesPath(statePath, date string) string {
+	return strings.TrimSuffix(EntriesPath(statePath, date), ".json") + ".classify.json"
+}
+
+// ClassificationChoiceEntry is one interval's reviewed selection: the exact
+// catalog_id and classification_id the operator chose, both copied verbatim
+// from prior receipts, plus the digest of the recorded block content the
+// selection was chosen for (BlockContentDigest). The digest is what makes a
+// replay safe: staged interval ids re-derive sequentially, so an entries
+// shift between classify and confirm/save could silently re-attach a
+// selection to the wrong successor interval — the digest fails closed on any
+// such drift instead.
+type ClassificationChoiceEntry struct {
+	CatalogID        string `json:"catalog_id"`
+	ClassificationID string `json:"classification_id"`
+	ContentDigest    string `json:"content_digest"`
+}
+
+// BlockContentDigest is the deterministic content binding of one recorded
+// block: the SHA-256 hex of the newline-joined date, block_id, start, end and
+// description, with one trailing newline. These are exactly the fields a
+// staged interval's text is derived from, so any change that would alter the
+// block's staged interval (time, id or description) changes the digest, and
+// any re-derivation whose blocks differ from those the selections were chosen
+// against is refused instead of replayed.
+func BlockContentDigest(date string, e EntryRecord) string {
+	return sha256Hex([]byte(strings.Join([]string{
+		date, e.BlockID, e.Start, e.End, e.Description,
+	}, "\n") + "\n"))
+}
+
+// ClassificationChoicesFile is the durable per-day interval_id → selection
+// sidecar. Its Selections shape is also the exact schema of classify's --file
+// input, so a choices file written from a stage receipt and the persisted
+// sidecar are the same document.
+type ClassificationChoicesFile struct {
+	Date       string                               `json:"date"`
+	AppVersion string                               `json:"app_version"`
+	UpdatedAt  string                               `json:"updated_at"`
+	Selections map[string]ClassificationChoiceEntry `json:"selections"`
+}
+
+// ParseClassificationChoices parses classify's --file input strictly: one
+// optional selections map keyed by interval_id. An absent or empty selections
+// map is valid and means "no selections" — an honest no-op. A selection
+// missing either id is a validation error naming the interval, and a file
+// that is not valid JSON names the expected schema so it is diagnosable
+// without reading it.
+func ParseClassificationChoices(data []byte) (map[string]ClassificationChoiceEntry, error) {
+	var raw struct {
+		Selections map[string]ClassificationChoiceEntry `json:"selections"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, newError(CodeBadRequest,
+			`classify: the choices file is not valid JSON for the expected schema {"selections": {"<interval_id>": {"catalog_id": "...", "classification_id": "..."}}}`)
+	}
+	ids := make([]string, 0, len(raw.Selections))
+	for id := range raw.Selections {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		sel := raw.Selections[id]
+		if strings.TrimSpace(sel.CatalogID) == "" {
+			return nil, newError(CodeBadRequest,
+				"classify: interval "+id+" is missing catalog_id; every selection must name the catalog it reviewed")
+		}
+		if strings.TrimSpace(sel.ClassificationID) == "" {
+			return nil, newError(CodeBadRequest,
+				"classify: interval "+id+" is missing classification_id")
+		}
+	}
+	return raw.Selections, nil
+}
+
+// ReadClassificationChoices loads the day's classification choices. A missing
+// file is (nil, nil). A present file without a selections key is fail-closed
+// state_invalid naming the file and the missing key: silence there would let
+// confirm and save proceed unclassified while believing the day was
+// classified. An explicit empty map ("selections": {}) remains the valid
+// no-op/clear.
+func ReadClassificationChoices(statePath, date string) (map[string]ClassificationChoiceEntry, error) {
+	data, err := os.ReadFile(ChoicesPath(statePath, date))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, newError(CodeStateInvalid, "the classification choices file cannot be read")
+	}
+	var f ClassificationChoicesFile
+	if err := json.Unmarshal(data, &f); err != nil || f.Date != date {
+		return nil, newError(CodeStateInvalid, "the classification choices file is not valid for this date")
+	}
+	if f.Selections == nil {
+		return nil, newError(CodeStateInvalid,
+			"the classification choices file ("+ChoicesPath(statePath, date)+") has no selections key; expected {\"selections\": {}} at minimum")
+	}
+	return f.Selections, nil
+}
+
+// WriteClassificationChoices persists the day's classification choices
+// atomically, mirroring the entries file's write discipline: one temporary
+// file, one rename. The written map replaces any previous one: the latest
+// choices file defines the day's selections, so an empty map clears them.
+func WriteClassificationChoices(statePath, appVersion, date string, selections map[string]ClassificationChoiceEntry, now time.Time) error {
+	if selections == nil {
+		selections = map[string]ClassificationChoiceEntry{}
+	}
+	f := ClassificationChoicesFile{
+		Date:       date,
+		AppVersion: appVersion,
+		UpdatedAt:  now.UTC().Format(time.RFC3339),
+		Selections: selections,
+	}
+	path := ChoicesPath(statePath, date)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return newError(CodeStateInvalid, "the entries directory cannot be created")
+	}
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return newError(CodeInternal, "the classification choices cannot be encoded")
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return newError(CodeStateInvalid, "the classification choices file cannot be written")
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return newError(CodeStateInvalid, "the classification choices file cannot be replaced")
+	}
+	return nil
+}
+
+// --- SUBMIT-3 remote-identity decision file -------------------------------------
+//
+// resolve applies one explicit human identity/content decision against the
+// day's current remote observation. The decision replaces the interactive pi
+// picker: the human reads the reconcile (or plan) receipt, then authors one
+// small JSON file whose fields are copied verbatim from that receipt, and the
+// command passes it to the resolve_remote op. Every op-level refusal — a wrong
+// or stale observation_id, a remote_id the observation does not carry, adopt
+// without confirmed durable local work, a decision that would steal another
+// allocation's binding — happens in the op and fails closed; this parser only
+// checks the file's own shape.
+
+// ResolutionDecisionFile is resolve's --file input. Revision is the day
+// revision copied verbatim from the reconcile receipt (the op fails closed on
+// a stale one); ObservationID and RemoteID identify the exact observation and
+// observed entry the human reviewed; LocalID names the confirmed durable local
+// interval for adopt and accept_observed and must be omitted for foreign.
+type ResolutionDecisionFile struct {
+	Revision      int    `json:"revision"`
+	ObservationID string `json:"observation_id"`
+	Decision      string `json:"decision"`
+	RemoteID      string `json:"remote_id"`
+	LocalID       string `json:"local_id,omitempty"`
+}
+
+// ParseResolutionDecision parses resolve's --file input strictly. A file that
+// is not valid JSON names the expected schema so it is diagnosable without
+// reading it; a missing or negative revision is a validation error (the op
+// itself requires the revision and refuses a stale one). The decision value
+// and the id relationships are the op's own fail-closed checks, passed through
+// verbatim.
+func ParseResolutionDecision(data []byte) (ResolutionDecisionFile, error) {
+	var raw struct {
+		Revision      *int   `json:"revision"`
+		ObservationID string `json:"observation_id"`
+		Decision      string `json:"decision"`
+		RemoteID      string `json:"remote_id"`
+		LocalID       string `json:"local_id"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return ResolutionDecisionFile{}, newError(CodeBadRequest,
+			`resolve: the decision file is not valid JSON for the expected schema {"revision": <n>, "observation_id": "...", "decision": "adopt|accept_observed|foreign", "remote_id": "...", "local_id": "..."} (local_id omitted for foreign)`)
+	}
+	if raw.Revision == nil {
+		return ResolutionDecisionFile{}, newError(CodeBadRequest,
+			"resolve: the decision file is missing revision; copy it verbatim from the reconcile receipt")
+	}
+	if *raw.Revision < 0 {
+		return ResolutionDecisionFile{}, newError(CodeBadRequest,
+			"resolve: the decision file's revision must not be negative")
+	}
+	return ResolutionDecisionFile{
+		Revision: *raw.Revision, ObservationID: raw.ObservationID, Decision: raw.Decision,
+		RemoteID: raw.RemoteID, LocalID: raw.LocalID,
+	}, nil
+}
+
 // --- record-time source re-attachment -----------------------------------------
 
 // stateEvidenceView is a minimal read-only projection of the durable state
