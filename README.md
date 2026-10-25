@@ -32,7 +32,7 @@ failure exit `1`. Usage errors make no remote call.
 ## Daily log skill
 
 The assignment deliverable is a runner-agnostic skill folder:
-`.agents/skills/timesheet/SKILL.md` + `workflow.md`, picked up by Claude Code
+`.agents/skills/timesheet/SKILL.md`, picked up by Claude Code
 through the `.claude/skills/timesheet` link and executable by any agent
 runtime with shell access — including the Pi agent. Every deterministic
 step is a fixed binary subcommand; the single judgment step reviews only the

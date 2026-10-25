@@ -18,13 +18,20 @@ Usage:
   timesheet serve --config <path> --env-file <path>
   timesheet collect --config <path> [--env-file <path>] --date <YYYY-MM-DD>
   timesheet draft --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet run --config <path> [--env-file <path>] --date <YYYY-MM-DD>
   timesheet record --config <path> --date <YYYY-MM-DD> (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>)
   timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 
-The collect/draft/record/status subcommands are the deterministic headless
+The collect/draft/run/record/status subcommands are the deterministic headless
 surface used by the timesheet skill: collect performs one bounded collection
 attempt, draft prints the compact one-day draft the skill's single judgment
-step reviews, record merges the reviewed result into the per-day entries file
+step reviews, run composes collect and draft in one process and prints ONLY
+the draft JSON on stdout (the collect source report is not printed; its
+substance is already in the draft's flags and per-block completeness) while
+also writing the same draft bytes to the deterministic artifacts directory
+$TMPDIR/timesheet/<date>/draft.json (created as needed; the path is printed
+on stderr, so redirecting stdout yields exactly the draft bytes), record
+merges the reviewed result into the per-day entries file
 (idempotent per time block) — composing it from --draft plus the
 descriptions-only --descriptions file, or taking the full reviewed --file
 (recovery path) — and status reports store state plus recorded
@@ -80,6 +87,14 @@ func main() {
 		}
 	case "draft":
 		if err := runDraft(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "run":
+		if err := runRun(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return
 			}

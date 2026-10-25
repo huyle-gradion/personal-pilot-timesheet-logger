@@ -38,6 +38,7 @@ timesheet version
 timesheet serve --config <path> --env-file <path>
 timesheet collect --config <path> [--env-file <path>] --date <YYYY-MM-DD>
 timesheet draft --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+timesheet run --config <path> [--env-file <path>] --date <YYYY-MM-DD>
 timesheet record --config <path> --date <YYYY-MM-DD> --file <reviewed.json>
 timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 ```
@@ -65,13 +66,13 @@ as `timesheet: <code>: <message>` on stderr.
 
 Only one process may open a given state file. A second `serve` against the same
 state fails with `store_locked`; it does not race or overwrite the first.
-`collect`, `draft` and `status` open the store the same way, so they also fail
+`collect`, `draft`, `run` and `status` open the store the same way, so they also fail
 with `store_locked` while a `serve` process holds the state. `record` opens no
 store and never interferes with a running `serve`.
 
 ## Headless skill surface
 
-`collect`, `draft`, `record` and `status` are the deterministic [Script]
+`collect`, `draft`, `run`, `record` and `status` are the deterministic [Script]
 layer of the timesheet skill (`.agents/skills/timesheet/`). They construct
 the same session `serve` uses and drive its request dispatcher in-process;
 there is no second protocol and no new request grammar.
@@ -86,6 +87,14 @@ there is no second protocol and no new request grammar.
   to the first block their time span overlaps; remaining topics form one
   evidence block; a day with no time anchors still yields one whole-day
   block. This draft is the skill's entire model input.
+- `run` composes collect and draft in one process: the same single bounded
+  collection attempt, then the compact draft. stdout carries ONLY the draft
+  JSON (the collect source report is not printed; its substance is already in
+  the draft's flags and per-block completeness), and the same draft bytes are
+  written to the deterministic artifacts directory
+  `$TMPDIR/timesheet/<date>/draft.json` (created as needed); the artifacts
+  path is printed on stderr, so redirecting stdout yields exactly the draft
+  bytes.
 - `record` validates the reviewed draft (every block keeps its `block_id`
   and carries a non-empty `description`; a block with PRs must keep the
   inline `PRs:` list) and merges it into `<state dir>/entries/<date>.json`

@@ -49,8 +49,8 @@ iCal URL) stored in the macOS Keychain, with code reading from there. See
 ## Timesheet daily log (skill)
 
 When asked to "log today's work" or "log the timesheet" for a day, follow
-`.agents/skills/timesheet/workflow.md` exactly: run the binary's `collect`,
-`draft`, `record` and `status` subcommands as the [Script] steps, perform
+`.agents/skills/timesheet/SKILL.md` exactly: run the binary's `run`,
+`record` and `status` subcommands as the [Script] steps, perform
 only the judgment step (per-block grouped-topic descriptions, ambiguous
 events, completeness) on the draft JSON, and record token usage with
 `scripts/tokens.py`. The skill is runner-agnostic (Pi or any agent with
