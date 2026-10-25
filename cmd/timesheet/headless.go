@@ -449,6 +449,10 @@ type finalizeFlags struct {
 	date       string
 	project    string
 	file       string
+	// revise is stage's explicit finalized-day revision flag: the confirmed
+	// set is replaced by a fresh derivation from the entries ledger (split
+	// included) and the day is re-finalized at a new revision.
+	revise bool
 }
 
 func parseFinalizeFlags(name string, args []string) (*finalizeFlags, error) {
@@ -459,6 +463,7 @@ func parseFinalizeFlags(name string, args []string) (*finalizeFlags, error) {
 	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
 	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
 	flags.StringVar(&f.project, "project", "", "project id for staged intervals (required when configuration defines multiple projects)")
+	flags.BoolVar(&f.revise, "revise", false, "stage only: replace a finalized day's confirmed intervals with a fresh derivation from the entries ledger and re-finalize at a new revision")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}
@@ -586,10 +591,24 @@ func parseDecideFlags(args []string) (*decideFlags, error) {
 	return f, nil
 }
 
-// StageBlockRef pairs one recorded block with the staged interval it maps to.
+// StageBlockRef pairs one recorded block with a staged interval it maps to.
+// Blocks the Gradion four-hour policy split into chunks (issue #167) carry one
+// ref per chunk: Chunk is the 1-based chunk number and Chunks the total, both
+// omitted for unsplit single-interval blocks.
 type StageBlockRef struct {
 	BlockID    string `json:"block_id"`
 	IntervalID string `json:"interval_id,omitempty"`
+	Chunk      int    `json:"chunk,omitempty"`
+	Chunks     int    `json:"chunks,omitempty"`
+}
+
+// chunkRef returns the (chunk, chunks) annotation for one staged interval of a
+// block rendered as n spans: (0, 0) — omitted — when the block was not split.
+func chunkRef(i, n int) (int, int) {
+	if n <= 1 {
+		return 0, 0
+	}
+	return i + 1, n
 }
 
 // StageSkip is one recorded entry stage did not convert, with the reason.
@@ -613,6 +632,11 @@ type StageReceipt struct {
 	Skipped         []StageSkip     `json:"skipped"`
 	Revision        int             `json:"revision"`
 	StagedIntervals int             `json:"staged_intervals"`
+	// --revise only: the finalized set this stage replaced, and the new durable
+	// revision the day was re-finalized at.
+	Replaced    int    `json:"replaced,omitempty"`
+	Refinalized bool   `json:"refinalized,omitempty"`
+	Note        string `json:"note,omitempty"`
 }
 
 // applyStage converts the day's recorded entries into staged intervals through
@@ -672,7 +696,7 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 		Removed:     []StageBlockRef{},
 		Skipped:     []StageSkip{},
 	}
-	next := map[string]string{}
+	next := map[string][]string{}
 	desired := map[string]bool{}
 	for _, id := range ids {
 		e := byID[id]
@@ -688,37 +712,73 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 			continue
 		}
 		desired[id] = true
-		text := fmt.Sprintf("%s %s-%s %s %s", date, e.Start, e.End, project, e.Description)
-		// Same-process restage path: the mapped interval already exists in this
-		// process's staged set, so edit or keep it in place. A fresh process
-		// never lands here — its staged set starts empty and the block is
-		// re-added below.
-		if mapped, ok := stageMap[id]; ok && stagedIDs[mapped] {
-			seg := segmentByID[mapped]
-			if seg.Start == e.Start && seg.End == e.End && seg.Project == project && seg.Description == e.Description {
-				receipt.Unchanged = append(receipt.Unchanged, StageBlockRef{BlockID: id, IntervalID: mapped})
+		// The Gradion four-hour policy (issue #167): a long recorded block is
+		// staged as contiguous chunk intervals of at most maxRemoteEntryMinutes
+		// each. The entries ledger keeps the human's true block untouched;
+		// each chunk is its own interval, preserving the one-to-one remote
+		// binding model.
+		spans := timesheet.SplitEntrySpans(e.Start, e.End)
+		mapped := stageMap[id]
+		// Same-process restage path: the mapped chunks all exist in this
+		// process's staged set, so each is kept or edited in place. A fresh
+		// process never lands here — its staged set starts empty and the
+		// block is re-added below.
+		if len(mapped) == len(spans) && len(spans) > 0 {
+			inPlace := true
+			for _, ivID := range mapped {
+				if !stagedIDs[ivID] {
+					inPlace = false
+					break
+				}
+			}
+			if inPlace {
+				for i, span := range spans {
+					ch, cs := chunkRef(i, len(spans))
+					seg := segmentByID[mapped[i]]
+					if seg.Start == span[0] && seg.End == span[1] && seg.Project == project && seg.Description == e.Description {
+						receipt.Unchanged = append(receipt.Unchanged, StageBlockRef{BlockID: id, IntervalID: mapped[i], Chunk: ch, Chunks: cs})
+						continue
+					}
+					text := fmt.Sprintf("%s %s-%s %s %s", date, span[0], span[1], project, e.Description)
+					if _, err := h.call("edit_interval", timesheet.Request{
+						Day: date, Revision: &revision, IntervalID: mapped[i], Text: text,
+					}); err != nil {
+						return nil, err
+					}
+					receipt.Updated = append(receipt.Updated, StageBlockRef{BlockID: id, IntervalID: mapped[i], Chunk: ch, Chunks: cs})
+				}
 				next[id] = mapped
 				continue
 			}
-			if _, err := h.call("edit_interval", timesheet.Request{
-				Day: date, Revision: &revision, IntervalID: mapped, Text: text,
-			}); err != nil {
+		}
+		// Fresh (or reshaped) derivation: drop any same-process stale chunks
+		// for this block, then add every span.
+		for _, ivID := range mapped {
+			if stagedIDs[ivID] {
+				if _, err := h.call("remove_interval", timesheet.Request{
+					Day: date, Revision: &revision, IntervalID: ivID,
+				}); err != nil {
+					return nil, err
+				}
+				receipt.Removed = append(receipt.Removed, StageBlockRef{BlockID: id, IntervalID: ivID})
+			}
+		}
+		added := make([]string, 0, len(spans))
+		for i, span := range spans {
+			text := fmt.Sprintf("%s %s-%s %s %s", date, span[0], span[1], project, e.Description)
+			res, err := h.call("add_interval", timesheet.Request{Day: date, Revision: &revision, Text: text})
+			if err != nil {
 				return nil, err
 			}
-			receipt.Updated = append(receipt.Updated, StageBlockRef{BlockID: id, IntervalID: mapped})
-			next[id] = mapped
-			continue
+			mutation, ok := res.(timesheet.IntervalMutation)
+			if !ok {
+				return nil, fmt.Errorf("%s: unexpected add_interval payload", name)
+			}
+			ch, cs := chunkRef(i, len(spans))
+			receipt.Staged = append(receipt.Staged, StageBlockRef{BlockID: id, IntervalID: mutation.IntervalID, Chunk: ch, Chunks: cs})
+			added = append(added, mutation.IntervalID)
 		}
-		res, err := h.call("add_interval", timesheet.Request{Day: date, Revision: &revision, Text: text})
-		if err != nil {
-			return nil, err
-		}
-		mutation, ok := res.(timesheet.IntervalMutation)
-		if !ok {
-			return nil, fmt.Errorf("%s: unexpected add_interval payload", name)
-		}
-		receipt.Staged = append(receipt.Staged, StageBlockRef{BlockID: id, IntervalID: mutation.IntervalID})
-		next[id] = mutation.IntervalID
+		next[id] = added
 	}
 
 	// Entries removed from the file lose their staged intervals (same-process
@@ -732,14 +792,15 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 	}
 	sort.Strings(stale)
 	for _, id := range stale {
-		mapped := stageMap[id]
-		if stagedIDs[mapped] {
-			if _, err := h.call("remove_interval", timesheet.Request{
-				Day: date, Revision: &revision, IntervalID: mapped,
-			}); err != nil {
-				return nil, err
+		for _, ivID := range stageMap[id] {
+			if stagedIDs[ivID] {
+				if _, err := h.call("remove_interval", timesheet.Request{
+					Day: date, Revision: &revision, IntervalID: ivID,
+				}); err != nil {
+					return nil, err
+				}
+				receipt.Removed = append(receipt.Removed, StageBlockRef{BlockID: id, IntervalID: ivID})
 			}
-			receipt.Removed = append(receipt.Removed, StageBlockRef{BlockID: id, IntervalID: mapped})
 		}
 	}
 
@@ -803,7 +864,10 @@ func noteStageSkips(name string, receipt *StageReceipt) {
 // runStage converts the day's recorded entries file into staged intervals.
 // Natural order: run --date (collect) first, then stage, then acknowledge
 // and/or decide with the collection_id from that collect receipt, then confirm,
-// then save. Holds the store's exclusive lock.
+// then save. Holds the store's exclusive lock. On a finalized day, plain stage
+// refuses (confirmed work is never silently restaged); the explicit --revise
+// flag replaces the confirmed set with a fresh derivation from the entries
+// ledger (four-hour chunks included) and re-finalizes the day at a new revision.
 func runStage(args []string) error {
 	f, err := parseFinalizeFlags("stage", args)
 	if err != nil {
@@ -822,16 +886,95 @@ func runStage(args []string) error {
 		return err
 	}
 	defer h.done()
-	summary, err := openFinalizeDay(h, "stage", f.date)
+	res, err := h.call("open_day", timesheet.Request{Day: f.date})
 	if err != nil {
 		return err
 	}
-	receipt, err := applyStage(h, cfg, "stage", f.date, project, summary)
+	summary, ok := res.(timesheet.DaySummary)
+	if !ok {
+		return fmt.Errorf("stage: unexpected open_day payload")
+	}
+	var receipt *StageReceipt
+	if len(summary.Confirmed.Segments) > 0 {
+		if !f.revise {
+			return fmt.Errorf(
+				"stage: %s already has confirmed intervals; the day is finalized and confirmed work is never restaged (stage --revise replaces the finalized set from the entries ledger and re-finalizes at a new revision)", f.date)
+		}
+		receipt, err = reviseStage(h, cfg, f.date, project, summary)
+	} else {
+		receipt, err = applyStage(h, cfg, "stage", f.date, project, summary)
+	}
 	if err != nil {
 		return err
 	}
 	_, _ = h.call("close", timesheet.Request{})
 	return printJSON(receipt)
+}
+
+// reviseStage is stage's explicit finalized-day revision: every staged interval
+// (the clone of the durable confirmed set the day opened with) is removed, the
+// staged set is re-derived from the CURRENT entries ledger with the four-hour
+// chunking applied, and the day is confirmed and saved in-process at a NEW
+// revision — mirroring the serve flow's reopen → edit → confirm → save revision
+// step and classify's finalized-day pattern. Entries no longer in the ledger
+// lose their intervals; the ledger itself is never modified. Every op refusal
+// (source gate, stale revision, interval validation) passes through verbatim
+// with the durable day untouched at its saved revision.
+func reviseStage(h *headlessSession, cfg *timesheet.Config, date, project string, summary timesheet.DaySummary) (*StageReceipt, error) {
+	revision := summary.Revision
+	for _, seg := range summary.Staged.Segments {
+		if seg.OriginDate != date {
+			continue
+		}
+		if _, err := h.call("remove_interval", timesheet.Request{
+			Day: date, Revision: &revision, IntervalID: seg.IntervalID,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	// Re-open the day so the derivation sees the post-removal staged set:
+	// applyStage's same-process fast path keys off the summary's staged
+	// segments, and the stale pre-removal snapshot would make it treat the
+	// removed chunks as still present and skip re-adding them.
+	res, err := h.call("open_day", timesheet.Request{Day: date})
+	if err != nil {
+		return nil, err
+	}
+	fresh, ok := res.(timesheet.DaySummary)
+	if !ok {
+		return nil, fmt.Errorf("stage: unexpected open_day payload")
+	}
+	receipt, err := applyStage(h, cfg, "stage", date, project, fresh)
+	if err != nil {
+		return nil, err
+	}
+	confirmed, err := h.call("confirm", timesheet.Request{Day: date, Revision: &summary.Revision})
+	if err != nil {
+		return nil, err
+	}
+	confirmReceipt, ok := confirmed.(timesheet.ConfirmReceipt)
+	if !ok {
+		return nil, fmt.Errorf("stage: unexpected confirm payload")
+	}
+	saved, err := h.call("save", timesheet.Request{Day: date, Revision: &confirmReceipt.Revision})
+	if err != nil {
+		return nil, err
+	}
+	saveReceipt, ok := saved.(timesheet.SaveReceipt)
+	if !ok {
+		return nil, fmt.Errorf("stage: unexpected save payload")
+	}
+	replaced := 0
+	for _, seg := range summary.Confirmed.Segments {
+		if seg.OriginDate == date {
+			replaced++
+		}
+	}
+	receipt.Replaced = replaced
+	receipt.Refinalized = true
+	receipt.Revision = saveReceipt.Revision
+	receipt.Note = fmt.Sprintf("day was already finalized; %d confirmed interval(s) were replaced by a fresh derivation from the entries ledger and the day was re-finalized at revision %d", replaced, saveReceipt.Revision)
+	return receipt, nil
 }
 
 // runAcknowledge wraps the acknowledge_source op: it marks this day's recorded
@@ -1247,9 +1390,11 @@ func stagedBlocks(cfg *timesheet.Config, date string) (map[string]timesheet.Entr
 		}
 	}
 	byInterval := map[string]timesheet.EntryRecord{}
-	for blockID, ivID := range stageMap {
+	for blockID, ivIDs := range stageMap {
 		if e, ok := byBlock[blockID]; ok {
-			byInterval[ivID] = e
+			for _, ivID := range ivIDs {
+				byInterval[ivID] = e
+			}
 		}
 	}
 	return byInterval, nil

@@ -21,7 +21,7 @@ Usage:
   timesheet run --config <path> [--env-file <path>] --date <YYYY-MM-DD>
   timesheet record --config <path> --date <YYYY-MM-DD> (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>) [--replace]
   timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
-  timesheet stage --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
+  timesheet stage --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>] [--revise]
   timesheet classifications --config <path> [--env-file <path>] --query <text>
   timesheet classify --config <path> [--env-file <path>] --date <YYYY-MM-DD> --file <choices.json> [--project <id>]
   timesheet acknowledge --config <path> [--env-file <path>] --date <YYYY-MM-DD> --source <github|calendar> --collection-id <id>
@@ -71,11 +71,17 @@ surface; then confirm;
 then save. stage converts entries with both a start and an end into intervals
 through the same session ops serve uses (the description text carries any PRs
 list verbatim); entries without time anchors are skipped and listed in the
-receipt — times are never invented. The entries file stays the single human
+receipt — times are never invented. Entries longer than the Gradion remote's
+four-hour policy (live-verified, issue #167) are staged as contiguous chunk
+intervals of at most 240 minutes each — the entries ledger keeps the human's
+true block untouched, and the receipt lists every chunk. The entries file stays
+the single human
 ledger: each command re-derives the staged set from the entries ledger in its
 own process, the entries/<date>.stage.json block-to-interval sidecar serves
 same-process restage and audit, and a day that already has confirmed
-intervals is never restaged. Interval ids in receipts are valid only against
+intervals is never restaged — unless stage --revise explicitly replaces the
+finalized set with a fresh derivation from the entries ledger and re-finalizes
+the day at a new revision (interval ids change; re-run classify afterwards). Interval ids in receipts are valid only against
 the entries file as it stood when the receipt printed; editing entries before
 confirm renumbers them (later commands fail closed on stale ids). confirm
 runs the source gate: every enabled source needs a collection attempt for the

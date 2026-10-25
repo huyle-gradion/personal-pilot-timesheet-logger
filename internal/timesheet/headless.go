@@ -1012,16 +1012,52 @@ func StagePath(statePath, date string) string {
 	return strings.TrimSuffix(EntriesPath(statePath, date), ".json") + ".stage.json"
 }
 
-// StageMapFile is the durable block_id → interval_id sidecar for one day.
-type StageMapFile struct {
-	Date       string            `json:"date"`
-	AppVersion string            `json:"app_version"`
-	UpdatedAt  string            `json:"updated_at"`
-	Map        map[string]string `json:"map"`
+// SplitEntrySpans splits one recorded entry's [start, end] span into contiguous
+// chunk spans of at most maxRemoteEntryMinutes minutes each (greedy
+// left-to-right; the final chunk carries the remainder, so 479 minutes becomes
+// 240 + 235). The Gradion remote's live-verified policy refuses entries longer
+// than four hours (issue #167), so the submission bridge stages long recorded
+// blocks as chunk intervals — the entries ledger itself keeps the human's true
+// block, and each chunk is its own interval so the one-to-one remote binding
+// model is preserved. A span that needs no split, or one that is not a parsable
+// same-day HH:MM range, returns the single original span; the interval op then
+// validates it honestly.
+func SplitEntrySpans(start, end string) [][2]string {
+	sm, okS := draftClock(start)
+	em, okE := draftClock(end)
+	if !okS || !okE || em <= sm {
+		return [][2]string{{start, end}}
+	}
+	if em-sm <= maxRemoteEntryMinutes {
+		return [][2]string{{start, end}}
+	}
+	var out [][2]string
+	for from := sm; from < em; from += maxRemoteEntryMinutes {
+		to := from + maxRemoteEntryMinutes
+		if to > em {
+			to = em
+		}
+		out = append(out, [2]string{clockString(from), clockString(to)})
+	}
+	return out
 }
 
-// ReadStageMap loads the day's stage map. A missing file is (nil, nil).
-func ReadStageMap(statePath, date string) (map[string]string, error) {
+// StageMapFile is the durable block_id → interval-id sidecar for one day.
+// Map carries single-interval blocks (the historical shape; old files load
+// unchanged); Chunks carries blocks the Gradion four-hour policy split into
+// multiple chunk intervals (issue #167). Readers merge both.
+type StageMapFile struct {
+	Date       string              `json:"date"`
+	AppVersion string              `json:"app_version"`
+	UpdatedAt  string              `json:"updated_at"`
+	Map        map[string]string   `json:"map"`
+	Chunks     map[string][]string `json:"chunks,omitempty"`
+}
+
+// ReadStageMap loads the day's stage map as block_id → interval ids (one or
+// more per block; Chunks wins over a same-key Map entry). A missing file is
+// (nil, nil).
+func ReadStageMap(statePath, date string) (map[string][]string, error) {
 	data, err := os.ReadFile(StagePath(statePath, date))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -1033,20 +1069,42 @@ func ReadStageMap(statePath, date string) (map[string]string, error) {
 	if err := json.Unmarshal(data, &f); err != nil || f.Date != date {
 		return nil, newError(CodeStateInvalid, "the stage map file is not valid for this date")
 	}
-	return f.Map, nil
+	merged := make(map[string][]string, len(f.Map)+len(f.Chunks))
+	for id, iv := range f.Map {
+		if iv != "" {
+			merged[id] = []string{iv}
+		}
+	}
+	for id, ivs := range f.Chunks {
+		if len(ivs) > 0 {
+			merged[id] = ivs
+		}
+	}
+	return merged, nil
 }
 
 // WriteStageMap persists the day's stage map atomically, mirroring the entries
-// file's write discipline: one temporary file, one rename.
-func WriteStageMap(statePath, appVersion, date string, mapping map[string]string, now time.Time) error {
+// file's write discipline: one temporary file, one rename. Single-interval
+// blocks keep the historical Map shape; split blocks go to Chunks.
+func WriteStageMap(statePath, appVersion, date string, mapping map[string][]string, now time.Time) error {
 	if mapping == nil {
-		mapping = map[string]string{}
+		mapping = map[string][]string{}
 	}
 	f := StageMapFile{
 		Date:       date,
 		AppVersion: appVersion,
 		UpdatedAt:  now.UTC().Format(time.RFC3339),
-		Map:        mapping,
+		Map:        map[string]string{},
+	}
+	for id, ivs := range mapping {
+		if len(ivs) == 1 {
+			f.Map[id] = ivs[0]
+		} else if len(ivs) > 1 {
+			if f.Chunks == nil {
+				f.Chunks = map[string][]string{}
+			}
+			f.Chunks[id] = ivs
+		}
 	}
 	path := StagePath(statePath, date)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

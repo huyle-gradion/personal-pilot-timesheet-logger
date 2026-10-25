@@ -10,6 +10,7 @@ package timesheet
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -1017,6 +1018,17 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 			block(Blocker{Code: "unrepresentable_projection", Date: allocDate, LocalID: iv.ID,
 				Detail: "this local allocation has no representable same-day remote span; the work is never altered, split differently or declared ready"})
 			continue
+		}
+		// Defense in depth for the Gradion four-hour policy (issue #167): the
+		// stage derivation normally splits long blocks into compliant chunks,
+		// but any interval whose remote span still exceeds the policy — however
+		// it reached the confirmed set — blocks the plan instead of reaching
+		// approve. Checked on the interval (before the classification filter)
+		// so an over-long unclassified interval surfaces both blockers.
+		if alloc.Minutes > maxRemoteEntryMinutes {
+			block(Blocker{Code: "remote_entry_too_long", Date: allocDate, LocalID: iv.ID,
+				Detail: fmt.Sprintf("interval %s spans %d minutes; the Gradion remote rejects entries longer than %d minutes (live-verified policy, issue #167); re-run stage so the block is split into chunks of at most %d minutes",
+					iv.ID, alloc.Minutes, maxRemoteEntryMinutes, maxRemoteEntryMinutes)})
 		}
 		if strings.TrimSpace(iv.RemoteClassificationID) == "" {
 			block(Blocker{Code: "classification_unselected", Date: allocDate, LocalID: iv.ID,

@@ -885,6 +885,14 @@ const (
 	// omitted rendered lines). It is a draft-rendering bound only: durable
 	// evidence state keeps every candidate, and recorded entries are unchanged.
 	maxDraftTopicCandidates = 12
+	// maxRemoteEntryMinutes is the Gradion remote's live-verified per-entry
+	// duration policy: log_time refuses entries longer than four hours
+	// (issue #167 — two deterministic refusals of a 479-minute entry on
+	// 2026-10-25, remote verified empty after each). The stage derivation
+	// splits longer recorded blocks into contiguous chunks of at most this
+	// many minutes; previewPlan additionally blocks any operation that
+	// exceeds it, so an over-long interval can never reach approve silently.
+	maxRemoteEntryMinutes = 240
 	// maxTopicOverflowItems bounds how many items beyond the maxTopicItems
 	// retained Items cap one topic keeps durably as overflow evidence
 	// (issue #146). It keeps the audit trail behind a truncated topic
