@@ -17,8 +17,8 @@ only on the Mac.
 
 ## 2026-10-25 — first full agent-run of the skill (Pi) ✅
 
-**Ran:** the owner asked a normal Pi session (repo cwd) to *"log today's
-work"*. The agent read `SKILL.md`/`workflow.md`, ran `collect` → `draft`,
+**Ran:** the owner asked a normal Pi session (repo cwd) to _"log today's
+work"_. The agent read `SKILL.md`/`workflow.md`, ran `collect` → `draft`,
 authored the block descriptions (judgment step), `record`ed the day
 (`entries/2026-10-25.json`, 1 entry), verified with `status`, and ran
 `tokens.py` on its own session — the full six-step loop, zero manual help.
@@ -35,7 +35,7 @@ noticeably — label the next data point with this change.
 **Measured (first agent-run data point):** session input 14,957 / output
 950 / cache 97,280 (total 113,187) — recorded in `benchmarks/tokens.csv`
 by the agent itself. Honest read against the ≤ 1,000 tokens/day target:
-the *output* side fits, but the input includes the agent's system prompt,
+the _output_ side fits, but the input includes the agent's system prompt,
 skill files and exploration — the judgment step's actual input (the draft
 JSON) is a fraction of that. Improvement candidate: a focused invocation
 that passes only the draft into the judgment step.
@@ -124,3 +124,22 @@ Earlier daily notes live in `docs/lessons-learned.md`, the ADR amendments
 fixes). The rewrite week 10-19…10-23 consumed the tool's own daily use;
 those days are backfilled retrospectively with real evidence, as recorded
 above.
+
+## 2026-10-25 — descriptions-only judgment step; run-4 data point ✅
+
+**Changed (PR #153, issue #152):** the AI no longer rewrites the full reviewed
+JSON — it writes only per-block descriptions (+ one notes string) and `record`
+composes the rest (prs_inline appended by the binary, sources re-attached from
+state). Defensive `go build` runs eliminated by a version-check amendment.
+Review also fixed a real edge: a prefix-sharing PR id (#123 vs #12) could
+silently suppress the prs_inline append.
+
+**Measured (run 4, Pi, 2026-10-24 rerun on the merged binary):**
+in 11,533 / out 589 / cache 47,360 — input −11% and output −16% vs run 2
+(12,930/701) on a comparable skill loop, and the judgment artifact itself
+dropped from a ~2.7 KB reviewed-file rewrite (~700 tokens) to a ~340-byte
+descriptions file (~100 tokens). Cache totals are not comparable across runs
+and are reported separately. Zero failure cycles: one-pass record.
+
+Honest caveat: run 4 re-recorded an already-recorded day (idempotent per
+block), so it is a loop-equivalence data point, not a new-content one.
