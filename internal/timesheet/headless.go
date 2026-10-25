@@ -729,6 +729,12 @@ func ComposeReviewed(draft Draft, desc DescriptionsFile) (ReviewedDraft, error) 
 		}
 	}
 	if len(missing) > 0 {
+		if desc.Descriptions == nil {
+			// A wholly absent descriptions map would list every block id and
+			// misdirect the AI; name the real problem instead.
+			return ReviewedDraft{}, newError(CodeBadRequest,
+				"record: the descriptions file has no descriptions map")
+		}
 		return ReviewedDraft{}, newError(CodeBadRequest,
 			"record: every block needs a description; missing or empty: "+strings.Join(missing, ", "))
 	}
@@ -749,8 +755,12 @@ func ComposeReviewed(draft Draft, desc DescriptionsFile) (ReviewedDraft, error) 
 	}
 	for _, b := range draft.Blocks {
 		d := desc.Descriptions[b.BlockID]
-		if b.PRsInline != "" && !strings.Contains(d, b.PRsInline) {
-			d = strings.TrimRight(d, " ") + " " + b.PRsInline
+		// Suffix check, not Contains: a prefix-sharing PR id ("PRs: #12 …"
+		// inside "PRs: #123 …") must not make the append look already done.
+		// Trailing whitespace of any kind is stripped so the separator is a
+		// single space.
+		if b.PRsInline != "" && !strings.HasSuffix(strings.TrimRight(d, " \t\n\r"), b.PRsInline) {
+			d = strings.TrimRight(d, " \t\n\r") + " " + b.PRsInline
 		}
 		reviewed.Blocks = append(reviewed.Blocks, ReviewedBlock{DraftBlock: b, Description: d})
 	}

@@ -902,8 +902,10 @@ func TestComposeReviewedAppliesDescriptionsAndAppendsPRsInline(t *testing.T) {
 	}
 }
 
-// A description that already contains the block's prs_inline text is left
-// untouched: the append is idempotent and never duplicates the PRs list.
+// A description that already ends with the block's prs_inline text is left
+// untouched: the append is idempotent and never duplicates the PRs list. A
+// description ending in a prefix-sharing PR list ("#123" contains "#12" as a
+// substring) is NOT idempotent: the block's own "#12" list must be appended.
 func TestComposeReviewedPRsInlineAppendIsIdempotent(t *testing.T) {
 	composed, err := ComposeReviewed(composeDraft(), DescriptionsFile{
 		Descriptions: map[string]string{
@@ -916,6 +918,21 @@ func TestComposeReviewedPRsInlineAppendIsIdempotent(t *testing.T) {
 	}
 	if got := composed.Blocks[0].Description; got != "Standup and calendar filtering PRs: #12 acme/api" {
 		t.Fatalf("description = %q, prs_inline must not be duplicated", got)
+	}
+
+	// Prefix collision: "PRs: #123 acme/api" is not the block's "PRs: #12
+	// acme/api" list — the correct "#12" list must be appended.
+	collided, err := ComposeReviewed(composeDraft(), DescriptionsFile{
+		Descriptions: map[string]string{
+			"meeting-09:00-10:00":  "Reviews for PRs: #123 acme/api",
+			"evidence-20:00-21:00": "Evening research notes",
+		},
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if got := collided.Blocks[0].Description; got != "Reviews for PRs: #123 acme/api PRs: #12 acme/api" {
+		t.Fatalf("description = %q, want the block's own #12 list appended after the #123 text", got)
 	}
 }
 
@@ -972,9 +989,15 @@ func TestParseDescriptionsNotesMustBeString(t *testing.T) {
 	if err != nil || absent.Notes != "" {
 		t.Fatalf("absent notes must be an empty string: %+v %v", absent, err)
 	}
-	if _, err := ParseDescriptions([]byte(`{"notes": ["a", "b"], "descriptions": {}}`)); err == nil ||
-		!strings.Contains(err.Error(), `"notes" must be one JSON string`) {
-		t.Fatalf("array notes = %v, want a clear string-only validation error", err)
+	for _, raw := range []string{
+		`{"notes": ["a", "b"], "descriptions": {}}`,
+		`{"notes": 123, "descriptions": {}}`,
+		`{"notes": {}, "descriptions": {}}`,
+	} {
+		if _, err := ParseDescriptions([]byte(raw)); err == nil ||
+			!strings.Contains(err.Error(), `"notes" must be one JSON string`) {
+			t.Fatalf("notes %s = %v, want the string-only validation error", raw, err)
+		}
 	}
 }
 

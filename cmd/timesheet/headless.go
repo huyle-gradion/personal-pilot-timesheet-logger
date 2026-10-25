@@ -264,12 +264,14 @@ func runRecord(args []string) error {
 			return fmt.Errorf("record: the reviewed draft is not valid JSON for the expected schema")
 		}
 	}
-	if reviewed.Date != f.date {
-		return fmt.Errorf("record: --date %s does not match the reviewed draft's date %s", f.date, reviewed.Date)
-	}
+	// Load the configuration before the date check so a bad --config reports
+	// its own root cause, not a misleading date mismatch.
 	cfg, err := timesheet.LoadConfig(f.configPath)
 	if err != nil {
 		return err
+	}
+	if reviewed.Date != f.date {
+		return fmt.Errorf("record: --date %s does not match the reviewed draft's date %s", f.date, reviewed.Date)
 	}
 	receipt, err := timesheet.RecordEntries(cfg.StatePath, timesheet.AppVersion, reviewed, time.Now())
 	if err != nil {
