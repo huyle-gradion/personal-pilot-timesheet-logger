@@ -55,6 +55,58 @@ func parseHeadlessFlags(name string, args []string, needDate, needFile bool) (*h
 	return f, nil
 }
 
+// recordFlags carries the record subcommand's inputs: --config/--env-file/
+// --date always, plus exactly one input mode — the recovery --file reviewed
+// JSON, or the descriptions-only --draft + --descriptions pair.
+type recordFlags struct {
+	configPath   string
+	envFile      string
+	date         string
+	file         string
+	draft        string
+	descriptions string
+}
+
+// parseRecordFlags parses record's flag surface. The two input modes are
+// mutually exclusive and one is required: --file alone, or --draft AND
+// --descriptions together.
+func parseRecordFlags(args []string) (*recordFlags, error) {
+	flags := flag.NewFlagSet("record", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	f := &recordFlags{}
+	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
+	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.date, "date", "", "day to record, YYYY-MM-DD (required)")
+	flags.StringVar(&f.file, "file", "", "reviewed draft JSON path (recovery input mode)")
+	flags.StringVar(&f.draft, "draft", "", "draft JSON path from `timesheet draft` (descriptions-only input mode, with --descriptions)")
+	flags.StringVar(&f.descriptions, "descriptions", "", "descriptions-only JSON path (descriptions-only input mode, with --draft)")
+	if err := flags.Parse(args); err != nil {
+		return nil, err
+	}
+	if flags.NArg() != 0 {
+		return nil, fmt.Errorf("record does not accept positional arguments")
+	}
+	if f.configPath == "" {
+		return nil, fmt.Errorf("record requires --config")
+	}
+	if f.date == "" {
+		return nil, fmt.Errorf("record requires --date")
+	}
+	if _, err := time.Parse("2006-01-02", f.date); err != nil {
+		return nil, fmt.Errorf("record: --date must be YYYY-MM-DD")
+	}
+	if f.file != "" && (f.draft != "" || f.descriptions != "") {
+		return nil, fmt.Errorf("record takes either --file or --draft with --descriptions, not both input modes")
+	}
+	switch {
+	case f.file != "":
+	case f.draft != "" && f.descriptions != "":
+	default:
+		return nil, fmt.Errorf("record requires either --file or both --draft and --descriptions")
+	}
+	return f, nil
+}
+
 // headlessSession mirrors runServe's loading path and drives HandleLine
 // directly, one typed request at a time.
 type headlessSession struct {
@@ -163,25 +215,60 @@ func runDraft(args []string) error {
 	return printJSON(timesheet.BuildDraft(review, timesheet.AppVersion))
 }
 
-// runRecord validates the reviewed draft and merges it into the day's entries.
+// runRecord validates the reviewed result and merges it into the day's
+// entries. It has two input modes:
+//
+//   - --draft <draft.json> --descriptions <desc.json>: the descriptions-only
+//     judgment step (issue #152). record loads the draft, applies the
+//     per-block descriptions and the one notes string, appends each block's
+//     prs_inline when not already contained, and runs the exact same
+//     validation and merge path as --file.
+//   - --file <reviewed.json>: the full reviewed file. Unchanged and still the
+//     recovery path.
+//
 // It opens no store: recording never blocks on, or interferes with, a running
 // serve process.
 func runRecord(args []string) error {
-	f, err := parseHeadlessFlags("record", args, true, true)
+	f, err := parseRecordFlags(args)
 	if err != nil {
 		return err
 	}
+	var reviewed timesheet.ReviewedDraft
+	if f.draft != "" {
+		draftData, err := os.ReadFile(f.draft)
+		if err != nil {
+			return fmt.Errorf("record: the draft file cannot be read")
+		}
+		var draft timesheet.Draft
+		if err := json.Unmarshal(draftData, &draft); err != nil {
+			return fmt.Errorf("record: the draft file is not valid JSON for the expected draft schema")
+		}
+		descData, err := os.ReadFile(f.descriptions)
+		if err != nil {
+			return fmt.Errorf("record: the descriptions file cannot be read")
+		}
+		desc, err := timesheet.ParseDescriptions(descData)
+		if err != nil {
+			return err
+		}
+		reviewed, err = timesheet.ComposeReviewed(draft, desc)
+		if err != nil {
+			return err
+		}
+	} else {
+		data, err := os.ReadFile(f.file)
+		if err != nil {
+			return fmt.Errorf("record: the reviewed draft file cannot be read")
+		}
+		if err := json.Unmarshal(data, &reviewed); err != nil {
+			return fmt.Errorf("record: the reviewed draft is not valid JSON for the expected schema")
+		}
+	}
+	// Load the configuration before the date check so a bad --config reports
+	// its own root cause, not a misleading date mismatch.
 	cfg, err := timesheet.LoadConfig(f.configPath)
 	if err != nil {
 		return err
-	}
-	data, err := os.ReadFile(f.file)
-	if err != nil {
-		return fmt.Errorf("record: the reviewed draft file cannot be read")
-	}
-	var reviewed timesheet.ReviewedDraft
-	if err := json.Unmarshal(data, &reviewed); err != nil {
-		return fmt.Errorf("record: the reviewed draft is not valid JSON for the expected schema")
 	}
 	if reviewed.Date != f.date {
 		return fmt.Errorf("record: --date %s does not match the reviewed draft's date %s", f.date, reviewed.Date)

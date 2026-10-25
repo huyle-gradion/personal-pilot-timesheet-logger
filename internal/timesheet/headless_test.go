@@ -836,3 +836,243 @@ func TestRecordSourcesLandOnSameBlockBuildDraftAttached(t *testing.T) {
 		t.Fatalf("record attached the source to the meeting block: %+v", byID["meeting-10:00-11:00"])
 	}
 }
+
+// --- DESC-ONLY-1: descriptions-only judgment step (issue #152) ---------------
+
+// composeDraft is a synthetic draft with one meeting block carrying PRs (so
+// prs_inline applies) and one evidence block without them.
+func composeDraft() Draft {
+	return Draft{
+		Date:     "2026-10-26",
+		Timezone: "Asia/Ho_Chi_Minh",
+		Flags:    []string{"source_incomplete:calendar"},
+		Blocks: []DraftBlock{
+			{
+				BlockID: "meeting-09:00-10:00", Kind: "meeting", Start: "09:00", End: "10:00",
+				Title: "Standup", TopicCandidates: []string{"Calendar filtering"},
+				PRs: []string{"#12 acme/api"}, PRsInline: "PRs: #12 acme/api",
+				Completeness: map[string]string{"github": "complete"},
+			},
+			{
+				BlockID: "evidence-20:00-21:00", Kind: "evidence", Start: "20:00", End: "21:00",
+				TopicCandidates: []string{"Evening research"},
+			},
+		},
+	}
+}
+
+func TestComposeReviewedAppliesDescriptionsAndAppendsPRsInline(t *testing.T) {
+	composed, err := ComposeReviewed(composeDraft(), DescriptionsFile{
+		Notes: "quiet day, calendar source incomplete",
+		Descriptions: map[string]string{
+			"meeting-09:00-10:00":  "Standup and calendar filtering",
+			"evidence-20:00-21:00": "Evening research notes",
+		},
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if composed.Date != "2026-10-26" || composed.Timezone != "Asia/Ho_Chi_Minh" {
+		t.Fatalf("date/timezone not carried: %+v", composed)
+	}
+	if composed.Notes != "quiet day, calendar source incomplete" {
+		t.Fatalf("notes = %q", composed.Notes)
+	}
+	if len(composed.Flags) != 1 || composed.Flags[0] != "source_incomplete:calendar" {
+		t.Fatalf("flags not carried: %+v", composed.Flags)
+	}
+	if len(composed.Blocks) != 2 {
+		t.Fatalf("blocks = %d, want 2", len(composed.Blocks))
+	}
+	m := composed.Blocks[0]
+	if m.BlockID != "meeting-09:00-10:00" || m.Title != "Standup" ||
+		m.Start != "09:00" || m.End != "10:00" || len(m.PRs) != 1 {
+		t.Fatalf("draft fields not carried: %+v", m)
+	}
+	if m.Description != "Standup and calendar filtering PRs: #12 acme/api" {
+		t.Fatalf("meeting description = %q, want prs_inline appended once", m.Description)
+	}
+	e := composed.Blocks[1]
+	if e.Description != "Evening research notes" {
+		t.Fatalf("evidence description = %q, want unchanged prose", e.Description)
+	}
+	// The composed reviewed draft passes the exact existing record validation.
+	if _, err := RecordEntries(filepath.Join(t.TempDir(), "state.json"), "test", composed, time.Now()); err != nil {
+		t.Fatalf("composed reviewed draft rejected by record: %v", err)
+	}
+}
+
+// A description that already ends with the block's prs_inline text is left
+// untouched: the append is idempotent and never duplicates the PRs list. A
+// description ending in a prefix-sharing PR list ("#123" contains "#12" as a
+// substring) is NOT idempotent: the block's own "#12" list must be appended.
+func TestComposeReviewedPRsInlineAppendIsIdempotent(t *testing.T) {
+	composed, err := ComposeReviewed(composeDraft(), DescriptionsFile{
+		Descriptions: map[string]string{
+			"meeting-09:00-10:00":  "Standup and calendar filtering PRs: #12 acme/api",
+			"evidence-20:00-21:00": "Evening research notes",
+		},
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if got := composed.Blocks[0].Description; got != "Standup and calendar filtering PRs: #12 acme/api" {
+		t.Fatalf("description = %q, prs_inline must not be duplicated", got)
+	}
+
+	// Prefix collision: "PRs: #123 acme/api" is not the block's "PRs: #12
+	// acme/api" list — the correct "#12" list must be appended.
+	collided, err := ComposeReviewed(composeDraft(), DescriptionsFile{
+		Descriptions: map[string]string{
+			"meeting-09:00-10:00":  "Reviews for PRs: #123 acme/api",
+			"evidence-20:00-21:00": "Evening research notes",
+		},
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if got := collided.Blocks[0].Description; got != "Reviews for PRs: #123 acme/api PRs: #12 acme/api" {
+		t.Fatalf("description = %q, want the block's own #12 list appended after the #123 text", got)
+	}
+}
+
+func TestComposeReviewedValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		desc    DescriptionsFile
+		wantMsg []string
+	}{
+		{
+			name: "missing description",
+			desc: DescriptionsFile{Descriptions: map[string]string{
+				"evidence-20:00-21:00": "Evening research notes",
+			}},
+			wantMsg: []string{"meeting-09:00-10:00", "missing or empty"},
+		},
+		{
+			name: "empty description",
+			desc: DescriptionsFile{Descriptions: map[string]string{
+				"meeting-09:00-10:00":  "   ",
+				"evidence-20:00-21:00": "Evening research notes",
+			}},
+			wantMsg: []string{"meeting-09:00-10:00", "missing or empty"},
+		},
+		{
+			name: "unknown block id",
+			desc: DescriptionsFile{Descriptions: map[string]string{
+				"meeting-09:00-10:00":  "Standup",
+				"evidence-20:00-21:00": "Evening research notes",
+				"work-13:00-15:00":     "not in the draft",
+			}},
+			wantMsg: []string{"work-13:00-15:00", "does not contain"},
+		},
+	}
+	for _, tc := range cases {
+		_, err := ComposeReviewed(composeDraft(), tc.desc)
+		if err == nil {
+			t.Fatalf("%s: expected error", tc.name)
+		}
+		for _, want := range tc.wantMsg {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s: error %q lacks %q", tc.name, err, want)
+			}
+		}
+	}
+}
+
+func TestParseDescriptionsNotesMustBeString(t *testing.T) {
+	ok, err := ParseDescriptions([]byte(`{"notes": "one string", "descriptions": {"b": "x"}}`))
+	if err != nil || ok.Notes != "one string" || ok.Descriptions["b"] != "x" {
+		t.Fatalf("string notes rejected: %+v %v", ok, err)
+	}
+	absent, err := ParseDescriptions([]byte(`{"descriptions": {"b": "x"}}`))
+	if err != nil || absent.Notes != "" {
+		t.Fatalf("absent notes must be an empty string: %+v %v", absent, err)
+	}
+	for _, raw := range []string{
+		`{"notes": ["a", "b"], "descriptions": {}}`,
+		`{"notes": 123, "descriptions": {}}`,
+		`{"notes": {}, "descriptions": {}}`,
+	} {
+		if _, err := ParseDescriptions([]byte(raw)); err == nil ||
+			!strings.Contains(err.Error(), `"notes" must be one JSON string`) {
+			t.Fatalf("notes %s = %v, want the string-only validation error", raw, err)
+		}
+	}
+}
+
+// The equivalence proof: recording via --draft + --descriptions composition
+// and recording via --file with the equivalently hand-composed reviewed JSON
+// write byte-identical entries files (same date, same clock).
+func TestRecordComposedMatchesFileComposedByteForByte(t *testing.T) {
+	draft := composeDraft()
+	desc := DescriptionsFile{
+		Notes: "day note",
+		Descriptions: map[string]string{
+			"meeting-09:00-10:00":  "Standup and calendar filtering",
+			"evidence-20:00-21:00": "Evening research notes",
+		},
+	}
+	composed, err := ComposeReviewed(draft, desc)
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+
+	// The equivalently hand-composed reviewed JSON the pre-change judgment
+	// step would have written: every draft field copied, description prose
+	// with the prs_inline suffix appended by hand, one notes string.
+	handJSON := `{
+  "date": "2026-10-26",
+  "timezone": "Asia/Ho_Chi_Minh",
+  "flags": ["source_incomplete:calendar"],
+  "notes": "day note",
+  "blocks": [
+    {
+      "block_id": "meeting-09:00-10:00",
+      "kind": "meeting",
+      "start": "09:00",
+      "end": "10:00",
+      "title": "Standup",
+      "topic_candidates": ["Calendar filtering"],
+      "prs": ["#12 acme/api"],
+      "prs_inline": "PRs: #12 acme/api",
+      "completeness": {"github": "complete"},
+      "description": "Standup and calendar filtering PRs: #12 acme/api"
+    },
+    {
+      "block_id": "evidence-20:00-21:00",
+      "kind": "evidence",
+      "start": "20:00",
+      "end": "21:00",
+      "topic_candidates": ["Evening research"],
+      "description": "Evening research notes"
+    }
+  ]
+}`
+	var viaFile ReviewedDraft
+	if err := json.Unmarshal([]byte(handJSON), &viaFile); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	composedPath := filepath.Join(dir, "composed", "state.json")
+	filePath := filepath.Join(dir, "file", "state.json")
+	if _, err := RecordEntries(composedPath, "test", composed, now); err != nil {
+		t.Fatalf("record composed: %v", err)
+	}
+	if _, err := RecordEntries(filePath, "test", viaFile, now); err != nil {
+		t.Fatalf("record via file: %v", err)
+	}
+	composedBytes, err := os.ReadFile(EntriesPath(composedPath, "2026-10-26"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileBytes, err := os.ReadFile(EntriesPath(filePath, "2026-10-26"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(composedBytes, fileBytes) {
+		t.Fatalf("entries files differ:\ncomposed:\n%s\nvia --file:\n%s", composedBytes, fileBytes)
+	}
+}

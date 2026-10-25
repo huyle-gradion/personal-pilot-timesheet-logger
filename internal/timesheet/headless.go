@@ -668,6 +668,105 @@ type ReviewedDraft struct {
 	Blocks   []ReviewedBlock `json:"blocks"`
 }
 
+// --- descriptions-only judgment step (issue #152) -----------------------------
+
+// DescriptionsFile is the descriptions-only judgment step's entire output: the
+// one small file the AI writes instead of a full reviewed draft. Notes is one
+// plain day-level string; the JSON form accepts a string only (never an
+// array), and Descriptions maps each draft block_id to its description prose.
+// The PRs list is never part of it: record appends each block's prs_inline.
+type DescriptionsFile struct {
+	Notes        string            `json:"notes,omitempty"`
+	Descriptions map[string]string `json:"descriptions"`
+}
+
+// ParseDescriptions parses the descriptions file strictly. A notes field that
+// is present must be a JSON string — an array or any other type is a
+// validation error, so the AI-facing schema never exposes an array form.
+// An absent (or null) notes field is an empty string.
+func ParseDescriptions(data []byte) (DescriptionsFile, error) {
+	var raw struct {
+		Notes        json.RawMessage   `json:"notes"`
+		Descriptions map[string]string `json:"descriptions"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return DescriptionsFile{}, newError(CodeBadRequest,
+			`record: the descriptions file is not valid JSON for the expected schema {"notes": "<string>", "descriptions": {"<block_id>": "<prose>"}}`)
+	}
+	out := DescriptionsFile{Descriptions: raw.Descriptions}
+	if trimmed := strings.TrimSpace(string(raw.Notes)); len(trimmed) > 0 && trimmed != "null" {
+		if !strings.HasPrefix(trimmed, `"`) {
+			return DescriptionsFile{}, newError(CodeBadRequest,
+				`record: the descriptions file's "notes" must be one JSON string, not an array or other type`)
+		}
+		if err := json.Unmarshal(raw.Notes, &out.Notes); err != nil {
+			return DescriptionsFile{}, newError(CodeBadRequest,
+				`record: the descriptions file's "notes" must be one JSON string, not an array or other type`)
+		}
+	}
+	return out, nil
+}
+
+// ComposeReviewed composes the reviewed draft the record path consumes from
+// the draft and the descriptions-only judgment output. Every draft block must
+// get a description: a missing or empty one is a validation error listing the
+// offending block_ids, and a descriptions entry naming a block_id the draft
+// does not contain is a validation error. When a block carries prs_inline and
+// its text is not already contained in the description, it is appended to the
+// description end with a single space separator (never duplicated; blocks
+// without PRs are unchanged). The returned reviewed draft then runs the EXACT
+// existing RecordEntries validation and merge path — no validation rule
+// changes for either input mode.
+func ComposeReviewed(draft Draft, desc DescriptionsFile) (ReviewedDraft, error) {
+	known := make(map[string]bool, len(draft.Blocks))
+	for _, b := range draft.Blocks {
+		known[b.BlockID] = true
+	}
+	var missing []string
+	for _, b := range draft.Blocks {
+		if d := desc.Descriptions[b.BlockID]; strings.TrimSpace(d) == "" {
+			missing = append(missing, b.BlockID)
+		}
+	}
+	if len(missing) > 0 {
+		if desc.Descriptions == nil {
+			// A wholly absent descriptions map would list every block id and
+			// misdirect the AI; name the real problem instead.
+			return ReviewedDraft{}, newError(CodeBadRequest,
+				"record: the descriptions file has no descriptions map")
+		}
+		return ReviewedDraft{}, newError(CodeBadRequest,
+			"record: every block needs a description; missing or empty: "+strings.Join(missing, ", "))
+	}
+	var unknown []string
+	for id := range desc.Descriptions {
+		if !known[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	sort.Strings(unknown)
+	if len(unknown) > 0 {
+		return ReviewedDraft{}, newError(CodeBadRequest,
+			"record: the descriptions file names block ids the draft does not contain: "+strings.Join(unknown, ", "))
+	}
+	reviewed := ReviewedDraft{
+		Date: draft.Date, Timezone: draft.Timezone, DayNote: draft.DayNote,
+		Flags: draft.Flags, Notes: desc.Notes,
+	}
+	for _, b := range draft.Blocks {
+		d := desc.Descriptions[b.BlockID]
+		// Suffix check, not Contains: a prefix-sharing PR id ("PRs: #12 …"
+		// inside "PRs: #123 …") must not make the append look already done.
+		// Trailing whitespace of any kind is stripped so the separator is a
+		// single space.
+		if b.PRsInline != "" && !strings.HasSuffix(strings.TrimRight(d, " \t\n\r"), b.PRsInline) {
+			d = strings.TrimRight(d, " \t\n\r") + " " + b.PRsInline
+		}
+		reviewed.Blocks = append(reviewed.Blocks, ReviewedBlock{DraftBlock: b, Description: d})
+	}
+	return reviewed, nil
+}
+
 // EntryRecord is one stored log entry. It keeps the full source references so
 // any entry can be checked against the providers it came from.
 type EntryRecord struct {
