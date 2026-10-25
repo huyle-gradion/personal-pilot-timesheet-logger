@@ -28,6 +28,9 @@ Usage:
   timesheet decide --config <path> [--env-file <path>] --date <YYYY-MM-DD> --meeting-id <id> --decision <attended|skipped> --collection-id <id>
   timesheet confirm --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
   timesheet save --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
+  timesheet plan --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet reconcile --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet resolve --config <path> [--env-file <path>] --date <YYYY-MM-DD> --file <decision.json>
 
 The collect/draft/run/record/status subcommands are the deterministic headless
 surface used by the timesheet skill: collect performs one bounded collection
@@ -98,6 +101,44 @@ edit) would silently re-attach a selection to the wrong interval; the
 content binding makes that impossible — the replay fails closed naming the
 block, and the fix is to re-run stage + classify. Nothing here approves or
 submits anything.
+
+The plan, reconcile and resolve subcommands add identity reconciliation and
+exact submission previews (campaign issue #160, slice SUBMIT-3). The full flow
+order through this slice is: run → record → stage → classifications/classify →
+confirm → save → plan → (reconcile and resolve when the plan lists identity
+blockers) → plan again for a clean plan_id. plan wraps the preview_plan op
+verbatim: one fresh read-only observation of every affected date through the
+configured Gradion workspace — live access, like classifications (it fails
+closed with the op's own remote_disabled/remote_unavailable error without the
+configuration or credential, and live remote behavior is owner-verified) — and
+prints the exact PlanPreview as deterministic JSON: plan_id, state
+(ready/blocked), the per-allocation create/edit operations, and any blockers
+with their codes. The op persists the fresh observations and the immutable
+plan record durably in one transaction under the process's exclusive store
+lock (plan cannot run while serve holds the store); that durable record is
+what a later approve consumes after re-rendering fresh in its own process —
+nothing here approves or submits anything. reconcile wraps the reconcile_remote
+op: one fresh read-only observation of the date (live access, same fail-closed
+behavior) printing mapped/changed/missing/orphaned identities, unbound remotes
+and candidates exactly as returned. It is read-only in the identity sense: it
+persists the fresh observation record itself, but it never binds an identity,
+never mutates a mapping and never clears a blocker. resolve is the human
+decision gate that replaces the interactive picker: after reading the
+reconcile (or plan) receipt, the human authors one decision JSON file —
+{"revision": <n>, "observation_id": "...", "decision":
+"adopt|accept_observed|foreign", "remote_id": "...", "local_id": "..."} with
+revision, observation_id and remote_id copied verbatim from the receipt, and
+local_id naming the confirmed durable interval for adopt/accept_observed but
+omitted for foreign — and resolve passes it to the resolve_remote op. Every
+refusal is the op's own, verbatim: a wrong or stale observation_id
+(stale_observation), a remote_id the observation does not carry
+(unknown_remote), adopt without confirmed durable local work (unknown_local),
+a decision that would steal or erase an active binding (identity_conflict),
+and a stale day revision (stale_revision). resolve performs no remote read.
+Blockers are resolved only by these explicit human decisions, never
+auto-cleared; because a plan's identity includes its exact blockers, the
+re-preview after any resolve yields a NEW plan_id — the stale one is never
+reused or re-approved.
 
 R4 adds the native approval ledger and one verified submission path. The
 'approve_plan' request binds a unique approval to the exact current rendered plan
@@ -228,6 +269,30 @@ func main() {
 		}
 	case "save":
 		if err := runSave(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "plan":
+		if err := runPlan(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "reconcile":
+		if err := runReconcile(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "resolve":
+		if err := runResolve(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return
 			}

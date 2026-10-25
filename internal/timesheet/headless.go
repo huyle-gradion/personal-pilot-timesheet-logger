@@ -1144,6 +1144,63 @@ func WriteClassificationChoices(statePath, appVersion, date string, selections m
 	return nil
 }
 
+// --- SUBMIT-3 remote-identity decision file -------------------------------------
+//
+// resolve applies one explicit human identity/content decision against the
+// day's current remote observation. The decision replaces the interactive pi
+// picker: the human reads the reconcile (or plan) receipt, then authors one
+// small JSON file whose fields are copied verbatim from that receipt, and the
+// command passes it to the resolve_remote op. Every op-level refusal — a wrong
+// or stale observation_id, a remote_id the observation does not carry, adopt
+// without confirmed durable local work, a decision that would steal another
+// allocation's binding — happens in the op and fails closed; this parser only
+// checks the file's own shape.
+
+// ResolutionDecisionFile is resolve's --file input. Revision is the day
+// revision copied verbatim from the reconcile receipt (the op fails closed on
+// a stale one); ObservationID and RemoteID identify the exact observation and
+// observed entry the human reviewed; LocalID names the confirmed durable local
+// interval for adopt and accept_observed and must be omitted for foreign.
+type ResolutionDecisionFile struct {
+	Revision      int    `json:"revision"`
+	ObservationID string `json:"observation_id"`
+	Decision      string `json:"decision"`
+	RemoteID      string `json:"remote_id"`
+	LocalID       string `json:"local_id,omitempty"`
+}
+
+// ParseResolutionDecision parses resolve's --file input strictly. A file that
+// is not valid JSON names the expected schema so it is diagnosable without
+// reading it; a missing or negative revision is a validation error (the op
+// itself requires the revision and refuses a stale one). The decision value
+// and the id relationships are the op's own fail-closed checks, passed through
+// verbatim.
+func ParseResolutionDecision(data []byte) (ResolutionDecisionFile, error) {
+	var raw struct {
+		Revision      *int   `json:"revision"`
+		ObservationID string `json:"observation_id"`
+		Decision      string `json:"decision"`
+		RemoteID      string `json:"remote_id"`
+		LocalID       string `json:"local_id"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return ResolutionDecisionFile{}, newError(CodeBadRequest,
+			`resolve: the decision file is not valid JSON for the expected schema {"revision": <n>, "observation_id": "...", "decision": "adopt|accept_observed|foreign", "remote_id": "...", "local_id": "..."} (local_id omitted for foreign)`)
+	}
+	if raw.Revision == nil {
+		return ResolutionDecisionFile{}, newError(CodeBadRequest,
+			"resolve: the decision file is missing revision; copy it verbatim from the reconcile receipt")
+	}
+	if *raw.Revision < 0 {
+		return ResolutionDecisionFile{}, newError(CodeBadRequest,
+			"resolve: the decision file's revision must not be negative")
+	}
+	return ResolutionDecisionFile{
+		Revision: *raw.Revision, ObservationID: raw.ObservationID, Decision: raw.Decision,
+		RemoteID: raw.RemoteID, LocalID: raw.LocalID,
+	}, nil
+}
+
 // --- record-time source re-attachment -----------------------------------------
 
 // stateEvidenceView is a minimal read-only projection of the durable state

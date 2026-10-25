@@ -1220,6 +1220,170 @@ func runConfirm(args []string) error {
 	return printJSON(receipt)
 }
 
+// --- SUBMIT-3 plan & identity commands -------------------------------------------
+//
+// plan, reconcile and resolve wire the existing preview_plan, reconcile_remote
+// and resolve_remote session ops into the one-shot headless flow. The natural
+// order after save is: plan (preview what submission would write) → when the
+// plan or reconcile receipt lists identity blockers, reconcile (fresh
+// read-only observation) → the human authors resolve's decision file → plan
+// again for a clean plan_id. plan and reconcile need live access (a fresh
+// remote read through the configured Gradion workspace); resolve does not.
+
+// runPlan wraps the preview_plan op verbatim: one fresh read-only observation
+// of every affected date through the configured Gradion workspace (live
+// access, like classifications: without a Gradion configuration or credential
+// it fails closed with the op's own remote_disabled/remote_unavailable error,
+// and live remote behavior is owner-verified), then the exact PlanPreview
+// result printed as deterministic JSON — plan_id, state, operations, blockers
+// and surfaced remotes, untouched. The op persists the fresh observations and
+// the immutable plan record in one durable transaction under this process's
+// exclusive store lock, so plan cannot run while a serve process holds the
+// store; the durable plan record is exactly what a later approve consumes
+// after re-rendering fresh in its own process (nothing is approved here).
+// Blockers never auto-clear: each is resolved by an explicit human decision
+// (resolve), and because the plan identity includes the exact blockers, the
+// re-preview after any resolve yields a NEW plan_id — never reuse the old one.
+func runPlan(args []string) error {
+	f, err := parseHeadlessFlags("plan", args, true, false)
+	if err != nil {
+		return err
+	}
+	h, err := openHeadless(f.configPath, f.envFile)
+	if err != nil {
+		return err
+	}
+	defer h.done()
+	res, err := h.call("preview_plan", timesheet.Request{Day: f.date})
+	if err != nil {
+		return err
+	}
+	receipt, ok := res.(timesheet.PlanPreview)
+	if !ok {
+		return fmt.Errorf("plan: unexpected preview_plan payload")
+	}
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// runReconcile wraps the reconcile_remote op: one fresh read-only observation
+// of the date (live access, like plan; fails closed with the op's own
+// remote_disabled/remote_unavailable error), then the mapped/changed/missing/
+// orphaned identities, unbound remotes and candidates exactly as the op
+// returns them. Read-only in the identity sense: the op persists the fresh
+// observation record itself (under this process's exclusive store lock, so it
+// cannot run while serve holds the store) but it NEVER binds an identity,
+// never mutates an existing mapping and never resolves a blocker — the
+// receipt's observation_id, revision and unbound/candidate lists are exactly
+// the inputs the human copies into resolve's decision file.
+func runReconcile(args []string) error {
+	f, err := parseHeadlessFlags("reconcile", args, true, false)
+	if err != nil {
+		return err
+	}
+	h, err := openHeadless(f.configPath, f.envFile)
+	if err != nil {
+		return err
+	}
+	defer h.done()
+	res, err := h.call("reconcile_remote", timesheet.Request{Day: f.date})
+	if err != nil {
+		return err
+	}
+	receipt, ok := res.(timesheet.ReconcileReceipt)
+	if !ok {
+		return fmt.Errorf("reconcile: unexpected reconcile_remote payload")
+	}
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// resolveFlags carries the resolve inputs. The --file decision JSON is the
+// human decision gate: it must be authored by the human after reading the
+// reconcile (or plan) receipt, with observation_id, revision and remote_id
+// copied verbatim from that receipt.
+type resolveFlags struct {
+	configPath string
+	envFile    string
+	date       string
+	file       string
+}
+
+func parseResolveFlags(args []string) (*resolveFlags, error) {
+	flags := flag.NewFlagSet("resolve", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	f := &resolveFlags{}
+	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
+	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
+	flags.StringVar(&f.file, "file", "", "decision JSON path: {\"revision\": <n>, \"observation_id\": \"...\", \"decision\": \"adopt|accept_observed|foreign\", \"remote_id\": \"...\", \"local_id\": \"...\"} (required; local_id omitted for foreign)")
+	if err := flags.Parse(args); err != nil {
+		return nil, err
+	}
+	if flags.NArg() != 0 {
+		return nil, fmt.Errorf("resolve does not accept positional arguments")
+	}
+	if f.configPath == "" {
+		return nil, fmt.Errorf("resolve requires --config")
+	}
+	if f.date == "" {
+		return nil, fmt.Errorf("resolve requires --date")
+	}
+	if _, err := time.Parse("2006-01-02", f.date); err != nil {
+		return nil, fmt.Errorf("resolve: --date must be YYYY-MM-DD")
+	}
+	if f.file == "" {
+		return nil, fmt.Errorf("resolve requires --file")
+	}
+	return f, nil
+}
+
+// runResolve wraps the resolve_remote op: it records one explicit human
+// identity/content decision (adopt, accept_observed or foreign) against the
+// day's current observation. The decision file — authored by the human after
+// reading reconcile/plan output — is parsed for shape only; every op-level
+// refusal passes through verbatim: a wrong or stale observation_id
+// (stale_observation), a remote_id the observation does not carry
+// (unknown_remote), adopt without confirmed durable local work that allocates
+// onto this date (unknown_local), a decision that would steal or erase an
+// active binding (identity_conflict), and a stale day revision
+// (stale_revision). resolve performs no remote read; it needs no live access.
+// A successful adopt or accept_observed binds (or re-baselines) the mapping
+// durably; foreign records the decision without binding. Nothing here approves
+// or submits anything.
+func runResolve(args []string) error {
+	f, err := parseResolveFlags(args)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(f.file)
+	if err != nil {
+		return fmt.Errorf("resolve: the decision file cannot be read")
+	}
+	decision, err := timesheet.ParseResolutionDecision(data)
+	if err != nil {
+		return err
+	}
+	h, err := openHeadless(f.configPath, f.envFile)
+	if err != nil {
+		return err
+	}
+	defer h.done()
+	res, err := h.call("resolve_remote", timesheet.Request{
+		Day: f.date, Revision: &decision.Revision, ObservationID: decision.ObservationID,
+		RemoteID: decision.RemoteID, LocalID: decision.LocalID, Decision: decision.Decision,
+	})
+	if err != nil {
+		return err
+	}
+	receipt, ok := res.(timesheet.ResolutionReceipt)
+	if !ok {
+		return fmt.Errorf("resolve: unexpected resolve_remote payload")
+	}
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
 // runSave derives the staged set from the entries ledger, confirms it (source
 // gate included), and wraps the save op: one durable Commit of the confirmed
 // day. After a successful save the day is final; further stage/confirm/save
