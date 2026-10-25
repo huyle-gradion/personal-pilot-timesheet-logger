@@ -48,16 +48,18 @@ TS_ENV=$HOME/.timesheet/.env.local   # may be an empty file for local-only days
 
    - For each block, write `description`: one short grouped-topic summary
      of `topic_candidates` (combine small items; do not list every action).
-     When `prs` is non-empty, end the description with the inline list:
-     `PRs: #12 acme/api, #8 acme/web`.
+     When the block has `prs_inline`, end the description by copying
+     `prs_inline` verbatim — do not re-derive the PRs list.
    - Judge ambiguous calendar events: a block whose meeting title is not
      clearly work gets described as what it actually was, or flagged in
      `notes` if it should not count as work.
    - Judge completeness from `flags` (`source_incomplete:*`,
      `no_confirmed_intervals`): add a day-level `notes` line when the day
      looks incomplete rather than inventing content.
-   - Never change `block_id`, `start`, `end`, `prs`, `sources`, or
-     `completeness`; `record` rejects a dropped `PRs:` list.
+   - The judgment step changes only `description` (and `notes`); every
+     other field stays exactly as the draft emitted it. Copy `prs_inline`
+     verbatim; `record` validates that a block's description carries the
+     `PRs:` list.
 
    Write the edited draft (same schema, plus `description` per block) to
    `$TMP/reviewed.json`.

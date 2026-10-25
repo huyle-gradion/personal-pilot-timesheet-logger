@@ -869,6 +869,24 @@ const (
 	collectHTTPTimeout    = 15 * time.Second
 	maxTitleRunes         = 240
 	maxDetailRunes        = 400
+	// maxDraftTopicCandidates bounds how many topic_candidates lines one draft
+	// block renders before an honest "+N more" overflow line (N counts the
+	// omitted rendered lines). It is a draft-rendering bound only: durable
+	// evidence state keeps every candidate, and recorded entries are unchanged.
+	maxDraftTopicCandidates = 12
+	// maxTopicOverflowItems bounds how many items beyond the maxTopicItems
+	// retained Items cap one topic keeps durably as overflow evidence
+	// (issue #146). It keeps the audit trail behind a truncated topic
+	// recoverable without letting any one topic's state grow without bound;
+	// beyond it the loss is counted honestly on the topic, never silent.
+	maxTopicOverflowItems = 150
+	// maxTotalOverflowItems bounds the total overflow items retained across
+	// all topics of one collection attempt, so many truncated topics cannot
+	// multiply the per-topic ceiling into unbounded state growth. The pool is
+	// filled in item arrival order (the de-duplicated collector order), so
+	// later topics lose their overflow first; beyond it the loss is counted
+	// honestly on the affected topics, never silent.
+	maxTotalOverflowItems = 600
 )
 
 // Evidence source identifiers, attempt states, and decision words.
@@ -935,16 +953,33 @@ type EvidenceItem struct {
 // unknown by design; timestamps and gaps never become working intervals.
 // Truncated/DroppedItems make honest visibility: when a topic had more
 // provider items than the fixed Item cap, the fact is recorded here with a
-// truthful retained/dropped count rather than a silent no-op.
+// truthful count rather than a silent no-op. Items beyond the retained Items
+// cap are kept durably as OverflowItems up to the fixed overflow ceilings
+// (issue #146); DroppedItems counts only items retained in neither form —
+// the honest per-topic loss. For state written before overflow retention,
+// DroppedItems kept its original beyond-the-Items-cap meaning, which under
+// the current reading is the same count (nothing beyond the cap was
+// retained).
 type TopicCandidate struct {
-	Ref          string         `json:"ref"`
-	Title        string         `json:"title"`
-	Provider     string         `json:"provider"`
-	Items        []EvidenceItem `json:"items"`
-	FirstAt      string         `json:"first_at,omitempty"`
-	LastAt       string         `json:"last_at,omitempty"`
-	Truncated    bool           `json:"truncated,omitempty"`
-	DroppedItems int            `json:"dropped_items,omitempty"`
+	Ref       string         `json:"ref"`
+	Title     string         `json:"title"`
+	Provider  string         `json:"provider"`
+	Items     []EvidenceItem `json:"items"`
+	FirstAt   string         `json:"first_at,omitempty"`
+	LastAt    string         `json:"last_at,omitempty"`
+	Truncated bool           `json:"truncated,omitempty"`
+	// DroppedItems counts items retained in neither Items nor OverflowItems —
+	// the honest per-topic loss beyond the fixed overflow ceilings. For state
+	// written before overflow retention it kept its original
+	// beyond-the-Items-cap meaning, which under the current reading is the
+	// same count (nothing beyond the cap was retained then).
+	DroppedItems int `json:"dropped_items,omitempty"`
+	// OverflowItems holds attributable items beyond the maxTopicItems
+	// retained Items cap, retained durably up to maxTopicOverflowItems per
+	// topic and maxTotalOverflowItems per collection attempt. They never
+	// extend FirstAt/LastAt: those stay computed from the retained Items so
+	// the draft's topic-to-block span mapping is unchanged by retention.
+	OverflowItems []EvidenceItem `json:"overflow_items,omitempty"`
 }
 
 // ProposedMeeting is a calendar proposal. It is never confirmed work. Status,
