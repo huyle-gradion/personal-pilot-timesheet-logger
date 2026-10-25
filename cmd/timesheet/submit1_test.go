@@ -182,8 +182,9 @@ func TestStageRecordedDayMix(t *testing.T) {
 		t.Fatalf("sidecar = %v, %v; want 2 mappings", sidecar, err)
 	}
 	for _, ref := range receipt.Staged {
-		if sidecar[ref.BlockID] != ref.IntervalID || ref.IntervalID == "" {
-			t.Fatalf("sidecar mapping for %s = %q, want the staged interval id", ref.BlockID, sidecar[ref.BlockID])
+		ids := sidecar[ref.BlockID]
+		if len(ids) != 1 || ids[0] != ref.IntervalID || ref.IntervalID == "" {
+			t.Fatalf("sidecar mapping for %s = %v, want the staged interval id", ref.BlockID, ids)
 		}
 	}
 }
@@ -270,7 +271,7 @@ func TestRestageEditsAndRemovesInPlace(t *testing.T) {
 		t.Fatalf("staged_intervals after removal = %d, want 1", third.StagedIntervals)
 	}
 	sidecar, err := timesheet.ReadStageMap(statePathFor(cfg), testDate)
-	if err != nil || len(sidecar) != 1 || sidecar["work-1"] != "" {
+	if err != nil || len(sidecar) != 1 || len(sidecar["work-1"]) != 0 {
 		t.Fatalf("sidecar after removal = %v, %v; want only work-2", sidecar, err)
 	}
 }

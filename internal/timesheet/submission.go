@@ -179,10 +179,13 @@ func capabilityFailureObservation(date string, err error) *RemoteObservation {
 
 // writeAttempt is one classified write attempt result. An acknowledge-with-id
 // attempt is "identified"; identity becomes confirmed only through verifyWrite.
+// Detail is the sanitized provider error text on uncertain attempts (issue
+// #167): the receipt carries it so a refusal names its reason.
 type writeAttempt struct {
 	Status   string // "identified" | IntentUncertain | IntentUnidentified
 	RemoteID string
 	Code     string
+	Detail   string
 }
 
 // validateWriteOp validates an approved operation against the bounded wire
@@ -303,17 +306,29 @@ func writeAckID(res mcp.CallResult) string {
 // tool-level error or a transport failure is UNCERTAIN (the effect is unknown;
 // it is never retried); an unparseable response is UNIDENTIFIED; only a real
 // acknowledgment yields an identity to verify with a read-back.
+// sanitizeProviderDetail renders a bounded, sanitized provider error text for
+// write receipts: control characters stripped, URLs removed, rune-bounded. It
+// never echoes credential values or request URLs, so a provider refusal names
+// its reason without leaking transport detail (issue #167).
+func sanitizeProviderDetail(s string) string {
+	snippet := strings.TrimSpace(providerURLRE.ReplaceAllString(sanitizerText(s), ""))
+	snippet = strings.TrimSpace(strings.Trim(snippet, "\",:' "))
+	return truncateRunes(snippet, maxDetailRunes)
+}
+
 func classifyWriteAttempt(err error, res mcp.CallResult) writeAttempt {
 	if err != nil {
 		code := ""
+		detail := ""
 		var mcpErr *mcp.Error
 		if errors.As(err, &mcpErr) {
 			code = mcpErr.StableCode
+			detail = sanitizeProviderDetail(err.Error())
 		}
-		return writeAttempt{Status: IntentUncertain, Code: code}
+		return writeAttempt{Status: IntentUncertain, Code: code, Detail: detail}
 	}
 	if res.IsError {
-		return writeAttempt{Status: IntentUncertain, Code: CodeWriteUncertain}
+		return writeAttempt{Status: IntentUncertain, Code: CodeWriteUncertain, Detail: sanitizeProviderDetail(res.Content)}
 	}
 	id := writeAckID(res)
 	if id == "" {
@@ -334,6 +349,10 @@ type WriteReceiptRow struct {
 	Status    string `json:"status"`
 	RemoteID  string `json:"remote_id,omitempty"`
 	ErrorCode string `json:"error_code,omitempty"`
+	// ErrorDetail is the sanitized provider refusal text captured at dispatch
+	// (empty when none arrived): a write_uncertain receipt names the provider's
+	// reason instead of swallowing it (issue #167).
+	ErrorDetail string `json:"error_detail,omitempty"`
 }
 
 // SubmissionCallCounts is the bounded call inventory of one submit request.
@@ -1355,6 +1374,7 @@ func (run *submissionRun) dispatch(ctx context.Context, writer *GradionWriter, o
 		}
 		row.Status = status
 		row.ErrorCode = code
+		row.ErrorDetail = attempt.Detail
 		if attempt.Status == "identified" && row.RemoteID == "" {
 			row.RemoteID = ackID
 		}
