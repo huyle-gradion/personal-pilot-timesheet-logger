@@ -17,8 +17,8 @@ only on the Mac.
 
 ## 2026-10-25 — first full agent-run of the skill (Pi) ✅
 
-**Ran:** the owner asked a normal Pi session (repo cwd) to *"log today's
-work"*. The agent read `SKILL.md`/`workflow.md`, ran `collect` → `draft`,
+**Ran:** the owner asked a normal Pi session (repo cwd) to _"log today's
+work"_. The agent read `SKILL.md`/`workflow.md`, ran `collect` → `draft`,
 authored the block descriptions (judgment step), `record`ed the day
 (`entries/2026-10-25.json`, 1 entry), verified with `status`, and ran
 `tokens.py` on its own session — the full six-step loop, zero manual help.
@@ -35,7 +35,7 @@ noticeably — label the next data point with this change.
 **Measured (first agent-run data point):** session input 14,957 / output
 950 / cache 97,280 (total 113,187) — recorded in `benchmarks/tokens.csv`
 by the agent itself. Honest read against the ≤ 1,000 tokens/day target:
-the *output* side fits, but the input includes the agent's system prompt,
+the _output_ side fits, but the input includes the agent's system prompt,
 skill files and exploration — the judgment step's actual input (the draft
 JSON) is a fraction of that. Improvement candidate: a focused invocation
 that passes only the draft into the judgment step.
@@ -124,3 +124,29 @@ Earlier daily notes live in `docs/lessons-learned.md`, the ADR amendments
 fixes). The rewrite week 10-19…10-23 consumed the tool's own daily use;
 those days are backfilled retrospectively with real evidence, as recorded
 above.
+
+## 2026-10-25 — draft compaction lands; third agent-run data point ✅
+
+**Changed (PR #150, issues #148 + #146):** the judgment step's input is now
+a compacted draft — PRs inline list rendered script-side (`prs_inline`),
+mechanical per-repo PR titles grouped, source URLs kept out of the AI view —
+and per-topic overflow is retained durably instead of dropped. Measured on
+the 2026-10-20 busy-day shape: draft JSON went from 6,651 bytes to ~1 KB.
+
+**Measured (tokens/day, agent runs):**
+
+| Run            | Runner | Total   | Change since previous                          |
+| -------------- | ------ | ------- | ---------------------------------------------- |
+| 1 (2026-10-24) | Pi     | 113,187 | — (included --help/flag-discovery waste)       |
+| 2 (2026-10-24) | Pi     | 50,751  | runbook tightened: no flag discovery (1125a87) |
+| 3 (2026-10-25) | Pi     | 49124   | draft compaction (#148): 11356 in / 904 out    |
+
+Honest caveat: the compaction shrinks the judgment step's input (the draft)
+and output (no re-typed PR lists); the ~13k session scaffolding (system
+prompt, skill files) is fixed cost per fresh session and unaffected.
+
+**Backfill:** working days 2026-10-06–09 and 13–16 were recovered on
+2026-10-25 by running the skill per past date (evidence from GitHub and
+calendar collect; entries recorded with honest incompleteness notes where
+sources were bounded). Also corrects the earlier typo: the second owner-run
+date was ‹the date you actually ran›, not 2026-10-27.
