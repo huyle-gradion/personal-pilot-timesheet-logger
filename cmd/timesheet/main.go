@@ -96,26 +96,37 @@ behavior is owner-verified). Its receipt prints the catalog's choices exactly
 as returned (catalog_id, query, complete, observed_at, and options with id,
 name, code, activity_type) and the catalog is persisted in the store's
 bounded cache, so classify works offline against the stored catalog. classify
-re-derives the staged set from the entries ledger exactly as stage does
-(same derivation, same interval ids for the same entries state), then applies
-choices.json — {"selections": {"<interval_id>": {"catalog_id": "...",
-"classification_id": "..."}}} with both ids copied verbatim from the
-classifications and stage receipts — through the select_classification op,
-and persists the selections to entries/<date>.classify.json, each
-content-bound to the recorded block it was chosen for (a SHA-256 digest of
-the block's date, block_id, start, end and description). An empty file ({})
-is a valid no-op and clears any earlier selections. An unknown interval id
-fails closed with the op's own error, untouched. Selections on staged
-intervals are session-only, so classify alone makes nothing durable: confirm
-and save replay the sidecar's selections against their own re-derived staged
-set before confirming, and save commits remote_classification_id durably —
-but ONLY when the re-derived day is content-identical to the one classify
-chose against. Staged interval ids re-derive sequentially, so any entries
-change after classify (insertion, removal, replacement, time or description
-edit) would silently re-attach a selection to the wrong interval; the
-content binding makes that impossible — the replay fails closed naming the
-block, and the fix is to re-run stage + classify. Nothing here approves or
-submits anything.
+applies choices.json — {"selections": {"<interval_id>": {"catalog_id": "...",
+"classification_id": "..."}}} with catalog_id and classification_id copied
+verbatim from the classifications receipt — through the select_classification
+op, and has two paths. NOT YET FINALIZED (the day has no confirmed
+intervals): selections key off the stage receipt ids — classify re-derives
+the staged set from the entries ledger exactly as stage does (same
+derivation, same interval ids for the same entries state), persists the
+selections to entries/<date>.classify.json, each content-bound to the
+recorded block it was chosen for (a SHA-256 digest of the block's date,
+block_id, start, end and description), and the day stays staged — confirm and
+save replay the sidecar's selections against their own re-derived staged set
+before confirming, and save commits remote_classification_id durably — but
+ONLY when the re-derived day is content-identical to the one classify chose
+against. Staged interval ids re-derive sequentially, so any entries change
+after classify (insertion, removal, replacement, time or description edit)
+would silently re-attach a selection to the wrong interval; the content
+binding makes that impossible — the replay fails closed naming the block, and
+the fix is to re-run stage + classify. ALREADY FINALIZED (a saved day that
+carries durable confirmed intervals, e.g. it was confirmed and saved before
+any classification was selected): selections key off the durable interval ids
+exactly as 'status --date' prints them, applied directly against the durable
+staged set, and classify itself re-finalizes the day at a NEW revision — it
+runs confirm and save in the same process (the serve flow's reopen → select →
+confirm → save revision step) and its receipt says the day was re-finalized
+at the new revision with the selections applied to the confirmed intervals;
+no sidecar is written on this path because the selections become durable
+immediately. On both paths an empty file ({}) is a valid no-op: on the staged
+path it clears any earlier selections; on a finalized day it re-finalizes
+nothing and the saved revision is left untouched. On both paths an unknown or
+stale interval id fails closed with the op's own error, untouched, and the
+saved revision is unchanged. Nothing here approves or submits anything.
 
 The plan, reconcile and resolve subcommands add identity reconciliation and
 exact submission previews (campaign issue #160, slice SUBMIT-3). The full flow
