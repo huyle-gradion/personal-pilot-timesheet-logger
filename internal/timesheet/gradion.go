@@ -362,6 +362,10 @@ var (
 	classificationEntryRE = regexp.MustCompile(`^-\s+(.+?)\s+\(([^)]*)\)\s+\[([^\]]*)\]\s*·\s*(\S+)\s*$`)
 	classificationTruncRE = regexp.MustCompile(`(?i)^\s*\d+\+.*showing\s+\d+`)
 	classificationHeadRE  = regexp.MustCompile(`(?i)^\s*\d+\s+classifications?\s+found`)
+	// classificationEmptyRE recognizes the provider's zero-match rendering
+	// (observed live as "No active classifications found."). An empty result
+	// is a valid catalog, not an unreadable one.
+	classificationEmptyRE = regexp.MustCompile(`(?i)^\s*(?:no|0)\s+(?:active\s+)?classifications?\s+(?:found|matched|match|available)\.?\s*$`)
 )
 
 // Classifications performs one bounded classification read. A filtered or
@@ -463,7 +467,20 @@ func parseCatalog(res mcp.CallResult, query string, observed time.Time) (*Catalo
 			textByID[id] = textEntry{Name: strings.TrimSpace(m[1]), Code: strings.TrimSpace(m[2]), Activity: strings.TrimSpace(m[3])}
 		}
 		if parsed == 0 && len(structuredOrder) == 0 && !header {
-			return nil, newError(CodeRemoteUnreadable, "the classification text could not be parsed")
+			// An honest zero-match result is a valid empty catalog, not an
+			// unreadable one: the provider renders it as a no/zero-match text
+			// line (observed live as "No active classifications found.").
+			// Recognize the phrasings; anything else still fails closed below.
+			if classificationEmptyRE.MatchString(text) {
+				cat.CatalogID = catalogID(query, cat.Options, cat.Complete)
+				return cat, nil
+			}
+			first := text
+			if i := strings.IndexByte(first, '\n'); i >= 0 {
+				first = first[:i]
+			}
+			return nil, newError(CodeRemoteUnreadable,
+				"the classification text could not be parsed; first line: "+truncateRunes(sanitizeProviderDetail(first), 120))
 		}
 		if len(structuredOrder) > 0 && parsed == 0 {
 			// The text block is the only source of code/activity type. A
