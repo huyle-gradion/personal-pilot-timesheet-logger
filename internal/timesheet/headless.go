@@ -1042,6 +1042,100 @@ func SplitEntrySpans(start, end string) [][2]string {
 	return out
 }
 
+// EffectiveEntrySpans resolves one day's recorded entries into per-entry,
+// mutually non-overlapping spans. The Gradion remote forbids overlapping
+// entries (live-verified constraint), so the submission bridge must never
+// stage two intervals covering the same minute — a ledger day whose meeting
+// sits inside a broad evidence span (the 2026-10-21 shape) is real work
+// recorded twice-over, and the bridge splits the broad span around the
+// specific one instead of refusing the whole day.
+//
+// Specific blocks win: entries are processed shortest span first (then earlier
+// start, then block_id — all deterministic), each claiming its span; a later,
+// broader entry keeps only the parts of its span not already claimed. An entry
+// whose span is fully claimed (a duplicate of a more specific block) yields no
+// spans and is skipped honestly by the caller. Entries without parsable
+// same-day times are excluded (the caller's skip and validation rules own
+// them). The entries ledger is never modified; this is the stage-time
+// projection only. The four-hour chunking (SplitEntrySpans) applies afterwards
+// per remaining span.
+func EffectiveEntrySpans(entries []EntryRecord) map[string][][2]string {
+	type timed struct {
+		id         string
+		sm, em     int
+		duration   int
+		start, end string
+	}
+	var list []timed
+	byID := map[string]EntryRecord{}
+	for _, e := range entries {
+		byID[e.BlockID] = e
+		sm, okS := draftClock(e.Start)
+		em, okE := draftClock(e.End)
+		if !okS || !okE || em <= sm {
+			continue
+		}
+		list = append(list, timed{id: e.BlockID, sm: sm, em: em, duration: em - sm, start: e.Start, end: e.End})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		a, b := list[i], list[j]
+		if a.duration != b.duration {
+			return a.duration < b.duration
+		}
+		if a.sm != b.sm {
+			return a.sm < b.sm
+		}
+		return a.id < b.id
+	})
+	// claimed is the ordered, merged list of minutes already spoken for.
+	var claimed [][2]int
+	claim := func(from, to int) {
+		claimed = append(claimed, [2]int{from, to})
+		sort.Slice(claimed, func(i, j int) bool { return claimed[i][0] < claimed[j][0] })
+		merged := claimed[:0]
+		for _, r := range claimed {
+			if n := len(merged); n > 0 && r[0] <= merged[n-1][1] {
+				if r[1] > merged[n-1][1] {
+					merged[n-1][1] = r[1]
+				}
+				continue
+			}
+			merged = append(merged, r)
+		}
+		claimed = merged
+	}
+	out := map[string][][2]string{}
+	for _, t := range list {
+		// Walk the claimed ranges inside this entry's span; the gaps between
+		// them are the parts this entry keeps.
+		var parts [][2]string
+		cursor := t.sm
+		for _, r := range claimed {
+			if r[1] <= cursor || r[0] >= t.em {
+				continue
+			}
+			if r[0] > cursor {
+				parts = append(parts, [2]string{clockString(cursor), clockString(r[0])})
+			}
+			if r[1] > cursor {
+				cursor = r[1]
+			}
+			if cursor >= t.em {
+				break
+			}
+		}
+		if cursor < t.em {
+			parts = append(parts, [2]string{clockString(cursor), clockString(t.em)})
+		}
+		if len(parts) == 0 {
+			continue // fully claimed by more specific entries; the caller skips it
+		}
+		out[t.id] = parts
+		claim(t.sm, t.em)
+	}
+	return out
+}
+
 // StageMapFile is the durable block_id → interval-id sidecar for one day.
 // Map carries single-interval blocks (the historical shape; old files load
 // unchanged); Chunks carries blocks the Gradion four-hour policy split into

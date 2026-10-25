@@ -686,6 +686,14 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 	}
 	sort.Strings(ids)
 
+	// The Gradion remote forbids overlapping entries, so the bridge resolves
+	// the day's spans before deriving intervals: specific (shorter) blocks
+	// claim their time first and broader spans split around them (a meeting
+	// inside an evidence span splits that evidence span; the ledger keeps the
+	// human's overlapping truth untouched). Each remaining span is then
+	// chunked to the four-hour policy below.
+	effective := timesheet.EffectiveEntrySpans(entries.Entries)
+
 	receipt := &StageReceipt{
 		Date:        date,
 		EntriesFile: timesheet.EntriesPath(cfg.StatePath, date),
@@ -711,13 +719,18 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 			})
 			continue
 		}
+		var spans [][2]string
+		for _, part := range effective[id] {
+			spans = append(spans, timesheet.SplitEntrySpans(part[0], part[1])...)
+		}
+		if len(spans) == 0 {
+			receipt.Skipped = append(receipt.Skipped, StageSkip{
+				BlockID: id,
+				Reason:  "entry's time is fully claimed by more specific entries; its minutes are already staged under them",
+			})
+			continue
+		}
 		desired[id] = true
-		// The Gradion four-hour policy (issue #167): a long recorded block is
-		// staged as contiguous chunk intervals of at most maxRemoteEntryMinutes
-		// each. The entries ledger keeps the human's true block untouched;
-		// each chunk is its own interval, preserving the one-to-one remote
-		// binding model.
-		spans := timesheet.SplitEntrySpans(e.Start, e.End)
 		mapped := stageMap[id]
 		// Same-process restage path: the mapped chunks all exist in this
 		// process's staged set, so each is kept or edited in place. A fresh
