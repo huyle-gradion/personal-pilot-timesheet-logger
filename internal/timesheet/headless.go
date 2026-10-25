@@ -453,20 +453,71 @@ func prLabelNumber(label string) (int, bool) {
 	return n, true
 }
 
+// splitPRLabel splits a "#N repo" PR label into its repository and numeric PR
+// number. It reports ok=false for anything else (no "#N" prefix, a
+// non-numeric number, or an empty repository); prsInline renders such labels
+// verbatim as deterministically sorted trailing entries.
+func splitPRLabel(label string) (repo string, num int, ok bool) {
+	if len(label) == 0 || label[0] != '#' {
+		return "", 0, false
+	}
+	rest := label[1:]
+	end := strings.IndexByte(rest, ' ')
+	if end < 0 {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return "", 0, false
+	}
+	repo = rest[end+1:]
+	if repo == "" {
+		return "", 0, false
+	}
+	return repo, n, true
+}
+
 // prsInline renders the exact "PRs: ..." description suffix a block with PRs
-// must carry: the block's labels joined into one line in stable numeric
-// order. The judgment step copies it verbatim into the description; record
-// validates only the presence of a "PRs:" list in the description, and
-// prs_inline is the exact string the script supplies for it, so rendering it
-// script-side removes the dropped-list rejection mode. A block with no PRs
-// has no prs_inline.
+// must carry, compacted so a many-PR block's composed interval description
+// stays under the 500-rune description limit (issue PRS-COMPACT-1): one
+// segment per repository, repositories in alphabetical order, each segment
+// "<repo>: <numbers>" with the numbers rendered as contiguous numeric ranges
+// ("#a–#b", a lone "#a", gaps comma-listed — the same rule as draftPRRanges)
+// and segments joined by "; ". Every PR number appears exactly once, each
+// repository is stated once per segment, and the same input always yields
+// byte-identical output. Labels that do not parse as "#N repo" are appended
+// verbatim, sorted, as trailing entries. The judgment step copies it verbatim
+// into the description; record validates only the presence of a "PRs:" list
+// in the description, and prs_inline is the exact string the script supplies
+// for it, so rendering it script-side removes the dropped-list rejection
+// mode. A block with no PRs has no prs_inline.
 func prsInline(prs []string) string {
 	if len(prs) == 0 {
 		return ""
 	}
-	ordered := append([]string(nil), prs...)
-	sortPRs(ordered)
-	return "PRs: " + strings.Join(ordered, ", ")
+	byRepo := map[string][]int{}
+	var unparsed []string
+	for _, label := range prs {
+		if repo, num, ok := splitPRLabel(label); ok {
+			byRepo[repo] = append(byRepo[repo], num)
+		} else {
+			unparsed = append(unparsed, label)
+		}
+	}
+	repos := make([]string, 0, len(byRepo))
+	for repo := range byRepo {
+		repos = append(repos, repo)
+	}
+	sort.Strings(repos)
+	segments := make([]string, 0, len(repos)+len(unparsed))
+	for _, repo := range repos {
+		segments = append(segments, repo+": "+draftPRRanges(byRepo[repo]))
+	}
+	if len(unparsed) > 0 {
+		sort.Strings(unparsed)
+		segments = append(segments, unparsed...)
+	}
+	return "PRs: " + strings.Join(segments, "; ")
 }
 
 // draftPRTitleRE matches the mechanical per-PR topic title the GitHub
