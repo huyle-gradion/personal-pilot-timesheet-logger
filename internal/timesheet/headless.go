@@ -993,6 +993,157 @@ func WriteStageMap(statePath, appVersion, date string, mapping map[string]string
 	return nil
 }
 
+// --- SUBMIT-2 classification-choices sidecar ------------------------------------
+//
+// classify applies reviewed classification selections to the day's staged
+// intervals. Like the staged set itself, a selection made on a staged interval
+// is session-only: it lives on Day.Staged entries and becomes durable only
+// when confirm+save commit the day. Because every command is a one-shot
+// process that re-derives the staged set from the entries ledger, the raw
+// selections must survive the process boundary on their own: this sidecar —
+// entries/<date>.classify.json, next to the entries file — persists the
+// interval_id → {catalog_id, classification_id} map, each selection
+// content-bound to the recorded block it was chosen for (BlockContentDigest),
+// so confirm and save can replay it against a provably identical re-derived
+// staged set and fail closed on any entries drift. It is the same pattern as
+// the stage map, carries no state-schema weight, and is never read by serve
+// or the plan builder.
+
+// ChoicesPath returns the per-day classification-choices sidecar path derived
+// from the state path: entries/<date>.classify.json, next to the day's entries
+// file and stage map.
+func ChoicesPath(statePath, date string) string {
+	return strings.TrimSuffix(EntriesPath(statePath, date), ".json") + ".classify.json"
+}
+
+// ClassificationChoiceEntry is one interval's reviewed selection: the exact
+// catalog_id and classification_id the operator chose, both copied verbatim
+// from prior receipts, plus the digest of the recorded block content the
+// selection was chosen for (BlockContentDigest). The digest is what makes a
+// replay safe: staged interval ids re-derive sequentially, so an entries
+// shift between classify and confirm/save could silently re-attach a
+// selection to the wrong successor interval — the digest fails closed on any
+// such drift instead.
+type ClassificationChoiceEntry struct {
+	CatalogID        string `json:"catalog_id"`
+	ClassificationID string `json:"classification_id"`
+	ContentDigest    string `json:"content_digest"`
+}
+
+// BlockContentDigest is the deterministic content binding of one recorded
+// block: the SHA-256 hex of the newline-joined date, block_id, start, end and
+// description, with one trailing newline. These are exactly the fields a
+// staged interval's text is derived from, so any change that would alter the
+// block's staged interval (time, id or description) changes the digest, and
+// any re-derivation whose blocks differ from those the selections were chosen
+// against is refused instead of replayed.
+func BlockContentDigest(date string, e EntryRecord) string {
+	return sha256Hex([]byte(strings.Join([]string{
+		date, e.BlockID, e.Start, e.End, e.Description,
+	}, "\n") + "\n"))
+}
+
+// ClassificationChoicesFile is the durable per-day interval_id → selection
+// sidecar. Its Selections shape is also the exact schema of classify's --file
+// input, so a choices file written from a stage receipt and the persisted
+// sidecar are the same document.
+type ClassificationChoicesFile struct {
+	Date       string                               `json:"date"`
+	AppVersion string                               `json:"app_version"`
+	UpdatedAt  string                               `json:"updated_at"`
+	Selections map[string]ClassificationChoiceEntry `json:"selections"`
+}
+
+// ParseClassificationChoices parses classify's --file input strictly: one
+// optional selections map keyed by interval_id. An absent or empty selections
+// map is valid and means "no selections" — an honest no-op. A selection
+// missing either id is a validation error naming the interval, and a file
+// that is not valid JSON names the expected schema so it is diagnosable
+// without reading it.
+func ParseClassificationChoices(data []byte) (map[string]ClassificationChoiceEntry, error) {
+	var raw struct {
+		Selections map[string]ClassificationChoiceEntry `json:"selections"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, newError(CodeBadRequest,
+			`classify: the choices file is not valid JSON for the expected schema {"selections": {"<interval_id>": {"catalog_id": "...", "classification_id": "..."}}}`)
+	}
+	ids := make([]string, 0, len(raw.Selections))
+	for id := range raw.Selections {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		sel := raw.Selections[id]
+		if strings.TrimSpace(sel.CatalogID) == "" {
+			return nil, newError(CodeBadRequest,
+				"classify: interval "+id+" is missing catalog_id; every selection must name the catalog it reviewed")
+		}
+		if strings.TrimSpace(sel.ClassificationID) == "" {
+			return nil, newError(CodeBadRequest,
+				"classify: interval "+id+" is missing classification_id")
+		}
+	}
+	return raw.Selections, nil
+}
+
+// ReadClassificationChoices loads the day's classification choices. A missing
+// file is (nil, nil). A present file without a selections key is fail-closed
+// state_invalid naming the file and the missing key: silence there would let
+// confirm and save proceed unclassified while believing the day was
+// classified. An explicit empty map ("selections": {}) remains the valid
+// no-op/clear.
+func ReadClassificationChoices(statePath, date string) (map[string]ClassificationChoiceEntry, error) {
+	data, err := os.ReadFile(ChoicesPath(statePath, date))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, newError(CodeStateInvalid, "the classification choices file cannot be read")
+	}
+	var f ClassificationChoicesFile
+	if err := json.Unmarshal(data, &f); err != nil || f.Date != date {
+		return nil, newError(CodeStateInvalid, "the classification choices file is not valid for this date")
+	}
+	if f.Selections == nil {
+		return nil, newError(CodeStateInvalid,
+			"the classification choices file ("+ChoicesPath(statePath, date)+") has no selections key; expected {\"selections\": {}} at minimum")
+	}
+	return f.Selections, nil
+}
+
+// WriteClassificationChoices persists the day's classification choices
+// atomically, mirroring the entries file's write discipline: one temporary
+// file, one rename. The written map replaces any previous one: the latest
+// choices file defines the day's selections, so an empty map clears them.
+func WriteClassificationChoices(statePath, appVersion, date string, selections map[string]ClassificationChoiceEntry, now time.Time) error {
+	if selections == nil {
+		selections = map[string]ClassificationChoiceEntry{}
+	}
+	f := ClassificationChoicesFile{
+		Date:       date,
+		AppVersion: appVersion,
+		UpdatedAt:  now.UTC().Format(time.RFC3339),
+		Selections: selections,
+	}
+	path := ChoicesPath(statePath, date)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return newError(CodeStateInvalid, "the entries directory cannot be created")
+	}
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return newError(CodeInternal, "the classification choices cannot be encoded")
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return newError(CodeStateInvalid, "the classification choices file cannot be written")
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return newError(CodeStateInvalid, "the classification choices file cannot be replaced")
+	}
+	return nil
+}
+
 // --- record-time source re-attachment -----------------------------------------
 
 // stateEvidenceView is a minimal read-only projection of the durable state

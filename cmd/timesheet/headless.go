@@ -400,12 +400,14 @@ func runStatus(args []string) error {
 // finalizeFlags carries the stage/confirm/save inputs: --config/--env-file/
 // --date always, plus the optional --project. Recorded entries carry no project
 // of their own, so the staged intervals take the configuration's single
-// project, or the --project named when several are defined.
+// project, or the --project named when several are defined. classify reuses
+// the same flag set plus --file.
 type finalizeFlags struct {
 	configPath string
 	envFile    string
 	date       string
 	project    string
+	file       string
 }
 
 func parseFinalizeFlags(name string, args []string) (*finalizeFlags, error) {
@@ -845,6 +847,329 @@ func runDecide(args []string) error {
 	return printJSON(res)
 }
 
+// --- SUBMIT-2 classification commands --------------------------------------------
+//
+// classifications and classify wire the existing classifications and
+// select_classification session ops into the one-shot headless flow. The
+// natural order is: run --date (collect) → record → stage → classifications
+// (fetch the catalog) → classify (apply selections) → confirm → save.
+
+// runClassifications wraps the classifications op: one bounded authoritative
+// catalog read against the configured Gradion workspace, whose result is
+// persisted in the store's bounded catalog cache (the most recent
+// classifications fetches; see maxStoredCatalogs). This is the one command in
+// the stage→classify flow that needs live access: it opens an MCP session and
+// performs network IO with the configured credential, so without a Gradion
+// configuration (or with a missing credential) it fails closed with the
+// op's own error and nothing is fetched or stored. The printed receipt is the
+// catalog record's choices exactly as the session returns them: catalog_id,
+// query, complete, observed_at, and the options (id, name, code,
+// activity_type) a later classify selection references by id.
+func runClassifications(args []string) error {
+	flags := flag.NewFlagSet("classifications", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	configPath := flags.String("config", "", "fixed configuration path (required)")
+	envFile := flags.String("env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	query := flags.String("query", "", "search text for the bounded classification read (required)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("classifications does not accept positional arguments")
+	}
+	if *configPath == "" {
+		return fmt.Errorf("classifications requires --config")
+	}
+	if strings.TrimSpace(*query) == "" {
+		return fmt.Errorf("classifications requires --query")
+	}
+	h, err := openHeadless(*configPath, *envFile)
+	if err != nil {
+		return err
+	}
+	defer h.done()
+	res, err := h.call("classifications", timesheet.Request{Query: *query})
+	if err != nil {
+		return err
+	}
+	receipt, ok := res.(timesheet.ClassificationsReceipt)
+	if !ok {
+		return fmt.Errorf("classifications: unexpected classifications payload")
+	}
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// ClassifyApplied is one selection classify applied to a staged interval.
+type ClassifyApplied struct {
+	IntervalID       string `json:"interval_id"`
+	CatalogID        string `json:"catalog_id"`
+	ClassificationID string `json:"classification_id"`
+	// Classification and Code are the chosen option's semantics as the
+	// catalog returned them; CatalogComplete is the catalog's own honesty
+	// flag (a partial catalog cannot prove an option absent).
+	Classification  string `json:"classification,omitempty"`
+	Code            string `json:"code,omitempty"`
+	CatalogComplete bool   `json:"catalog_complete"`
+}
+
+// ClassifyReceipt is classify's stdout receipt, in interval_id order.
+type ClassifyReceipt struct {
+	Date            string            `json:"date"`
+	File            string            `json:"file"`
+	SidecarFile     string            `json:"sidecar_file"`
+	Applied         []ClassifyApplied `json:"applied"`
+	Selections      int               `json:"selections"`
+	Revision        int               `json:"revision"`
+	StagedIntervals int               `json:"staged_intervals"`
+	// Note carries the honest no-op wording when the file named no
+	// selections; it is empty whenever at least one selection applied.
+	Note string `json:"note,omitempty"`
+}
+
+// runClassify re-derives the day's staged set exactly as stage/confirm/save
+// do (same entries ledger, same sidecar-backed derivation, so interval ids
+// match the ids a stage receipt printed for the same entries state), then
+// applies each selection in choices.json through the select_classification op
+// in interval_id order, and persists the selections — each content-bound to
+// the recorded block it was chosen for via BlockContentDigest — to the
+// entries/<date>.classify.json sidecar so confirm and save can replay them.
+// Selection ids must be copied verbatim from the current stage or classify
+// receipt: an unknown or renumbered interval id fails closed with the op's
+// own error, untouched, and the sidecar is not written. A `{}` choices file
+// is a valid honest no-op: nothing is selected, and the sidecar is rewritten
+// empty (clearing any earlier selections). After classify the day remains
+// staged; nothing durable happens until confirm and save.
+func runClassify(args []string) error {
+	f, err := parseClassifyFlags(args)
+	if err != nil {
+		return err
+	}
+	cfg, err := timesheet.LoadConfig(f.configPath)
+	if err != nil {
+		return err
+	}
+	project, err := resolveProject("classify", cfg, f.project)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(f.file)
+	if err != nil {
+		return fmt.Errorf("classify: the choices file cannot be read")
+	}
+	selections, err := timesheet.ParseClassificationChoices(data)
+	if err != nil {
+		return err
+	}
+	h, err := openHeadless(f.configPath, f.envFile)
+	if err != nil {
+		return err
+	}
+	defer h.done()
+	summary, err := openFinalizeDay(h, "classify", f.date)
+	if err != nil {
+		return err
+	}
+	staged, err := applyStage(h, cfg, "classify", f.date, project, summary)
+	if err != nil {
+		return err
+	}
+	noteStageSkips("classify", staged)
+	applied, err := applySelections(h, f.date, summary.Revision, selections)
+	if err != nil {
+		return err
+	}
+	// Content-bind each selection to the recorded block this derivation just
+	// mapped its interval to, so a later replay can prove the day still holds
+	// the exact blocks the choices were made against (staged ids re-derive
+	// sequentially; without the binding an entries shift would re-attach a
+	// selection to the wrong successor interval).
+	blocks, err := stagedBlocks(cfg, f.date)
+	if err != nil {
+		return err
+	}
+	bound := make(map[string]timesheet.ClassificationChoiceEntry, len(selections))
+	for _, a := range applied {
+		e, ok := blocks[a.IntervalID]
+		if !ok {
+			return fmt.Errorf("classify: interval %s cannot be bound to a recorded block; review again; re-run stage + classify", a.IntervalID)
+		}
+		sel := selections[a.IntervalID]
+		sel.ContentDigest = timesheet.BlockContentDigest(f.date, e)
+		bound[a.IntervalID] = sel
+	}
+	if err := timesheet.WriteClassificationChoices(cfg.StatePath, timesheet.AppVersion, f.date, bound, time.Now()); err != nil {
+		return err
+	}
+	receipt := ClassifyReceipt{
+		Date:            f.date,
+		File:            f.file,
+		SidecarFile:     timesheet.ChoicesPath(cfg.StatePath, f.date),
+		Applied:         applied,
+		Selections:      len(applied),
+		Revision:        summary.Revision,
+		StagedIntervals: staged.StagedIntervals,
+	}
+	if len(applied) == 0 {
+		receipt.Note = "no selections in the choices file; nothing was classified"
+	}
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// parseClassifyFlags parses classify's flag surface: the finalize flags plus
+// the required --file choices path.
+func parseClassifyFlags(args []string) (*finalizeFlags, error) {
+	flags := flag.NewFlagSet("classify", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	f := &finalizeFlags{}
+	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
+	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
+	flags.StringVar(&f.project, "project", "", "project id for staged intervals (required when configuration defines multiple projects)")
+	flags.StringVar(&f.file, "file", "", "choices JSON path: {\"selections\": {\"<interval_id>\": {\"catalog_id\": \"...\", \"classification_id\": \"...\"}}} (required)")
+	if err := flags.Parse(args); err != nil {
+		return nil, err
+	}
+	if flags.NArg() != 0 {
+		return nil, fmt.Errorf("classify does not accept positional arguments")
+	}
+	if f.configPath == "" {
+		return nil, fmt.Errorf("classify requires --config")
+	}
+	if f.date == "" {
+		return nil, fmt.Errorf("classify requires --date")
+	}
+	if _, err := time.Parse("2006-01-02", f.date); err != nil {
+		return nil, fmt.Errorf("classify: --date must be YYYY-MM-DD")
+	}
+	if f.file == "" {
+		return nil, fmt.Errorf("classify requires --file")
+	}
+	return f, nil
+}
+
+// applySelections applies each selection through select_classification, in
+// interval_id order, against the day's current staged set. Errors pass
+// through verbatim: the op fails closed on a catalog that is not stored, a
+// classification_id the catalog did not return, a stale revision, or an
+// interval_id that is not in the staged day (renumbered by an entries edit
+// after the stage receipt printed, or simply unknown).
+func applySelections(h *headlessSession, date string, revision int, selections map[string]timesheet.ClassificationChoiceEntry) ([]ClassifyApplied, error) {
+	ids := make([]string, 0, len(selections))
+	for id := range selections {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	applied := make([]ClassifyApplied, 0, len(ids))
+	for _, id := range ids {
+		sel := selections[id]
+		res, err := h.call("select_classification", timesheet.Request{
+			Day: date, Revision: &revision, IntervalID: id,
+			CatalogID: sel.CatalogID, ClassificationID: sel.ClassificationID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		mutation, ok := res.(timesheet.ClassificationSelection)
+		if !ok {
+			return nil, fmt.Errorf("classify: unexpected select_classification payload")
+		}
+		applied = append(applied, ClassifyApplied{
+			IntervalID: id, CatalogID: sel.CatalogID, ClassificationID: sel.ClassificationID,
+			Classification: mutation.Classification, Code: mutation.Code,
+			CatalogComplete: mutation.CatalogComplete,
+		})
+	}
+	return applied, nil
+}
+
+// stagedBlocks binds each staged interval id from the day's stage map to the
+// recorded entry it was derived from. Both classify (to content-bind its
+// selections at write time) and the confirm/save replay (to re-verify the
+// binding) use it; applyStage has just rewritten the stage map in both
+// paths, so the binding reflects the derivation this process actually staged.
+func stagedBlocks(cfg *timesheet.Config, date string) (map[string]timesheet.EntryRecord, error) {
+	entries, err := timesheet.ReadEntries(cfg.StatePath, date)
+	if err != nil {
+		return nil, err
+	}
+	stageMap, err := timesheet.ReadStageMap(cfg.StatePath, date)
+	if err != nil {
+		return nil, err
+	}
+	byBlock := map[string]timesheet.EntryRecord{}
+	if entries != nil {
+		for _, e := range entries.Entries {
+			byBlock[e.BlockID] = e
+		}
+	}
+	byInterval := map[string]timesheet.EntryRecord{}
+	for blockID, ivID := range stageMap {
+		if e, ok := byBlock[blockID]; ok {
+			byInterval[ivID] = e
+		}
+	}
+	return byInterval, nil
+}
+
+// applyPersistedSelections replays the day's persisted classification choices
+// (entries/<date>.classify.json) against the freshly re-derived staged set.
+// This is how selections cross the process boundary: confirm and save call it
+// after their own re-derivation, so the intervals they confirm carry
+// remote_classification_id and save commits it durably. Only a
+// content-identical re-derivation replays: each persisted selection carries
+// the BlockContentDigest of the recorded block it was chosen for, and any
+// entries change since classify — an insertion shifting the sequential ids
+// onto different blocks, a same-count replacement, a time or description
+// edit — makes the recomputed digest differ, which fails closed naming the
+// block instead of re-attaching the selection to the wrong interval. A sidecar
+// id with no block (or no longer in the staged day) fails closed the same
+// way; the review-again wording tells the operator the fix: re-run stage +
+// classify. A missing or empty sidecar replays nothing (a day never
+// classified behaves exactly as SUBMIT-1 left it).
+func applyPersistedSelections(h *headlessSession, cfg *timesheet.Config, name, date string, revision int) (int, error) {
+	selections, err := timesheet.ReadClassificationChoices(cfg.StatePath, date)
+	if err != nil {
+		return 0, err
+	}
+	if len(selections) == 0 {
+		return 0, nil
+	}
+	blocks, err := stagedBlocks(cfg, date)
+	if err != nil {
+		return 0, err
+	}
+	// Verify every content binding before applying anything.
+	ids := make([]string, 0, len(selections))
+	for id := range selections {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		e, ok := blocks[id]
+		if !ok {
+			return 0, fmt.Errorf("%s: classification selection for interval %s cannot be bound to a recorded block; review again; re-run stage + classify", name, id)
+		}
+		if selections[id].ContentDigest != timesheet.BlockContentDigest(date, e) {
+			return 0, fmt.Errorf("%s: block %s changed since classify; the recorded selection no longer matches its content (interval %s); review again; re-run stage + classify", name, e.BlockID, id)
+		}
+	}
+	if _, err := applySelections(h, date, revision, selections); err != nil {
+		return 0, err
+	}
+	return len(selections), nil
+}
+
+// noteClassifyReplays mirrors the replay count on stderr for confirm and
+// save, so the durable carry of selections is visible without changing the
+// stdout receipts' shape.
+func noteClassifyReplays(name string, n int) {
+	if n > 0 {
+		fmt.Fprintf(os.Stderr, "%s: replayed %d classification selection(s) from %s\n", name, n, "the classification sidecar")
+	}
+}
+
 // runConfirm derives the staged set from the entries ledger, then wraps the
 // confirm op, including its source gate: every enabled source needs a
 // collection attempt for the date, and a non-complete attempt needs an explicit
@@ -878,6 +1203,11 @@ func runConfirm(args []string) error {
 		return err
 	}
 	noteStageSkips("confirm", staged)
+	replayed, err := applyPersistedSelections(h, cfg, "confirm", f.date, summary.Revision)
+	if err != nil {
+		return err
+	}
+	noteClassifyReplays("confirm", replayed)
 	res, err := h.call("confirm", timesheet.Request{Day: f.date, Revision: &summary.Revision})
 	if err != nil {
 		return err
@@ -921,6 +1251,11 @@ func runSave(args []string) error {
 		return err
 	}
 	noteStageSkips("save", staged)
+	replayed, err := applyPersistedSelections(h, cfg, "save", f.date, summary.Revision)
+	if err != nil {
+		return err
+	}
+	noteClassifyReplays("save", replayed)
 	confirmed, err := h.call("confirm", timesheet.Request{Day: f.date, Revision: &summary.Revision})
 	if err != nil {
 		return err

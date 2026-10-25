@@ -22,6 +22,8 @@ Usage:
   timesheet record --config <path> --date <YYYY-MM-DD> (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>)
   timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet stage --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
+  timesheet classifications --config <path> [--env-file <path>] --query <text>
+  timesheet classify --config <path> [--env-file <path>] --date <YYYY-MM-DD> --file <choices.json> [--project <id>]
   timesheet acknowledge --config <path> [--env-file <path>] --date <YYYY-MM-DD> --source <github|calendar> --collection-id <id>
   timesheet decide --config <path> [--env-file <path>] --date <YYYY-MM-DD> --meeting-id <id> --decision <attended|skipped> --collection-id <id>
   timesheet confirm --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
@@ -64,6 +66,38 @@ one fails with the gate error naming what is missing. save commits the
 confirmed day durably. Each of these commands is one process (open day, ops,
 close) and holds the store's exclusive lock: it cannot run while a serve
 process holds the store. Nothing here approves or submits anything.
+
+The classifications and classify subcommands add classification (campaign
+issue #160, slice SUBMIT-2). The full flow order is: run → record → stage →
+classifications → classify → confirm → save. classifications performs one
+bounded authoritative catalog read through the configured Gradion workspace:
+it is the one command in this flow that requires live access (network and
+credential; it fails closed with the op's own error when the configuration
+disables remote access or the credential is missing, and live catalog
+behavior is owner-verified). Its receipt prints the catalog's choices exactly
+as returned (catalog_id, query, complete, observed_at, and options with id,
+name, code, activity_type) and the catalog is persisted in the store's
+bounded cache, so classify works offline against the stored catalog. classify
+re-derives the staged set from the entries ledger exactly as stage does
+(same derivation, same interval ids for the same entries state), then applies
+choices.json — {"selections": {"<interval_id>": {"catalog_id": "...",
+"classification_id": "..."}}} with both ids copied verbatim from the
+classifications and stage receipts — through the select_classification op,
+and persists the selections to entries/<date>.classify.json, each
+content-bound to the recorded block it was chosen for (a SHA-256 digest of
+the block's date, block_id, start, end and description). An empty file ({})
+is a valid no-op and clears any earlier selections. An unknown interval id
+fails closed with the op's own error, untouched. Selections on staged
+intervals are session-only, so classify alone makes nothing durable: confirm
+and save replay the sidecar's selections against their own re-derived staged
+set before confirming, and save commits remote_classification_id durably —
+but ONLY when the re-derived day is content-identical to the one classify
+chose against. Staged interval ids re-derive sequentially, so any entries
+change after classify (insertion, removal, replacement, time or description
+edit) would silently re-attach a selection to the wrong interval; the
+content binding makes that impossible — the replay fails closed naming the
+block, and the fix is to re-run stage + classify. Nothing here approves or
+submits anything.
 
 R4 adds the native approval ledger and one verified submission path. The
 'approve_plan' request binds a unique approval to the exact current rendered plan
@@ -146,6 +180,22 @@ func main() {
 		}
 	case "stage":
 		if err := runStage(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "classifications":
+		if err := runClassifications(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "classify":
+		if err := runClassify(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return
 			}
