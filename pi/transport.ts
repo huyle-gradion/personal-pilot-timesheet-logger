@@ -23,7 +23,8 @@ import { randomUUID } from "node:crypto";
 /** Application identity this adapter is compiled against. Negotiated with the
  *  child before any action; a mismatch fails closed. Must keep matching
  *  internal/timesheet/model.go AppVersion. */
-export const APP_VERSION = "0.1.1";
+// PAIRED with internal/timesheet/model.go AppVersion (negotiated fail-closed) — update both together; adapter_pin_test.go fails on drift.
+export const APP_VERSION = "0.2.0-dev.1";
 /** Public protocol schema negotiated with the child (docs/agents/timesheet-interface.md). */
 export const PROTOCOL_SCHEMA = 1;
 /** Durable store schema the running build must report. */
