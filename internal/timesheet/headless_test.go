@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -343,19 +345,35 @@ func TestBuildDraftBusyDayCompactBoundedAndURLFree(t *testing.T) {
 	if len(eb.TopicCandidates) != 2 {
 		t.Fatalf("topic candidates = %+v, want 2 grouped lines", eb.TopicCandidates)
 	}
-	var labels []string
-	for repoIdx, repo := range []string{"acme/api", "acme/web"} {
-		for k := 0; k < 10; k++ {
-			labels = append(labels, fmt.Sprintf("#%d %s", 10+repoIdx*10+k, repo))
+	// PRS-COMPACT-1: the inline list states each repository once and every PR
+	// number exactly once, as contiguous numeric ranges per repository.
+	if eb.PRsInline != "PRs: acme/api: #10–#19; acme/web: #20–#29" {
+		t.Fatalf("prs_inline = %q, want the compact per-repo ranges", eb.PRsInline)
+	}
+	rangeRE := regexp.MustCompile(`#(\d+)(?:–#(\d+))?`)
+	seen := map[int]int{}
+	for _, m := range rangeRE.FindAllStringSubmatch(eb.PRsInline, -1) {
+		lo, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		hi := lo
+		if m[2] != "" {
+			if hi, err = strconv.Atoi(m[2]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for n := lo; n <= hi; n++ {
+			seen[n]++
 		}
 	}
-	for _, label := range labels {
-		if n := strings.Count(eb.PRsInline, label); n != 1 {
-			t.Fatalf("prs_inline carries %q %d times: %q", label, n, eb.PRsInline)
-		}
+	if len(seen) != 20 {
+		t.Fatalf("prs_inline carries %d distinct PR numbers, want 20: %q", len(seen), eb.PRsInline)
 	}
-	if !strings.HasPrefix(eb.PRsInline, "PRs: ") {
-		t.Fatalf("prs_inline = %q, want a PRs: prefix", eb.PRsInline)
+	for n, count := range seen {
+		if count != 1 {
+			t.Fatalf("prs_inline carries #%d %d times: %q", n, count, eb.PRsInline)
+		}
 	}
 	for _, forbidden := range []string{"http", `"sources"`, "sources_truncated", `"url"`} {
 		if strings.Contains(string(raw), forbidden) {
@@ -386,8 +404,89 @@ func TestBuildDraftPRsInlineDeterministicAndNumeric(t *testing.T) {
 	}, nil)
 	d := BuildDraft(review, "test")
 	eb := evidenceBlock(t, d)
-	if eb.PRsInline != "PRs: #2 acme/api, #10 acme/api" {
-		t.Fatalf("prs_inline = %q, want numeric order", eb.PRsInline)
+	if eb.PRsInline != "PRs: acme/api: #2, #10" {
+		t.Fatalf("prs_inline = %q, want compact numeric order with the gap comma-listed", eb.PRsInline)
+	}
+}
+
+// PRS-COMPACT-1 acceptance: the worst realistic case — 20 PRs in one ~60-rune
+// repository, contiguous #88–#107 — renders in well under 200 runes, so a
+// ~95-rune prose description composed with it stays under the 500-rune
+// interval limit and ParseInterval accepts the line. The old full-label
+// rendering ("#N repo" repeated per PR) provably blew the budget: it is also
+// asserted to exceed the limit for the same prose.
+func TestPRsInlineCompactFitsIntervalDescriptionLimit(t *testing.T) {
+	longRepo := "huyle-gradion/" + strings.Repeat("p", 45) // 60 runes
+	var prs []string
+	for n := 88; n <= 107; n++ {
+		prs = append(prs, fmt.Sprintf("#%d %s", n, longRepo))
+	}
+	inline := prsInline(prs)
+	if got := len([]rune(inline)); got > 200 {
+		t.Fatalf("compact prs_inline = %d runes, want <= 200: %q", got, inline)
+	}
+	if want := "PRs: " + longRepo + ": #88–#107"; inline != want {
+		t.Fatalf("prs_inline = %q, want %q", inline, want)
+	}
+	prose := strings.Repeat("Word ", 19) // 95 runes
+	oldInline := "PRs: " + strings.Join(prs, ", ")
+	if old := len([]rune(prose)) + 1 + len([]rune(oldInline)); old <= maxDescriptionRunes {
+		t.Fatalf("old rendering = %d runes, want > %d so the pre-change failure is proven", old, maxDescriptionRunes)
+	}
+	composed := prose + " " + inline
+	if got := len([]rune(composed)); got > maxDescriptionRunes {
+		t.Fatalf("composed description = %d runes, want <= %d", got, maxDescriptionRunes)
+	}
+	cfg := &Config{Projects: []Project{{ID: "assignment"}}}
+	loc := time.FixedZone("ICT", 7*3600)
+	if _, err := ParseInterval("2026-10-20 10:00-11:00 assignment "+composed, "2026-10-20", cfg, loc); err != nil {
+		t.Fatalf("ParseInterval rejected the composed description: %v", err)
+	}
+	// Determinism: the same input twice is byte-identical.
+	if again := prsInline(prs); again != inline {
+		t.Fatalf("prs_inline not deterministic:\n%s\n%s", inline, again)
+	}
+}
+
+// PRS-COMPACT-1 acceptance: every PR number appears exactly once, contiguous
+// runs collapse to "#a–#b" while numeric gaps stay comma-listed, each
+// repository is stated once in its own alphabetically ordered segment, and
+// labels that do not parse as "#N repo" are carried verbatim and
+// deterministically.
+func TestPRsInlineRangesGapsAndMultiRepoSegments(t *testing.T) {
+	got := prsInline([]string{
+		"#14 acme/api", "#10 acme/web", "#10 acme/api", "#11 acme/api", "#11 acme/web", "#88 acme/api",
+	})
+	if want := "PRs: acme/api: #10–#11, #14, #88; acme/web: #10–#11"; got != want {
+		t.Fatalf("prs_inline = %q, want %q", got, want)
+	}
+	numRE := regexp.MustCompile(`#(\d+)`)
+	counts := map[int]int{}
+	for _, m := range numRE.FindAllStringSubmatch(got, -1) {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[n]++
+	}
+	wantNums := map[int]int{10: 2, 11: 2, 14: 1, 88: 1} // per repo: api{10,11,14,88}, web{10,11}
+	if len(counts) != len(wantNums) {
+		t.Fatalf("distinct numbers = %v, want %v", counts, wantNums)
+	}
+	for n, want := range wantNums {
+		if counts[n] != want {
+			t.Fatalf("#%d appears %d times, want %d: %q", n, counts[n], want, got)
+		}
+	}
+	if strings.Count(got, "acme/api") != 1 || strings.Count(got, "acme/web") != 1 {
+		t.Fatalf("each repository must be stated exactly once: %q", got)
+	}
+	// Unparseable labels survive verbatim, deterministically sorted.
+	if got := prsInline([]string{"weird", "#3 x/y", "alpha"}); got != "PRs: x/y: #3; alpha; weird" {
+		t.Fatalf("prs_inline = %q, want parsed segments then sorted verbatim labels", got)
+	}
+	if got := prsInline(nil); got != "" {
+		t.Fatalf("prs_inline(nil) = %q, want empty", got)
 	}
 }
 
@@ -423,7 +522,7 @@ func TestBuildDraftSimpleDayMatchesHandComputedFixture(t *testing.T) {
 		`"completeness":{"calendar":"complete","github":"complete"}},` +
 		`{"block_id":"evidence-11:10-11:10","kind":"evidence","start":"11:10","end":"11:10",` +
 		`"topic_candidates":["Pull request #12 (acme/api)"],` +
-		`"prs":["#12 acme/api"],"prs_inline":"PRs: #12 acme/api",` +
+		`"prs":["#12 acme/api"],"prs_inline":"PRs: acme/api: #12",` +
 		`"completeness":{"calendar":"complete","github":"complete"}}]}`
 	if string(raw) != want {
 		t.Fatalf("simple-day draft mismatch:\n got %s\nwant %s", raw, want)
@@ -500,8 +599,8 @@ func TestBuildDraftTopicCandidatesCollapseAndCap(t *testing.T) {
 			t.Fatalf("overflow line not honest: %+v", got)
 		}
 	}
-	if eb.PRsInline != "PRs: #10 acme/api, #10 acme/web, #11 acme/api, #11 acme/web, #14 acme/api" {
-		t.Fatalf("prs_inline = %q", eb.PRsInline)
+	if eb.PRsInline != "PRs: acme/api: #10–#11, #14; acme/web: #10–#11" {
+		t.Fatalf("prs_inline = %q, want compact per-repo segments with gap-split ranges", eb.PRsInline)
 	}
 }
 
