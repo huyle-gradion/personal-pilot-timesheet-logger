@@ -45,9 +45,18 @@ compact one-day draft JSON produced by:
 ```bash
 bin/timesheet collect --config <config> [--env-file <env>] --date <date>
 bin/timesheet draft   --config <config> [--env-file <env>] --date <date>
-bin/timesheet record  --config <config> --date <date> --file reviewed.json
+bin/timesheet record  --config <config> --date <date> --file reviewed.json [--replace]
 bin/timesheet status  --config <config> [--date <date>]
 ```
+
+`record --replace` (issue #162) treats the reviewed file as the day's complete
+content: all blocks for `--date` are replaced with the file's blocks (ids from
+the file; blocks absent from it are removed) instead of merged — use it after
+re-collecting a day, when the new generation supersedes the old. `collect` and
+`run` print the fresh collection_id as one stderr line, and `status --date`
+carries each enabled source's latest collection attempt (status and
+collection_id), so `acknowledge`/`decide` can copy the id verbatim without
+reading `state.json`.
 
 The submission tail adds one headless step per line (campaign issue #160,
 slices SUBMIT-1..4; full flow: run → record → stage → classifications/classify

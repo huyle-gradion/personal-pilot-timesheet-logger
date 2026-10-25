@@ -61,7 +61,8 @@ func parseHeadlessFlags(name string, args []string, needDate, needFile bool) (*h
 
 // recordFlags carries the record subcommand's inputs: --config/--env-file/
 // --date always, plus exactly one input mode — the recovery --file reviewed
-// JSON, or the descriptions-only --draft + --descriptions pair.
+// JSON, or the descriptions-only --draft + --descriptions pair — and the
+// optional --replace merge mode.
 type recordFlags struct {
 	configPath   string
 	envFile      string
@@ -69,11 +70,15 @@ type recordFlags struct {
 	file         string
 	draft        string
 	descriptions string
+	replace      bool
 }
 
 // parseRecordFlags parses record's flag surface. The two input modes are
 // mutually exclusive and one is required: --file alone, or --draft AND
-// --descriptions together.
+// --descriptions together. --replace (issue #162) switches the merge mode:
+// the reviewed result is the day's complete content and replaces all blocks
+// for --date instead of merging — for the re-collected-day case where the new
+// generation supersedes the old.
 func parseRecordFlags(args []string) (*recordFlags, error) {
 	flags := flag.NewFlagSet("record", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -84,6 +89,7 @@ func parseRecordFlags(args []string) (*recordFlags, error) {
 	flags.StringVar(&f.file, "file", "", "reviewed draft JSON path (recovery input mode)")
 	flags.StringVar(&f.draft, "draft", "", "draft JSON path from `timesheet draft` (descriptions-only input mode, with --descriptions)")
 	flags.StringVar(&f.descriptions, "descriptions", "", "descriptions-only JSON path (descriptions-only input mode, with --draft)")
+	flags.BoolVar(&f.replace, "replace", false, "the reviewed result is the day's complete content: replace all blocks for --date instead of merging (re-collected day; the new generation supersedes the old)")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}
@@ -181,6 +187,9 @@ func printJSON(v any) error {
 }
 
 // runCollect performs one collection attempt and prints its bounded result.
+// The fresh collection_id is printed as one stderr line (issue #162) so
+// acknowledge/decide can copy it without reading state.json; stdout stays the
+// collect JSON only.
 func runCollect(args []string) error {
 	f, err := parseHeadlessFlags("collect", args, true, false)
 	if err != nil {
@@ -198,6 +207,9 @@ func runCollect(args []string) error {
 	if err != nil {
 		return err
 	}
+	if result, ok := res.(timesheet.CollectResult); ok && result.CollectionID != "" {
+		fmt.Fprintf(os.Stderr, "collect: collection_id %s\n", result.CollectionID)
+	}
 	_, _ = h.call("close", timesheet.Request{})
 	return printJSON(res)
 }
@@ -205,28 +217,35 @@ func runCollect(args []string) error {
 // buildDayDraft is the shared core of the draft and run subcommands: it opens
 // the store, runs exactly one bounded collection attempt for the day, builds
 // the compact draft and closes the store. Neither caller duplicates this flow.
-func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, error) {
+// It also returns the fresh collection_id so run can print it on stderr
+// (issue #162); the draft subcommand ignores it.
+func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, string, error) {
 	h, err := openHeadless(configPath, envFile)
 	if err != nil {
-		return timesheet.Draft{}, err
+		return timesheet.Draft{}, "", err
 	}
 	defer h.done()
 	if _, err := h.call("open_day", timesheet.Request{Day: date}); err != nil {
-		return timesheet.Draft{}, err
+		return timesheet.Draft{}, "", err
 	}
-	if _, err := h.call("collect", timesheet.Request{Day: date}); err != nil {
-		return timesheet.Draft{}, err
-	}
-	res, err := h.call("review", timesheet.Request{Day: date})
+	res, err := h.call("collect", timesheet.Request{Day: date})
 	if err != nil {
-		return timesheet.Draft{}, err
+		return timesheet.Draft{}, "", err
+	}
+	collectionID := ""
+	if result, ok := res.(timesheet.CollectResult); ok {
+		collectionID = result.CollectionID
+	}
+	res, err = h.call("review", timesheet.Request{Day: date})
+	if err != nil {
+		return timesheet.Draft{}, "", err
 	}
 	review, ok := res.(timesheet.Review)
 	if !ok {
-		return timesheet.Draft{}, fmt.Errorf("draft: unexpected review payload")
+		return timesheet.Draft{}, "", fmt.Errorf("draft: unexpected review payload")
 	}
 	_, _ = h.call("close", timesheet.Request{})
-	return timesheet.BuildDraft(review, timesheet.AppVersion), nil
+	return timesheet.BuildDraft(review, timesheet.AppVersion), collectionID, nil
 }
 
 // runDraft collects the day and prints the compact draft for the judgment step.
@@ -235,7 +254,7 @@ func runDraft(args []string) error {
 	if err != nil {
 		return err
 	}
-	draft, err := buildDayDraft(f.configPath, f.envFile, f.date)
+	draft, _, err := buildDayDraft(f.configPath, f.envFile, f.date)
 	if err != nil {
 		return err
 	}
@@ -249,13 +268,15 @@ func runDraft(args []string) error {
 // same draft bytes are also written to the deterministic artifacts directory
 // `$TMPDIR/timesheet/<date>/draft.json` (created as needed), and the artifacts
 // path is printed on stderr so stdout stays pure draft JSON: redirecting
-// stdout yields exactly the draft bytes.
+// stdout yields exactly the draft bytes. The fresh collection_id is one
+// further stderr line (issue #162), so acknowledge/decide can copy it without
+// reading state.json.
 func runRun(args []string) error {
 	f, err := parseHeadlessFlags("run", args, true, false)
 	if err != nil {
 		return err
 	}
-	draft, err := buildDayDraft(f.configPath, f.envFile, f.date)
+	draft, collectionID, err := buildDayDraft(f.configPath, f.envFile, f.date)
 	if err != nil {
 		return err
 	}
@@ -270,6 +291,9 @@ func runRun(args []string) error {
 	artifacts := filepath.Join(dir, "draft.json")
 	if err := os.WriteFile(artifacts, data, 0o600); err != nil {
 		return fmt.Errorf("run: the artifacts draft file cannot be written")
+	}
+	if collectionID != "" {
+		fmt.Fprintf(os.Stderr, "run: collection_id %s\n", collectionID)
 	}
 	fmt.Fprintf(os.Stderr, "run: artifacts: %s\n", artifacts)
 	_, err = os.Stdout.Write(data)
@@ -286,6 +310,13 @@ func runRun(args []string) error {
 //     validation and merge path as --file.
 //   - --file <reviewed.json>: the full reviewed file. Unchanged and still the
 //     recovery path.
+//
+// --replace (issue #162) switches the merge mode for either input: the
+// reviewed result is the day's complete content, so all blocks for --date are
+// replaced with the file's blocks (block ids from the file; blocks absent
+// from it are removed) instead of merged. Use it after re-collecting a day:
+// the new generation supersedes the old. Without the flag the merge behavior
+// is unchanged (idempotent per block, other blocks preserved).
 //
 // It opens no store: recording never blocks on, or interferes with, a running
 // serve process.
@@ -334,7 +365,7 @@ func runRecord(args []string) error {
 	if reviewed.Date != f.date {
 		return fmt.Errorf("record: --date %s does not match the reviewed draft's date %s", f.date, reviewed.Date)
 	}
-	receipt, err := timesheet.RecordEntries(cfg.StatePath, timesheet.AppVersion, reviewed, time.Now())
+	receipt, err := timesheet.RecordEntries(cfg.StatePath, timesheet.AppVersion, reviewed, f.replace, time.Now())
 	if err != nil {
 		return err
 	}
@@ -342,17 +373,29 @@ func runRecord(args []string) error {
 }
 
 // runStatus prints the store status and, for a given date, the recorded
-// entries summary.
+// entries summary. With --date, the day is opened first (issue #162) so the
+// status result carries the day's per-source latest collection attempt —
+// status and collection_id — for acknowledge/decide to copy verbatim.
 func runStatus(args []string) error {
 	f, err := parseHeadlessFlags("status", args, false, false)
 	if err != nil {
 		return err
+	}
+	if f.date != "" {
+		if _, err := time.Parse("2006-01-02", f.date); err != nil {
+			return fmt.Errorf("status: --date must be YYYY-MM-DD")
+		}
 	}
 	h, err := openHeadless(f.configPath, f.envFile)
 	if err != nil {
 		return err
 	}
 	defer h.done()
+	if f.date != "" {
+		if _, err := h.call("open_day", timesheet.Request{Day: f.date}); err != nil {
+			return err
+		}
+	}
 	res, err := h.call("status", timesheet.Request{})
 	if err != nil {
 		return err
@@ -360,9 +403,6 @@ func runStatus(args []string) error {
 	_, _ = h.call("close", timesheet.Request{})
 	if f.date == "" {
 		return printJSON(res)
-	}
-	if _, err := time.Parse("2006-01-02", f.date); err != nil {
-		return fmt.Errorf("status: --date must be YYYY-MM-DD")
 	}
 	cfg, err := timesheet.LoadConfig(f.configPath)
 	if err != nil {

@@ -154,7 +154,7 @@ func TestRecordEntriesWritesMergesAndIsIdempotent(t *testing.T) {
 		DraftBlock:  DraftBlock{BlockID: "meeting-09:00-10:00", Kind: "meeting", Start: "09:00", End: "10:00"},
 		Description: "Standup and reviews",
 	})
-	r1, err := RecordEntries(statePath, "test", first, now)
+	r1, err := RecordEntries(statePath, "test", first, false, now)
 	if err != nil {
 		t.Fatalf("first record: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestRecordEntriesWritesMergesAndIsIdempotent(t *testing.T) {
 			Description: "Deep work on the draft builder",
 		},
 	)
-	r2, err := RecordEntries(statePath, "test", second, now)
+	r2, err := RecordEntries(statePath, "test", second, false, now)
 	if err != nil {
 		t.Fatalf("second record: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestRecordEntriesValidation(t *testing.T) {
 		}), CodeBadRequest, "PRs:"},
 	}
 	for _, tc := range cases {
-		_, err := RecordEntries(statePath, "test", tc.draft, time.Now())
+		_, err := RecordEntries(statePath, "test", tc.draft, false, time.Now())
 		if err == nil {
 			t.Fatalf("%s: expected error", tc.name)
 		}
@@ -244,7 +244,7 @@ func TestRecordEntriesRejectsMismatchedExistingFile(t *testing.T) {
 	}
 	_, err := RecordEntries(statePath, "test", reviewed(ReviewedBlock{
 		DraftBlock: DraftBlock{BlockID: "b"}, Description: "x",
-	}), time.Now())
+	}), false, time.Now())
 	if err == nil || !strings.Contains(err.Error(), CodeStateInvalid) {
 		t.Fatalf("expected state invalid error, got %v", err)
 	}
@@ -271,7 +271,7 @@ func TestDraftJSONRoundTripThroughReviewedSchema(t *testing.T) {
 		t.Fatalf("reviewed = %+v", reviewed)
 	}
 	reviewed.Blocks[0].Description = "Standup PRs: none"
-	if _, err := RecordEntries(filepath.Join(t.TempDir(), "state.json"), "test", reviewed, time.Now()); err != nil {
+	if _, err := RecordEntries(filepath.Join(t.TempDir(), "state.json"), "test", reviewed, false, time.Now()); err != nil {
 		t.Fatalf("record from round-tripped draft: %v", err)
 	}
 }
@@ -549,7 +549,7 @@ func TestRecordEntriesAcceptsVerbatimPRsInline(t *testing.T) {
 		},
 		Description: "Filter and export work PRs: #2 acme/web, #10 acme/api",
 	})
-	if _, err := RecordEntries(statePath, "test", reviewed, time.Now()); err != nil {
+	if _, err := RecordEntries(statePath, "test", reviewed, false, time.Now()); err != nil {
 		t.Fatalf("record with verbatim prs_inline rejected: %v", err)
 	}
 	f, err := ReadEntries(statePath, "2026-10-26")
@@ -620,7 +620,7 @@ func TestRecordEntriesReattachesSourcesFromDurableState(t *testing.T) {
 			Description: "Evening notes",
 		},
 	)
-	if _, err := RecordEntries(statePath, "test", reviewed, time.Now()); err != nil {
+	if _, err := RecordEntries(statePath, "test", reviewed, false, time.Now()); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	f, err := ReadEntries(statePath, "2026-10-26")
@@ -682,12 +682,12 @@ func TestRecordEntriesSourcesIdenticalWithAndWithoutEcho(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state.json")
 	writeStateEvidence(t, statePath, "2026-10-26", topics)
-	if _, err := RecordEntries(statePath, "test", newNormal, time.Now()); err != nil {
+	if _, err := RecordEntries(statePath, "test", newNormal, false, time.Now()); err != nil {
 		t.Fatalf("record without echoed sources: %v", err)
 	}
 	// A later record of the same block in the old echo style must produce the
 	// same recorded sources (state wins over the stale echo).
-	if _, err := RecordEntries(statePath, "test", echoed, time.Now()); err != nil {
+	if _, err := RecordEntries(statePath, "test", echoed, false, time.Now()); err != nil {
 		t.Fatalf("record with echoed sources: %v", err)
 	}
 	f, err := ReadEntries(statePath, "2026-10-26")
@@ -705,7 +705,7 @@ func TestRecordEntriesSourcesIdenticalWithAndWithoutEcho(t *testing.T) {
 		DraftBlock:  DraftBlock{BlockID: "work-13:00-15:00", Kind: "work", Start: "13:00", End: "15:00"},
 		Description: "Deep work",
 	})
-	if _, err := RecordEntries(statePath, "test", other, time.Now()); err != nil {
+	if _, err := RecordEntries(statePath, "test", other, false, time.Now()); err != nil {
 		t.Fatalf("record of other block: %v", err)
 	}
 	f2, err := ReadEntries(statePath, "2026-10-26")
@@ -731,7 +731,7 @@ func TestRecordEntriesSourcesFileDeterministic(t *testing.T) {
 			DraftBlock:  DraftBlock{BlockID: "evidence-20:10-20:10", Kind: "evidence", Start: "20:10", End: "20:10"},
 			Description: "Evening notes",
 		})
-		if _, err := RecordEntries(statePath, "test", reviewed, now); err != nil {
+		if _, err := RecordEntries(statePath, "test", reviewed, false, now); err != nil {
 			t.Fatalf("record: %v", err)
 		}
 	}
@@ -817,7 +817,7 @@ func TestRecordSourcesLandOnSameBlockBuildDraftAttached(t *testing.T) {
 	for i := range reviewed.Blocks {
 		reviewed.Blocks[i].Description = "recorded block"
 	}
-	if _, err := RecordEntries(statePath, "test", reviewed, time.Now()); err != nil {
+	if _, err := RecordEntries(statePath, "test", reviewed, false, time.Now()); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	f, err := ReadEntries(statePath, "2026-10-26")
@@ -897,7 +897,7 @@ func TestComposeReviewedAppliesDescriptionsAndAppendsPRsInline(t *testing.T) {
 		t.Fatalf("evidence description = %q, want unchanged prose", e.Description)
 	}
 	// The composed reviewed draft passes the exact existing record validation.
-	if _, err := RecordEntries(filepath.Join(t.TempDir(), "state.json"), "test", composed, time.Now()); err != nil {
+	if _, err := RecordEntries(filepath.Join(t.TempDir(), "state.json"), "test", composed, false, time.Now()); err != nil {
 		t.Fatalf("composed reviewed draft rejected by record: %v", err)
 	}
 }
@@ -1058,10 +1058,10 @@ func TestRecordComposedMatchesFileComposedByteForByte(t *testing.T) {
 	dir := t.TempDir()
 	composedPath := filepath.Join(dir, "composed", "state.json")
 	filePath := filepath.Join(dir, "file", "state.json")
-	if _, err := RecordEntries(composedPath, "test", composed, now); err != nil {
+	if _, err := RecordEntries(composedPath, "test", composed, false, now); err != nil {
 		t.Fatalf("record composed: %v", err)
 	}
-	if _, err := RecordEntries(filePath, "test", viaFile, now); err != nil {
+	if _, err := RecordEntries(filePath, "test", viaFile, false, now); err != nil {
 		t.Fatalf("record via file: %v", err)
 	}
 	composedBytes, err := os.ReadFile(EntriesPath(composedPath, "2026-10-26"))
@@ -1074,5 +1074,86 @@ func TestRecordComposedMatchesFileComposedByteForByte(t *testing.T) {
 	}
 	if !bytes.Equal(composedBytes, fileBytes) {
 		t.Fatalf("entries files differ:\ncomposed:\n%s\nvia --file:\n%s", composedBytes, fileBytes)
+	}
+}
+
+// --- FLOW-GAP-1: record --replace (issue #162) --------------------------------
+
+// TestRecordEntriesReplaceSupersedesGeneration pins --replace semantics: the
+// reviewed draft is the day's complete content — blocks absent from it are
+// removed, present block_ids are replaced in place — while merge mode
+// (replace=false) keeps preserving unmentioned blocks, and a merge run after a
+// replace is still idempotent per block.
+func TestRecordEntriesReplaceSupersedesGeneration(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	now := time.Now()
+
+	seed := reviewed(
+		ReviewedBlock{
+			DraftBlock:  DraftBlock{BlockID: "meeting-06:00-07:30", Kind: "meeting", Start: "06:00", End: "07:30"},
+			Description: "Old morning standup",
+		},
+		ReviewedBlock{
+			DraftBlock:  DraftBlock{BlockID: "meeting-15:30-15:45", Kind: "meeting", Start: "15:30", End: "15:45"},
+			Description: "Old sync",
+		},
+	)
+	if _, err := RecordEntries(statePath, "test", seed, false, now); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Replace with B',C: B replaced per block_id, A removed.
+	next := reviewed(
+		ReviewedBlock{
+			DraftBlock:  DraftBlock{BlockID: "meeting-15:30-15:45", Kind: "meeting", Start: "15:30", End: "15:45"},
+			Description: "New sync",
+		},
+		ReviewedBlock{
+			DraftBlock:  DraftBlock{BlockID: "work-16:00-17:00", Kind: "work", Start: "16:00", End: "17:00"},
+			Description: "New deep work",
+		},
+	)
+	rep, err := RecordEntries(statePath, "test", next, true, now)
+	if err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if rep.EntriesTotal != 2 || rep.Written != 2 || rep.Removed != 1 {
+		t.Fatalf("replace receipt = %+v", rep)
+	}
+	f, err := ReadEntries(statePath, "2026-10-26")
+	if err != nil || f == nil || len(f.Entries) != 2 {
+		t.Fatalf("read after replace: %+v %v", f, err)
+	}
+	byID := map[string]string{}
+	for _, e := range f.Entries {
+		byID[e.BlockID] = e.Description
+	}
+	if _, gone := byID["meeting-06:00-07:30"]; gone {
+		t.Fatalf("old generation survived replace: %+v", byID)
+	}
+	if byID["meeting-15:30-15:45"] != "New sync" || byID["work-16:00-17:00"] != "New deep work" {
+		t.Fatalf("replace content wrong: %+v", byID)
+	}
+
+	// Re-running the same replace changes nothing (idempotent within replace).
+	again, err := RecordEntries(statePath, "test", next, true, now)
+	if err != nil || again.EntriesTotal != 2 || again.Written != 2 || again.Removed != 0 {
+		t.Fatalf("second replace = %+v err %v", again, err)
+	}
+
+	// Merge mode after a replace is unchanged: unmentioned blocks survive and
+	// a second identical merge run stays idempotent.
+	merge := reviewed(ReviewedBlock{
+		DraftBlock:  DraftBlock{BlockID: "evidence-20:00-21:00", Kind: "evidence", Start: "20:00", End: "21:00"},
+		Description: "Evening notes",
+	})
+	for i := 0; i < 2; i++ {
+		if _, err := RecordEntries(statePath, "test", merge, false, now); err != nil {
+			t.Fatalf("merge run %d: %v", i+1, err)
+		}
+	}
+	f3, _ := ReadEntries(statePath, "2026-10-26")
+	if f3 == nil || len(f3.Entries) != 3 {
+		t.Fatalf("merge total = %+v, want 3 entries", f3)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
 )
 
 // --- RUN-SURFACE-1: run composes collect+draft (issue #155) ------------------
@@ -196,5 +199,156 @@ func TestRunFlagErrors(t *testing.T) {
 	}
 	if !errors.Is(runRun([]string{"--help"}), flag.ErrHelp) {
 		t.Fatalf("--help should surface flag.ErrHelp, got %v", runRun([]string{"--help"}))
+	}
+}
+
+// --- FLOW-GAP-1: surfaced collection_id (issue #162) -------------------------
+
+// TestCollectRunStderrCarriesCollectionID pins the stderr id line: collect and
+// run each print the fresh collection_id as one stderr line, while stdout
+// stays byte-identical to the pre-change surface — run's stdout remains pure
+// draft JSON (never carrying the id), so redirecting stdout is unchanged.
+func TestCollectRunStderrCarriesCollectionID(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	cfg := writeRunConfig(t)
+	srv, _ := startFeed(t)
+	envFile := writeRunEnvFile(t, srv.URL)
+	day := "2026-10-20"
+
+	// run: the id line on stderr, pure draft JSON on stdout.
+	runOut, runErrOut, err := captureOutput(t, func() error {
+		return runRun([]string{"--config", cfg, "--env-file", envFile, "--date", day})
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	runID := stderrCollectionID(t, string(runErrOut), "run")
+	if strings.Contains(string(runOut), "collection_id") || strings.Contains(string(runOut), "collection_id") {
+		t.Fatalf("run stdout is not pure draft JSON: %q", runOut)
+	}
+
+	// The run's minted id matches the store's SourceAttempt record for the day.
+	statePath := filepath.Join(filepath.Dir(cfg), "state.json")
+	store, err := timesheet.OpenStore(statePath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	ev := store.Evidence(day)
+	if ev == nil {
+		t.Fatal("no evidence recorded for the synthetic day")
+	}
+	runStoreID := ""
+	for _, a := range ev.Attempts {
+		if a.Source == "calendar" {
+			runStoreID = a.CollectionID
+		}
+	}
+	if runStoreID == "" {
+		t.Fatalf("calendar SourceAttempt has no collection_id: %+v", ev.Attempts)
+	}
+	if runID != runStoreID {
+		t.Fatalf("run stderr id %q does not match the store attempt %q", runID, runStoreID)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// collect: the same shape, its own stderr prefix; it mints a fresh id.
+	collectOut, collectErrOut, err := captureOutput(t, func() error {
+		return runCollect([]string{"--config", cfg, "--env-file", envFile, "--date", day})
+	})
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	collectID := stderrCollectionID(t, string(collectErrOut), "collect")
+	if strings.Contains(string(collectOut), "run:") || strings.Contains(string(collectOut), "collect:") {
+		t.Fatalf("collect stdout is not pure collect JSON: %q", collectOut)
+	}
+	if collectID == "" || collectID == runID {
+		t.Fatalf("collect id %q is empty or reused", collectID)
+	}
+
+	// draft: unchanged surface — no id line (contract: collect and run only).
+	_, draftErrOut, err := captureOutput(t, func() error {
+		return runDraft([]string{"--config", cfg, "--env-file", envFile, "--date", day})
+	})
+	if err != nil {
+		t.Fatalf("draft: %v", err)
+	}
+	if strings.Contains(string(draftErrOut), "collection_id") {
+		t.Fatalf("draft stderr unexpectedly carries an id line: %q", draftErrOut)
+	}
+}
+
+// stderrCollectionID extracts the id from the "<cmd>: collection_id <id>" stderr line.
+func stderrCollectionID(t *testing.T, stderr, cmd string) string {
+	t.Helper()
+	want := cmd + ": collection_id "
+	for _, line := range strings.Split(stderr, "\n") {
+		if after, ok := strings.CutPrefix(line, want); ok {
+			return strings.TrimSpace(after)
+		}
+	}
+	t.Fatalf("%s stderr %q lacks the %q line", cmd, stderr, want)
+	return ""
+}
+
+// TestStatusDateSurfacesCollectionAttempt pins the status --date surface: the
+// day's status carries each enabled source's latest attempt with the
+// collection_id from the store's SourceAttempt, matching what collect/run
+// printed, so acknowledge/decide can copy the id without reading state.json.
+func TestStatusDateSurfacesCollectionAttempt(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	cfg := writeRunConfig(t)
+	srv, _ := startFeed(t)
+	envFile := writeRunEnvFile(t, srv.URL)
+	day := "2026-10-20"
+
+	_, runErrOut, err := captureOutput(t, func() error {
+		return runRun([]string{"--config", cfg, "--env-file", envFile, "--date", day})
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	runID := stderrCollectionID(t, string(runErrOut), "run")
+
+	statusOut, _, err := captureOutput(t, func() error {
+		return runStatus([]string{"--config", cfg, "--env-file", envFile, "--date", day})
+	})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	var summary struct {
+		Status timesheet.StatusResult `json:"status"`
+	}
+	if err := json.Unmarshal(statusOut, &summary); err != nil {
+		t.Fatalf("status output is not the expected summary JSON: %v\n%s", err, statusOut)
+	}
+	var dayStatus *timesheet.DayStatus
+	for i := range summary.Status.Days {
+		if summary.Status.Days[i].Date == day {
+			dayStatus = &summary.Status.Days[i]
+		}
+	}
+	if dayStatus == nil {
+		t.Fatalf("status --date does not carry the requested day: %+v", summary.Status.Days)
+	}
+	bySource := map[string]timesheet.DaySourceStatus{}
+	for _, s := range dayStatus.Sources {
+		bySource[s.Source] = s
+	}
+	cal, ok := bySource["calendar"]
+	if !ok {
+		t.Fatalf("status --date does not carry the calendar source: %+v", dayStatus.Sources)
+	}
+	if cal.CollectionID != runID {
+		t.Fatalf("status collection_id %q does not match the run stderr id %q", cal.CollectionID, runID)
+	}
+	if cal.Status == "" || cal.Status == "unattempted" {
+		t.Fatalf("calendar attempt status = %q, want the recorded attempt's status", cal.Status)
+	}
+	// GitHub is disabled in this config: it must not appear as enabled surface.
+	if gh, ok := bySource["github"]; ok && gh.Status != "unattempted" {
+		t.Fatalf("disabled github source surfaced with status %q", gh.Status)
 	}
 }
