@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -1435,6 +1436,315 @@ func runSave(args []string) error {
 	receipt, ok := res.(timesheet.SaveReceipt)
 	if !ok {
 		return fmt.Errorf("save: unexpected save payload")
+	}
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// --- SUBMIT-4 human-gate commands -------------------------------------------------
+//
+// approve, submit and resolve-write are the only commands that commit a human
+// decision against Gradion remotely: approve binds an authorization, submit
+// dispatches the approved operations, and resolve-write judges an unknown
+// write outcome. All three are structurally human-only (interactive.go): each
+// refuses unless both stdin and stdout are terminals, and each requires
+// typing an exact id at an interactive prompt, so agent shells physically
+// cannot execute them. The TTY check lives in this CLI wrapper only — the
+// Session ops stay transport-agnostic. submit-status is read-only and NOT
+// gated. Every Session op refusal passes through verbatim; receipts are
+// printed exactly as the op returns them; nothing is ever retried.
+
+// renderPlanBody renders a plan preview's operations and blockers as the
+// human-readable summary shown at the approve prompt. The prompt is the
+// decision surface, so an operation's audit reason and task — part of the
+// exact approved body approve_plan binds — are shown when non-empty.
+func renderPlanBody(p timesheet.PlanPreview) string {
+	var b strings.Builder
+	for _, op := range p.Operations {
+		fmt.Fprintf(&b, "  op %s %s %s %s-%s %s [%s]", op.Kind, op.Date, op.LocalID,
+			op.StartTime, op.EndTime, op.Description, op.ClassificationID)
+		if op.Task != "" {
+			fmt.Fprintf(&b, " task=%s", op.Task)
+		}
+		if op.Reason != "" {
+			fmt.Fprintf(&b, " reason=%s", op.Reason)
+		}
+		b.WriteString("\n")
+	}
+	for _, bl := range p.Blockers {
+		fmt.Fprintf(&b, "  blocker %s: %s\n", bl.Code, bl.Detail)
+	}
+	return b.String()
+}
+
+// runApprove renders the CURRENT plan for the date fresh through preview_plan
+// (a stored plan record is never trusted or shown — the display and the
+// approval both bind to what the remote shows right now), displays the
+// plan_id, state, operations and blockers to the human, and requires typing
+// the exact plan_id. On confirmation it calls the approve_plan op with the
+// day and plan_id; every op refusal (stale_plan, plan_not_ready, an uncertain
+// store, a missing credential, a changed catalog, ...) passes through
+// verbatim. On success the ApprovalReceipt is printed on stdout, with the
+// approval_id — the input to submit — echoed prominently on the terminal.
+// The gate fires before the store opens, so a refusal makes zero remote calls.
+func runApprove(args []string) error {
+	f, err := parseHeadlessFlags("approve", args, true, false)
+	if err != nil {
+		return err
+	}
+	term, err := interactiveFactory("approve", "approve")
+	if err != nil {
+		return err
+	}
+	h, err := openHeadless(f.configPath, f.envFile)
+	if err != nil {
+		return err
+	}
+	defer h.done()
+	res, err := h.call("preview_plan", timesheet.Request{Day: f.date})
+	if err != nil {
+		return err
+	}
+	preview, ok := res.(timesheet.PlanPreview)
+	if !ok {
+		return fmt.Errorf("approve: unexpected preview_plan payload")
+	}
+	prompt := fmt.Sprintf("About to approve the current plan for %s\n  plan_id: %s\n  state:   %s\n%s",
+		f.date, preview.PlanID, preview.State, renderPlanBody(preview))
+	if err := term.confirm(prompt, preview.PlanID); err != nil {
+		return err
+	}
+	res, err = h.call("approve_plan", timesheet.Request{Day: f.date, PlanID: preview.PlanID})
+	if err != nil {
+		return err
+	}
+	receipt, ok := res.(timesheet.ApprovalReceipt)
+	if !ok {
+		return fmt.Errorf("approve: unexpected approve_plan payload")
+	}
+	fmt.Fprintf(term.out, "approved: approval_id %s for plan %s (%d operation(s)) — this approval_id is the input to submit\n",
+		receipt.ApprovalID, receipt.PlanID, receipt.Operations)
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// submitFlags carries the submit inputs: the finalize flags plus the required
+// --approval-id copied verbatim from the approve receipt.
+type submitFlags struct {
+	configPath string
+	envFile    string
+	date       string
+	approvalID string
+}
+
+// parseSubmitFlags parses submit's flag surface: the finalize flags plus the
+// required --approval-id copied verbatim from the approve receipt.
+func parseSubmitFlags(args []string) (*submitFlags, error) {
+	flags := flag.NewFlagSet("submit", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	f := &submitFlags{}
+	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
+	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
+	flags.StringVar(&f.approvalID, "approval-id", "", "approval_id copied verbatim from the approve receipt (required)")
+	if err := flags.Parse(args); err != nil {
+		return nil, err
+	}
+	if flags.NArg() != 0 {
+		return nil, fmt.Errorf("submit does not accept positional arguments")
+	}
+	if f.configPath == "" {
+		return nil, fmt.Errorf("submit requires --config")
+	}
+	if f.date == "" {
+		return nil, fmt.Errorf("submit requires --date")
+	}
+	if _, err := time.Parse("2006-01-02", f.date); err != nil {
+		return nil, fmt.Errorf("submit: --date must be YYYY-MM-DD")
+	}
+	if f.approvalID == "" {
+		return nil, fmt.Errorf("submit requires --approval-id")
+	}
+	return f, nil
+}
+
+// runSubmit wraps the submit_plan op: it displays the approval id and day,
+// requires typing the exact approval id to confirm, then dispatches exactly
+// what the approval bound. The SubmissionReceipt is printed faithfully — every
+// aggregate count, per-reference status, the blocked_before_dispatch and
+// durability_uncertain states, blockers and next_action — and every op
+// refusal passes through verbatim. Zero remote calls happen without a
+// persisted active approval; the receipt says so.
+func runSubmit(args []string) error {
+	f, err := parseSubmitFlags(args)
+	if err != nil {
+		return err
+	}
+	term, err := interactiveFactory("submit", "submit")
+	if err != nil {
+		return err
+	}
+	prompt := fmt.Sprintf("About to submit day %s using approval %s\nThe submission dispatches the approved operations to Gradion; writes are never retried and unknown outcomes stay unresolved until you resolve them.", f.date, f.approvalID)
+	if err := term.confirm(prompt, f.approvalID); err != nil {
+		return err
+	}
+	h, err := openHeadless(f.configPath, f.envFile)
+	if err != nil {
+		return err
+	}
+	defer h.done()
+	res, err := h.call("submit_plan", timesheet.Request{Day: f.date, ApprovalID: f.approvalID})
+	if err != nil {
+		return err
+	}
+	receipt, ok := res.(timesheet.SubmissionReceipt)
+	if !ok {
+		return fmt.Errorf("submit: unexpected submit_plan payload")
+	}
+	fmt.Fprintf(term.out, "submission status: %s (confirmed %d, unresolved %d, unattempted %d)\n",
+		receipt.Status, receipt.Confirmed, receipt.Unresolved, receipt.Unattempted)
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// runSubmitStatus wraps the submission_status op verbatim: the date's
+// approvals, execution history, every unresolved native or migrated write
+// with its write_ref, and the next_safe_action. It is read-only (no remote
+// call, no durable write) and deliberately NOT TTY-gated: the agent may run
+// it so a human can decide recovery.
+func runSubmitStatus(args []string) error {
+	f, err := parseHeadlessFlags("submit-status", args, true, false)
+	if err != nil {
+		return err
+	}
+	h, err := openHeadless(f.configPath, f.envFile)
+	if err != nil {
+		return err
+	}
+	defer h.done()
+	res, err := h.call("submission_status", timesheet.Request{Day: f.date})
+	if err != nil {
+		return err
+	}
+	receipt, ok := res.(timesheet.SubmissionStatusResult)
+	if !ok {
+		return fmt.Errorf("submit-status: unexpected submission_status payload")
+	}
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// parseResolveWriteFlags parses resolve-write's flag surface. There is no
+// --date: the write reference carries its own date.
+func parseResolveWriteFlags(args []string) (*resolveFlags, error) {
+	flags := flag.NewFlagSet("resolve-write", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	f := &resolveFlags{}
+	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
+	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.file, "file", "", "decision JSON path: {\"write_ref\": \"...\", \"observation_id\": \"...\", \"decision\": \"adopt|not_applied\", \"remote_id\": \"...\"} (required; remote_id required for adopt) (required)")
+	if err := flags.Parse(args); err != nil {
+		return nil, err
+	}
+	if flags.NArg() != 0 {
+		return nil, fmt.Errorf("resolve-write does not accept positional arguments")
+	}
+	if f.configPath == "" {
+		return nil, fmt.Errorf("resolve-write requires --config")
+	}
+	if f.file == "" {
+		return nil, fmt.Errorf("resolve-write requires --file")
+	}
+	return f, nil
+}
+
+// writeResolutionDecision is the human-authored resolve-write decision file.
+// Its fields match the resolve_write op's request exactly: the write_ref copied
+// verbatim from submission_status, the observation_id of the CURRENT complete
+// observation for the write's date (run reconcile — or plan — first; a stale
+// or incomplete observation is refused by the op), the decision, and for
+// adopt the remote_id of the explicitly selected observed entry.
+type writeResolutionDecision struct {
+	WriteRef      string `json:"write_ref"`
+	ObservationID string `json:"observation_id"`
+	Decision      string `json:"decision"`
+	RemoteID      string `json:"remote_id"`
+}
+
+// parseWriteResolutionDecision parses the decision file for shape only. Unknown
+// fields are refused so a typo can never silently drop a decision; every
+// op-level refusal still passes through verbatim at resolve time.
+func parseWriteResolutionDecision(data []byte) (writeResolutionDecision, error) {
+	var d writeResolutionDecision
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&d); err != nil {
+		return writeResolutionDecision{}, fmt.Errorf(
+			"resolve-write: the decision file is not valid JSON for the expected schema {\"write_ref\", \"observation_id\", \"decision\", \"remote_id\"}")
+	}
+	if strings.TrimSpace(d.WriteRef) == "" {
+		return writeResolutionDecision{}, fmt.Errorf("resolve-write: the decision file requires write_ref copied verbatim from submission_status")
+	}
+	if strings.TrimSpace(d.ObservationID) == "" {
+		return writeResolutionDecision{}, fmt.Errorf("resolve-write: the decision file requires observation_id of the current complete observation (run reconcile first)")
+	}
+	if d.Decision != timesheet.DecisionWriteAdopt && d.Decision != timesheet.DecisionWriteNotApplied {
+		return writeResolutionDecision{}, fmt.Errorf("resolve-write: decision must be adopt or not_applied")
+	}
+	if d.Decision == timesheet.DecisionWriteAdopt && strings.TrimSpace(d.RemoteID) == "" {
+		return writeResolutionDecision{}, fmt.Errorf("resolve-write: adopt requires remote_id of the explicitly selected observed entry")
+	}
+	return d, nil
+}
+
+// runResolveWrite wraps the resolve_write op with a human-authored decision
+// file (--file) and a typed confirmation: it is a human judgment on an
+// unknown outcome, so it is TTY-gated like approve and submit. The decision
+// file is parsed for shape only; every op refusal passes through verbatim —
+// a wrong or stale observation_id (stale_observation), an unknown remote_id,
+// an adopt whose content does not match the intended operation
+// (identity_conflict), a not_applied contradicted by an observed matching
+// effect, a confirmed or already-resolved write_ref, and an uncertain store.
+// The observation prerequisite: the decision file's observation_id must name
+// the CURRENT complete observation for the write's date, which only a prior
+// reconcile (or plan) run has persisted.
+func runResolveWrite(args []string) error {
+	f, err := parseResolveWriteFlags(args)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(f.file)
+	if err != nil {
+		return fmt.Errorf("resolve-write: the decision file cannot be read")
+	}
+	decision, err := parseWriteResolutionDecision(data)
+	if err != nil {
+		return err
+	}
+	term, err := interactiveFactory("resolve-write", "resolve writes")
+	if err != nil {
+		return err
+	}
+	prompt := fmt.Sprintf("About to record decision %q for write reference %s against observation %s",
+		decision.Decision, decision.WriteRef, decision.ObservationID)
+	if err := term.confirm(prompt, decision.WriteRef); err != nil {
+		return err
+	}
+	h, err := openHeadless(f.configPath, f.envFile)
+	if err != nil {
+		return err
+	}
+	defer h.done()
+	res, err := h.call("resolve_write", timesheet.Request{
+		WriteRef: decision.WriteRef, ObservationID: decision.ObservationID,
+		Decision: decision.Decision, RemoteID: decision.RemoteID,
+	})
+	if err != nil {
+		return err
+	}
+	receipt, ok := res.(timesheet.WriteResolutionReceipt)
+	if !ok {
+		return fmt.Errorf("resolve-write: unexpected resolve_write payload")
 	}
 	_, _ = h.call("close", timesheet.Request{})
 	return printJSON(receipt)

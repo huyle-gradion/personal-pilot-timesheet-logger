@@ -31,6 +31,10 @@ Usage:
   timesheet plan --config <path> [--env-file <path>] --date <YYYY-MM-DD>
   timesheet reconcile --config <path> [--env-file <path>] --date <YYYY-MM-DD>
   timesheet resolve --config <path> [--env-file <path>] --date <YYYY-MM-DD> --file <decision.json>
+  timesheet approve --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet submit --config <path> [--env-file <path>] --date <YYYY-MM-DD> --approval-id <id>
+  timesheet submit-status --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet resolve-write --config <path> [--env-file <path>] --file <decision.json>
 
 The collect/draft/run/record/status subcommands are the deterministic headless
 surface used by the timesheet skill: collect performs one bounded collection
@@ -139,6 +143,47 @@ Blockers are resolved only by these explicit human decisions, never
 auto-cleared; because a plan's identity includes its exact blockers, the
 re-preview after any resolve yields a NEW plan_id — the stale one is never
 reused or re-approved.
+
+The approve, submit, submit-status and resolve-write subcommands add approval
+and submission (campaign issue #160, slice SUBMIT-4). The full flow order is:
+run → record → stage → classifications/classify → confirm → save → plan →
+(reconcile/resolve when the plan lists identity blockers) → plan again for a
+clean plan_id → approve → submit; with submit-status and resolve-write for
+recovery. THE GATE DISCIPLINE, stated plainly: approve, submit and
+resolve-write are interactive-only — each refuses to run unless BOTH stdin and
+stdout are terminals and each requires typing the exact plan_id (approve),
+approval id (submit) or write reference (resolve-write) at an interactive
+prompt, so agent shells physically cannot execute them; this is a
+deliberate-act barrier, not proof a human is present: a pty-allocating wrapper
+satisfies the terminal check and reaches the prompt, consistent with the
+approval ledger's own admission that a scripted request is not proof a human
+is physically present; the agent may run
+everything else, including submit-status, which is read-only and not gated.
+approve renders the CURRENT plan fresh (preview_plan; a stored plan record is
+never trusted or shown), displays the plan_id, operations and blockers, and on
+confirmation calls the approve_plan op — every refusal (stale_plan,
+plan_not_ready, an uncertain store, a changed catalog) passes through
+verbatim, and the printed approval_id is the input to submit. submit
+dispatches exactly what the approval bound: it re-validates every
+precondition, commits a durable pre-write intent per operation before one
+never-retried dispatch, and confirms a write only after an identified
+acknowledgment AND a matching complete read-back; the SubmissionReceipt is
+printed faithfully — every aggregate count and per-reference status — and
+blocked_before_dispatch (including submit without a persisted active approval,
+or with one already consumed) and durability_uncertain are distinct receipt
+states, printed as returned. Writes are never auto-retried; an unknown outcome
+stays a durable unresolved write reference — it blocks every new submission,
+appears in submit-status with its write_ref and the next_safe_action, and
+stays unresolved until the human resolves it. resolve-write records that
+explicit human decision from a decision file — {"write_ref": "...",
+"observation_id": "...", "decision": "adopt|not_applied", "remote_id":
+"..."} with write_ref and observation_id copied verbatim from submit-status
+and reconcile receipts (adopt requires remote_id) — against a CURRENT complete
+observation: run reconcile (or plan) first, because only it persists the
+observation a resolution can bind to. It is TTY-gated like approve and
+submit; every op refusal (stale_observation, unknown_remote, identity_conflict
+and the rest) passes through verbatim. The TTY check lives in the CLI wrapper
+only: the Session ops stay transport-agnostic.
 
 R4 adds the native approval ledger and one verified submission path. The
 'approve_plan' request binds a unique approval to the exact current rendered plan
@@ -293,6 +338,38 @@ func main() {
 		}
 	case "resolve":
 		if err := runResolve(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "approve":
+		if err := runApprove(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "submit":
+		if err := runSubmit(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "submit-status":
+		if err := runSubmitStatus(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "resolve-write":
+		if err := runResolveWrite(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return
 			}
