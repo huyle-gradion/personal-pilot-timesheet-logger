@@ -242,6 +242,16 @@ func validateEvidence(ev *DayEvidence) error {
 				return newError(CodeStateInvalid, "local state contains an evidence item without identity")
 			}
 		}
+		// Overflow items are durable evidence like Items and pass the same
+		// identity check; a negative loss count is structurally invalid.
+		for _, item := range t.OverflowItems {
+			if item.Ref == "" || item.Time == "" {
+				return newError(CodeStateInvalid, "local state contains an evidence item without identity")
+			}
+		}
+		if t.DroppedItems < 0 {
+			return newError(CodeStateInvalid, "local state contains an evidence topic with a negative dropped-item count")
+		}
 	}
 	for _, m := range ev.Meetings {
 		if m.Ref == "" || m.UID == "" || m.Start == "" {
@@ -953,6 +963,7 @@ func (e *DayEvidence) cloneEvidence() *DayEvidence {
 	}
 	for i, t := range out.Topics {
 		out.Topics[i].Items = append([]EvidenceItem(nil), t.Items...)
+		out.Topics[i].OverflowItems = append([]EvidenceItem(nil), t.OverflowItems...)
 	}
 	return out
 }

@@ -145,9 +145,10 @@ func collectGithub(scope *githubScope, windowStart, windowEnd time.Time) collect
 		}
 	}
 	topics := buildGithubTopics(allItems)
-	dropped := 0
+	overflowKept, overflowLost := 0, 0
 	for _, t := range topics {
-		dropped += t.DroppedItems
+		overflowKept += len(t.OverflowItems)
+		overflowLost += t.DroppedItems
 	}
 	status, detail := StatusComplete, ""
 	if bounded > 0 {
@@ -156,13 +157,23 @@ func collectGithub(scope *githubScope, windowStart, windowEnd time.Time) collect
 	} else {
 		detail = fmt.Sprintf("%d attributable item(s) across %d queried repositories", len(allItems), len(scope.repos))
 	}
-	if dropped > 0 {
-		// Topic item caps are real evidence loss; the source is incomplete
-		// and the truncation is visible on the affected topics, never a
-		// silent no-op (F6).
+	if overflowKept > 0 || overflowLost > 0 {
+		// The topic item cap bounds the AI-visible draft, not the evidence:
+		// items beyond it are retained durably as topic overflow up to the
+		// fixed ceilings, and anything beyond those ceilings is a real loss
+		// counted here and on the affected topics, never a silent no-op (F6).
+		// The source stays incomplete either way: the draft still shows only
+		// the first maxTopicItems items per topic.
 		status = StatusIncomplete
-		detail = niceJoin(detail, fmt.Sprintf(
-			"%d attributable item(s) beyond the %d-item topic cap are not retained; the affected topic(s) record the loss", dropped, maxTopicItems))
+		if overflowLost > 0 {
+			detail = niceJoin(detail, fmt.Sprintf(
+				"%d attributable item(s) beyond the %d-item topic cap: %d retained durably as topic overflow, %d beyond the overflow caps are not retained; the affected topic(s) record the counts",
+				overflowKept+overflowLost, maxTopicItems, overflowKept, overflowLost))
+		} else {
+			detail = niceJoin(detail, fmt.Sprintf(
+				"%d attributable item(s) beyond the %d-item topic cap are retained durably as topic overflow; the draft still shows the first %d items per topic",
+				overflowKept, maxTopicItems, maxTopicItems))
+		}
 	}
 	return collectGithubResult{
 		Status:   status,
@@ -921,8 +932,19 @@ func providerEventTypeName(t string) string {
 // Duplicate provenance is merged into the retained item's provenance field
 // instead of deleting a supporting record; minutes are never derived.
 // When a topic has more provider items than the fixed per-topic item cap,
-// the overflow is recorded honestly on the topic (truncated/dropped count),
-// never silently discarded.
+// the fact is recorded honestly on the topic (truncated), the items beyond
+// the cap are retained durably as OverflowItems up to the fixed per-topic
+// (maxTopicOverflowItems) and per-attempt (maxTotalOverflowItems) ceilings,
+// and anything beyond those ceilings is counted in DroppedItems — never
+// silently discarded.
+//
+// Retention allocation rule (deterministic): each topic fills its retained
+// Items first, then its OverflowItems, both in de-duplicated item arrival
+// order; the attempt-wide overflow pool is filled in the same order, so once
+// maxTotalOverflowItems is reached, overflow items arriving later (in later
+// topics) are the ones counted lost. FirstAt/LastAt stay computed from the
+// retained Items only: overflow retention never changes a topic's span,
+// keeping the draft's topic-to-block mapping stable.
 func buildGithubTopics(items []EvidenceItem) []TopicCandidate {
 	// De-duplicate same-event hits (same canonical ref) before grouping;
 	// document the merged provenance on the retained item.
@@ -946,6 +968,7 @@ func buildGithubTopics(items []EvidenceItem) []TopicCandidate {
 	}
 	var order []entry
 
+	totalOverflow := 0
 	for _, item := range deduped {
 		key, title := githubTopicKey(item)
 		t, ok := byResource[key]
@@ -954,9 +977,13 @@ func buildGithubTopics(items []EvidenceItem) []TopicCandidate {
 			byResource[key] = t
 			order = append(order, entry{key: key, t: t})
 		}
-		if len(t.Items) < maxTopicItems {
+		switch {
+		case len(t.Items) < maxTopicItems:
 			t.Items = append(t.Items, item)
-		} else {
+		case len(t.OverflowItems) < maxTopicOverflowItems && totalOverflow < maxTotalOverflowItems:
+			t.OverflowItems = append(t.OverflowItems, item)
+			totalOverflow++
+		default:
 			t.DroppedItems++
 		}
 	}
@@ -964,7 +991,7 @@ func buildGithubTopics(items []EvidenceItem) []TopicCandidate {
 	var out []TopicCandidate
 	for _, e := range order {
 		t := e.t
-		if t.DroppedItems > 0 {
+		if t.DroppedItems > 0 || len(t.OverflowItems) > 0 {
 			t.Truncated = true
 		}
 		sort.SliceStable(t.Items, func(x, y int) bool {
@@ -972,6 +999,12 @@ func buildGithubTopics(items []EvidenceItem) []TopicCandidate {
 				return t.Items[x].Time < t.Items[y].Time
 			}
 			return t.Items[x].Ref < t.Items[y].Ref
+		})
+		sort.SliceStable(t.OverflowItems, func(x, y int) bool {
+			if t.OverflowItems[x].Time != t.OverflowItems[y].Time {
+				return t.OverflowItems[x].Time < t.OverflowItems[y].Time
+			}
+			return t.OverflowItems[x].Ref < t.OverflowItems[y].Ref
 		})
 		if len(t.Items) > 0 {
 			t.FirstAt = t.Items[0].Time
