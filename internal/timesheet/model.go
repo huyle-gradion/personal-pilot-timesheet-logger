@@ -858,7 +858,18 @@ const (
 	maxEvidenceMeetings  = 200
 	maxTopicItems        = 50
 	maxGithubFamilyPages = 20
+	// maxSearchResultPages bounds the two search endpoint families (the
+	// authored-PR search and the submitted-review candidate search). The
+	// search endpoint's pagination semantics differ from the rest endpoints
+	// (documented 1,000-result bound, incomplete_results flag), so it carries
+	// its own documented ceiling instead of the shared maxGithubFamilyPages;
+	// reaching it makes the family incomplete, never silently exhausted.
 	maxSearchResultPages = 10
+	// maxErrorBodyBytes bounds how much of a non-200 provider response body is
+	// read for the sanitized family diagnostic (see sanitizeHTTPDiagnostic in
+	// github.go). The snippet is rendered sanitized and bounded; it never
+	// echoes request URLs or credential values.
+	maxErrorBodyBytes = 1024
 	// maxReviewPRCandidates bounds how many pull requests the submitted-review
 	// family will expand per repository in one attempt. It is a documented
 	// collector bound, not a provider limit: exceeding it makes the family
@@ -899,6 +910,13 @@ const (
 	StatusIncomplete         = "incomplete"
 	StatusFailed             = "failed"
 	StatusMissingCredentials = "missing_credentials"
+	// StatusWindowed is a FamilyReport-only status (never a source attempt
+	// status): the family's coverage is a bounded recent window by the
+	// provider's documented design — for the repo_events timeline, only the
+	// past 30 days and up to 300 events. It is honest bounded-by-design
+	// coverage, not a collection limitation, and the aggregate source detail
+	// counts only `incomplete` and `failed` families against it.
+	StatusWindowed = "windowed"
 
 	DecisionPending  = "pending"
 	DecisionAttended = "attended"
@@ -926,7 +944,7 @@ type FamilyReport struct {
 	Family      string `json:"family"` // commits|authored_pull_requests|submitted_pr_reviews|pr_review_comments|issue_comments|repo_events
 	QueriedRepo string `json:"queried_repo"`
 	Count       int    `json:"count"`
-	Status      string `json:"status"` // complete|incomplete|failed|empty
+	Status      string `json:"status"` // complete|incomplete|failed|empty|windowed
 	Detail      string `json:"detail,omitempty"`
 }
 
@@ -1033,6 +1051,10 @@ func validDecision(d string) bool {
 	return false
 }
 
+// validEvidenceStatus enforces the persisted source-attempt status enum,
+// fail-closed on load. Family-level statuses (including the repo_events
+// steady state "windowed") are report-only: they live in
+// SourceAttempt.Families and are not validated here.
 func validEvidenceStatus(s string) bool {
 	switch s {
 	case StatusDisabled, StatusComplete, StatusIncomplete, StatusFailed, StatusMissingCredentials, "empty":

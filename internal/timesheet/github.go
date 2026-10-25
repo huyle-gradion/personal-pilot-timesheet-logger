@@ -45,7 +45,10 @@ package timesheet
 //      bound, the search incomplete_results flag, the page ceiling, more
 //      candidate pull requests than the collector's maxReviewPRCandidates
 //      bound, or a per-review pagination beyond the ceiling make the family
-//      incomplete, never silently exhausted.
+//      incomplete, never silently exhausted. Both search families run under
+//      the dedicated maxSearchResultPages ceiling (maxSearchResultPages in
+//      model.go), whose pairing with this family is documented there: the
+//      search endpoint's pagination semantics differ from the REST families.
 //   4. PR review comments — GET /repos/{owner}/{repo}/pulls/comments
 //      (repository-wide review comments) with page pagination; attribution
 //      requires the comment's user.login to be the configured user (REST
@@ -62,7 +65,14 @@ package timesheet
 //      GitHub documents the shared event timeline cap: the timeline includes
 //      up to 300 events and only events created within the past 30 days;
 //      the collector therefore treats the feed as bounded coverage, never
-//      completeness.
+//      completeness. Its FamilyReport steady state is the dedicated
+//      `windowed` status (StatusWindowed): a fully-walked feed is bounded by
+//      the provider's design, not by the collector, and never reads as a
+//      collection limitation in the aggregate. A 422 on the page past the
+//      retained window is the documented end of that window: it reports
+//      `incomplete` (bounded provider coverage, retained count kept, a
+//      sanitized status+body diagnostic recorded), never `failed` — `failed`
+//      stays reserved for 403/429/transport/permission failures.
 //
 // Canonical identity: the same provider action seen through two endpoint
 // families carries one event identity and its provenance is merged — issue
@@ -75,11 +85,12 @@ package timesheet
 // never from rendered display strings.
 //
 // Bounds surfaced when hit, named per family and repository: the collector's
-// page ceiling, the events feed's 30-day/300-event retention, the submitted-
-// review candidate ceiling, search incomplete_results and the 1,000-result
-// limit, HTTP 403/429 rate limiting, permission failures, topic item caps,
-// and undecodable responses. A nonempty response is never treated as
-// complete coverage.
+// page ceilings (maxGithubFamilyPages for REST families, maxSearchResultPages
+// for the two search families), the events feed's 30-day/300-event retention,
+// the submitted-review candidate ceiling, search incomplete_results and the
+// 1,000-result limit, HTTP 403/429 rate limiting, permission failures, topic
+// item caps, and undecodable responses. A nonempty response is never treated
+// as complete coverage.
 //
 // Attribution: items are kept only when the provider names the configured
 // user as the acting identity at the event itself (commit GitHub user
@@ -138,9 +149,15 @@ func collectGithub(scope *githubScope, windowStart, windowEnd time.Time) collect
 		allItems = append(allItems, items...)
 		families = append(families, fams...)
 	}
+	// The aggregate count names only genuinely limited or failed families.
+	// "complete" and "empty" are fully-walked coverage, and "windowed" is the
+	// repo_events timeline's documented steady state — bounded by the
+	// provider's design (only the past 30 days, up to 300 events), not a
+	// collection limitation — so a fully collected day reads complete and the
+	// detail never counts a windowed family against the day.
 	bounded := 0
 	for _, fam := range families {
-		if fam.Status != StatusComplete && fam.Status != "empty" {
+		if fam.Status == StatusIncomplete || fam.Status == StatusFailed {
 			bounded++
 		}
 	}
@@ -215,8 +232,16 @@ func (g *githubRun) getJSON(q url.Values, path string) (int, []byte, error) {
 		}
 		return resp.StatusCode, body, nil
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
-	return resp.StatusCode, nil, nil
+	// A bounded copy of the non-200 body is returned so the stop-reason
+	// classification can render a sanitized diagnostic (HTTP status plus a
+	// bounded body snippet). The snippet is sanitized and URL-stripped where
+	// it is rendered (sanitizeHTTPDiagnostic); request URLs are never echoed
+	// and credential values never appear anywhere.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	if err != nil {
+		return resp.StatusCode, nil, nil
+	}
+	return resp.StatusCode, body, nil
 }
 
 // --- provider document shapes ------------------------------------------------
@@ -312,35 +337,59 @@ type ghEventPayloadDoc struct {
 var issueNumberTailRE = regexp.MustCompile(`/issues/(\d+)$`)
 var pullNumberTailRE = regexp.MustCompile(`/pulls/(\d+)$`)
 
-// familyPageLoop walks one paged family. Each page has per_page=100; it
-// returns the fetched page count and a stop reason: finished, empty, http,
-// decode, transport, or capped. A finished page (fewer than 100 entries) is
-// the only provable end.
-func (g *githubRun) familyPageLoop(query url.Values, path string, decode func(body []byte) (int, error)) (pages int, stop string, err error) {
-	for page := 1; page <= maxGithubFamilyPages; page++ {
+// familyWalk records how one paged family walk ended. Each page has
+// per_page=100; stop is finished, empty, http, decode, transport, or capped.
+// A finished page (fewer than 100 entries) is the only provable end. For an
+// http stop, httpStatus carries the provider status and httpBody a bounded
+// copy of the provider error body (rendered only through
+// sanitizeHTTPDiagnostic, never echoed raw). maxPages records the ceiling the
+// walk ran under, so the capped detail names the real bound.
+type familyWalk struct {
+	pages      int
+	stop       string
+	httpStatus int
+	httpBody   []byte
+	err        error
+	maxPages   int
+}
+
+// familyPageLoop walks one paged family under the given page ceiling.
+func (g *githubRun) familyPageLoop(query url.Values, path string, maxPages int, decode func(body []byte) (int, error)) familyWalk {
+	walk := familyWalk{maxPages: maxPages}
+	for page := 1; page <= maxPages; page++ {
 		q := cloneValues(query)
 		q.Set("per_page", "100")
 		q.Set("page", strconv.Itoa(page))
 		status, body, err := g.getJSON(q, path)
 		if err != nil {
-			return pages, "transport", err
+			walk.stop, walk.err = "transport", err
+			return walk
 		}
 		if status != http.StatusOK {
-			return pages, "http", fmt.Errorf("provider responded with HTTP %d", status)
+			walk.stop = "http"
+			walk.httpStatus = status
+			walk.httpBody = body
+			walk.err = fmt.Errorf("provider responded with HTTP %d", status)
+			return walk
 		}
 		n, derr := decode(body)
 		if derr != nil {
-			return pages, "decode", fmt.Errorf("the provider response was not the expected document schema")
+			walk.stop = "decode"
+			walk.err = fmt.Errorf("the provider response was not the expected document schema")
+			return walk
 		}
 		if n == 0 {
-			return pages, "empty", nil
+			walk.stop = "empty"
+			return walk
 		}
 		if n < 100 {
-			return pages, "finished", nil
+			walk.stop = "finished"
+			return walk
 		}
-		pages++
+		walk.pages++
 	}
-	return pages, "capped", nil
+	walk.stop = "capped"
+	return walk
 }
 
 func cloneValues(v url.Values) url.Values {
@@ -440,9 +489,9 @@ func fetchCommits(g *githubRun, repo, owner, name string, windowStart, windowEnd
 		}
 		return len(docs), nil
 	}
-	pages, stop, err := g.familyPageLoop(query, path, decode)
+	walk := g.familyPageLoop(query, path, maxGithubFamilyPages, decode)
 	n := len(items)
-	status, detail := familyStatus(stop, err, pages, n, "commit")
+	status, detail := familyStatus(walk, n, "commit")
 	if unverified > 0 && status != StatusFailed {
 		status = StatusIncomplete
 		detail = niceJoin(detail, fmt.Sprintf(
@@ -493,9 +542,13 @@ func fetchAuthoredPulls(g *githubRun, repo, owner, name string, windowStart, win
 		}
 		return len(doc.Items), nil
 	}
-	pages, stop, err := g.familyPageLoop(query, path, decode)
+	// The search endpoint's pagination semantics differ from the REST
+	// families (documented 1,000-result bound, incomplete_results flag), so
+	// this family runs under the dedicated maxSearchResultPages ceiling; the
+	// pairing is documented at the constant in model.go.
+	walk := g.familyPageLoop(query, path, maxSearchResultPages, decode)
 	n := len(items)
-	status, detail := familyStatus(stop, err, pages, n, "authored-pull-request search")
+	status, detail := familyStatus(walk, n, "authored-pull-request search")
 	if incomplete {
 		status = StatusIncomplete
 		detail = niceJoin(detail, "the search provider reported incomplete_results within its documented time/runtime bound")
@@ -555,11 +608,13 @@ func fetchSubmittedReviews(g *githubRun, repo, owner, name string, windowStart, 
 		}
 		return len(doc.Items), nil
 	}
-	_, searchStop, searchErr := g.familyPageLoop(query, "/search/issues", decode)
-	if searchErr != nil {
-		return nil, FamilyReport{Family: "submitted_pr_reviews", QueriedRepo: repo, Count: 0, Status: StatusFailed, Detail: truncateRunes(searchErr.Error(), maxDetailRunes)}
+	// Same search-endpoint pairing as fetchAuthoredPulls: the candidate
+	// search runs under maxSearchResultPages, documented at the constant.
+	searchWalk := g.familyPageLoop(query, "/search/issues", maxSearchResultPages, decode)
+	if searchWalk.err != nil {
+		return nil, FamilyReport{Family: "submitted_pr_reviews", QueriedRepo: repo, Count: 0, Status: StatusFailed, Detail: truncateRunes(searchWalk.err.Error(), maxDetailRunes)}
 	}
-	if searchStop == "capped" {
+	if searchWalk.stop == "capped" {
 		searchCap = true
 	}
 	if candTruncated {
@@ -568,7 +623,7 @@ func fetchSubmittedReviews(g *githubRun, repo, owner, name string, windowStart, 
 	}
 	if searchCap {
 		bounds = append(bounds, fmt.Sprintf(
-			"the candidate search reached the collector's %d-page pagination ceiling; more candidate pages exist", maxGithubFamilyPages))
+			"the candidate search reached the collector's %d-page pagination ceiling; more candidate pages exist", maxSearchResultPages))
 	}
 	if sawSearchIncomplete {
 		bounds = append(bounds, "the candidate search reported incomplete_results within its documented time/runtime bound")
@@ -611,17 +666,17 @@ func fetchSubmittedReviews(g *githubRun, repo, owner, name string, windowStart, 
 			}
 			return len(docs), nil
 		}
-		_, stop, err := g.familyPageLoop(url.Values{}, path, decode)
-		if err != nil {
+		walk := g.familyPageLoop(url.Values{}, path, maxGithubFamilyPages, decode)
+		if walk.err != nil {
 			// Reviews verified before this candidate's request failed are real
 			// attributable evidence; retain them and keep the honest failed
 			// status. The detail must not imply the remaining candidates were
 			// verified (F7).
-			detail := niceJoin(err.Error(), fmt.Sprintf(
+			detail := niceJoin(walk.err.Error(), fmt.Sprintf(
 				"%d submitted review(s) retained before the failure; remaining review coverage is unverified", len(items)))
 			return items, FamilyReport{Family: "submitted_pr_reviews", QueriedRepo: repo, Count: len(items), Status: StatusFailed, Detail: truncateRunes(detail, maxDetailRunes)}
 		}
-		if stop == "capped" {
+		if walk.stop == "capped" {
 			reviewCapped = true
 		}
 	}
@@ -648,9 +703,9 @@ func fetchReviewComments(g *githubRun, repo, owner, name string, windowStart, wi
 	resource := func(doc *commentDoc) string {
 		return pullResourceFromURL(doc.PullRequestURL, repo)
 	}
-	items, pages, stop, err := fetchCommentsPageLoop(g, query, path, repo, windowStart, windowEnd, "pr_review_comment", "pr-review-comment", "pulls/comments", "review-comment", resource)
+	items, walk := fetchCommentsPageLoop(g, query, path, repo, windowStart, windowEnd, "pr_review_comment", "pr-review-comment", "pulls/comments", "review-comment", resource)
 	n := len(items)
-	status, detail := familyStatus(stop, err, pages, n, "review-comment")
+	status, detail := familyStatus(walk, n, "review-comment")
 	if status == StatusComplete && n == 0 {
 		status = "empty"
 	}
@@ -667,9 +722,9 @@ func fetchIssueComments(g *githubRun, repo, owner, name string, windowStart, win
 	resource := func(doc *commentDoc) string {
 		return issueResourceFromURL(doc.IssueURL, repo)
 	}
-	items, pages, stop, err := fetchCommentsPageLoop(g, query, path, repo, windowStart, windowEnd, "issue_comment", "issue-comment", "issues/comments", "issue-comment", resource)
+	items, walk := fetchCommentsPageLoop(g, query, path, repo, windowStart, windowEnd, "issue_comment", "issue-comment", "issues/comments", "issue-comment", resource)
 	n := len(items)
-	status, detail := familyStatus(stop, err, pages, n, "issue-comment")
+	status, detail := familyStatus(walk, n, "issue-comment")
 	if status == StatusComplete && n == 0 {
 		status = "empty"
 	}
@@ -680,7 +735,7 @@ func fetchIssueComments(g *githubRun, repo, owner, name string, windowStart, win
 // EvidenceItem kind; refKind is the canonical identity token shared with the
 // same provider action seen through the events feed, so REST and event
 // records for one comment deduplicate and merge provenance.
-func fetchCommentsPageLoop(g *githubRun, query url.Values, path, repo string, windowStart, windowEnd time.Time, kind, refKind, provenancePrefix, label string, resourceFn func(*commentDoc) string) ([]EvidenceItem, int, string, error) {
+func fetchCommentsPageLoop(g *githubRun, query url.Values, path, repo string, windowStart, windowEnd time.Time, kind, refKind, provenancePrefix, label string, resourceFn func(*commentDoc) string) ([]EvidenceItem, familyWalk) {
 	var items []EvidenceItem
 	decode := func(body []byte) (int, error) {
 		var docs []commentDoc
@@ -715,13 +770,21 @@ func fetchCommentsPageLoop(g *githubRun, query url.Values, path, repo string, wi
 		}
 		return len(docs), nil
 	}
-	pages, stop, err := g.familyPageLoop(query, path, decode)
-	return items, pages, stop, err
+	walk := g.familyPageLoop(query, path, maxGithubFamilyPages, decode)
+	return items, walk
 }
 
 // fetchRepoEvents is family 5: discussions and other attributable repository
-// interactions. GitHub bounds the events timeline; the collector reports it
-// as bounded coverage regardless of how many items it retained.
+// interactions. GitHub bounds the events timeline by design (only the past 30
+// days, up to 300 events per timeline), so the family's steady state is the
+// dedicated `windowed` status — honest bounded recent-window coverage, never
+// `empty` and never a forced `incomplete`. A 422 on the page past the
+// retained window is the documented end of that window, classified as
+// `incomplete` (bounded provider coverage with the retained count and a
+// sanitized diagnostic), never `failed`; `failed` stays reserved for
+// 403/429/transport/permission failures. Reaching the collector's own page
+// ceiling stays `incomplete`, because that bound is the collector's, not the
+// provider's.
 func fetchRepoEvents(g *githubRun, repo, owner, name string, windowStart, windowEnd time.Time) ([]EvidenceItem, FamilyReport) {
 	query := url.Values{}
 	path := "/repos/" + owner + "/" + name + "/events"
@@ -754,17 +817,32 @@ func fetchRepoEvents(g *githubRun, repo, owner, name string, windowStart, window
 		}
 		return len(docs), nil
 	}
-	pages, stop, err := g.familyPageLoop(query, path, decode)
-	if sawOlder {
-		stop = "finished"
-	}
+	walk := g.familyPageLoop(query, path, maxGithubFamilyPages, decode)
 	n := len(items)
-	status, detail := familyStatus(stop, err, pages, n, "repository events")
-	if status == StatusFailed {
+	if walk.err != nil {
+		// sawOlder is only proof of a finished page below the window; it never
+		// overrides a real failure on a later page.
+		if walk.stop == "http" && walk.httpStatus == http.StatusUnprocessableEntity {
+			detail := niceJoin(sanitizeHTTPDiagnostic(walk.httpStatus, walk.httpBody), fmt.Sprintf(
+				"%d attributable event(s) retained before the provider's retained-window cap; coverage for repository events is bounded provider coverage (only the past 30 days, up to 300 events per timeline), not a collection failure", n))
+			return items, FamilyReport{Family: "repo_events", QueriedRepo: repo, Count: n, Status: StatusIncomplete, Detail: detail}
+		}
+		status, detail := familyStatus(walk, n, "repository events")
 		return items, FamilyReport{Family: "repo_events", QueriedRepo: repo, Count: n, Status: status, Detail: detail}
 	}
-	detail = niceJoin(detail, "the events timeline is bounded by the provider (only the past 30 days, up to 300 events per timeline); the collector reports it as bounded coverage, not completeness")
-	return items, FamilyReport{Family: "repo_events", QueriedRepo: repo, Count: n, Status: StatusIncomplete, Detail: detail}
+	if sawOlder {
+		walk.stop = "finished"
+	}
+	if walk.stop == "capped" {
+		status, detail := familyStatus(walk, n, "repository events")
+		return items, FamilyReport{Family: "repo_events", QueriedRepo: repo, Count: n, Status: status, Detail: detail}
+	}
+	// Steady state: the walk finished or emptied inside the retained window.
+	// The timeline is bounded by the provider's documented design regardless
+	// of how many items were retained, so the honest status is `windowed`.
+	_, detail := familyStatus(walk, n, "repository events")
+	detail = niceJoin(detail, "the events timeline is bounded by the provider (only the past 30 days, up to 300 events per timeline); the collector reports it as windowed coverage — a bounded recent window by the provider's design, not completeness and not a collection limitation")
+	return items, FamilyReport{Family: "repo_events", QueriedRepo: repo, Count: n, Status: StatusWindowed, Detail: detail}
 }
 
 // evidenceFromEvent maps one attributable event; unrelated actors are dropped
@@ -833,25 +911,46 @@ func evidenceFromEvent(doc ghEventDoc, repo string, at time.Time) *EvidenceItem 
 
 // --- family status and text helpers -------------------------------------------
 
-// familyStatus maps a pagination stop reason to honest family coverage.
-// "finished"/"empty" and the events feed's own bounded reporting are the only
-// paths to a non-incomplete status; anything else preserves the visible bound.
-func familyStatus(stop string, err error, pages, n int, label string) (string, string) {
-	if err != nil {
-		return StatusFailed, truncateRunes(err.Error(), maxDetailRunes)
+// providerURLRE matches http(s) URLs so provider error bodies (which embed
+// documentation links) can be stripped from diagnostics.
+var providerURLRE = regexp.MustCompile(`https?://\S+`)
+
+// sanitizeHTTPDiagnostic renders a bounded, sanitized provider-error
+// diagnostic for a family Detail: the HTTP status plus a bounded snippet of
+// the provider body. Provider bodies embed documentation links, so URLs are
+// stripped — request URLs are never echoed and credential values never appear
+// anywhere in errors, diagnostics, state, or reports.
+func sanitizeHTTPDiagnostic(status int, body []byte) string {
+	snippet := strings.TrimSpace(providerURLRE.ReplaceAllString(sanitizerText(string(body)), ""))
+	snippet = strings.TrimSpace(strings.Trim(snippet, "\",:' "))
+	if snippet == "" {
+		return fmt.Sprintf("the provider responded with HTTP %d; no readable provider error body", status)
 	}
-	switch stop {
+	return fmt.Sprintf("the provider responded with HTTP %d; provider error body: %s", status, snippet)
+}
+
+// familyStatus maps a pagination walk result to honest family coverage.
+// "finished"/"empty" and the events feed's own windowed reporting are the
+// only paths to a non-incomplete status; anything else preserves the visible
+// bound. The capped detail names the ceiling the walk actually ran under
+// (walk.maxPages), so search families bound by maxSearchResultPages report
+// their own ceiling, not the shared REST one.
+func familyStatus(walk familyWalk, n int, label string) (string, string) {
+	if walk.err != nil {
+		return StatusFailed, truncateRunes(walk.err.Error(), maxDetailRunes)
+	}
+	switch walk.stop {
 	case "finished", "empty":
 		if n == 0 {
-			return "empty", fmt.Sprintf("no attributable %s items in the day's window (pagination exhausted after %d page(s))", label, pages+1)
+			return "empty", fmt.Sprintf("no attributable %s items in the day's window (pagination exhausted after %d page(s))", label, walk.pages+1)
 		}
-		return StatusComplete, fmt.Sprintf("%d item(s) retained; pagination exhausted after %d page(s)", n, pages+1)
+		return StatusComplete, fmt.Sprintf("%d item(s) retained; pagination exhausted after %d page(s)", n, walk.pages+1)
 	case "capped":
 		return StatusIncomplete, fmt.Sprintf(
 			"the collector's %d-page pagination ceiling was reached with more pages available; coverage for %s is bounded, not exhaustive",
-			maxGithubFamilyPages, label)
+			walk.maxPages, label)
 	default:
-		return StatusIncomplete, fmt.Sprintf("%s coverage is incomplete (%s)", label, stop)
+		return StatusIncomplete, fmt.Sprintf("%s coverage is incomplete (%s)", label, walk.stop)
 	}
 }
 
