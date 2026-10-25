@@ -18,14 +18,16 @@ Usage:
   timesheet serve --config <path> --env-file <path>
   timesheet collect --config <path> [--env-file <path>] --date <YYYY-MM-DD>
   timesheet draft --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-  timesheet record --config <path> --date <YYYY-MM-DD> --file <reviewed.json>
+  timesheet record --config <path> --date <YYYY-MM-DD> (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>)
   timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 
 The collect/draft/record/status subcommands are the deterministic headless
 surface used by the timesheet skill: collect performs one bounded collection
 attempt, draft prints the compact one-day draft the skill's single judgment
 step reviews, record merges the reviewed result into the per-day entries file
-(idempotent per time block), and status reports store state plus recorded
+(idempotent per time block) — composing it from --draft plus the
+descriptions-only --descriptions file, or taking the full reviewed --file
+(recovery path) — and status reports store state plus recorded
 entries. They hold the same fixed-path, no-shell, credential-safe contract as
 serve and perform no approval or submission.
 

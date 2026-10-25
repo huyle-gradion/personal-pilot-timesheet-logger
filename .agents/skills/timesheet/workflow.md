@@ -20,6 +20,9 @@ TS_CONFIG=$HOME/.timesheet/config.json
 TS_ENV=$HOME/.timesheet/.env.local   # may be an empty file for local-only days
 ```
 
+Binary currency: if `bin/timesheet version` exits 0, the binary is current —
+never run `go build` during a run; only rebuild if `version` fails.
+
 ## Steps
 
 1. **[Script] Collect the day's evidence.**
@@ -44,30 +47,36 @@ TS_ENV=$HOME/.timesheet/.env.local   # may be an empty file for local-only days
    draft JSON is the **entire** input of the judgment step.
 
 3. **[AI] Review the draft** (`$TMP/draft.json` only — never raw `git log`,
-   calendar payloads, or earlier days):
+   calendar payloads, or earlier days) by writing ONLY the descriptions file
+   `$TMP/descriptions.json`. It is the judgment step's entire output:
 
-   - For each block, write `description`: one short grouped-topic summary
-     of `topic_candidates` (combine small items; do not list every action).
-     When the block has `prs_inline`, end the description by copying
-     `prs_inline` verbatim — do not re-derive the PRs list.
-   - Judge ambiguous calendar events: a block whose meeting title is not
-     clearly work gets described as what it actually was, or flagged in
-     `notes` if it should not count as work.
-   - Judge completeness from `flags` (`source_incomplete:*`,
-     `no_confirmed_intervals`): add a day-level `notes` line when the day
-     looks incomplete rather than inventing content.
-   - The judgment step changes only `description` (and `notes`); every
-     other field stays exactly as the draft emitted it. Copy `prs_inline`
-     verbatim; `record` validates that a block's description carries the
-     `PRs:` list.
+   ```json
+   {"notes": "<one plain string for the whole day>",
+    "descriptions": {"<block_id>": "<description prose>"}}
+   ```
 
-   Write the edited draft (same schema, plus `description` per block) to
-   `$TMP/reviewed.json`.
+   - For each block in the draft, write one `descriptions` entry keyed by
+     that block's `block_id`: one short grouped-topic summary of
+     `topic_candidates` (combine small items; do not list every action).
+     Every block needs an entry; if one is missing, `record` names the
+     offending block ids.
+   - Do NOT reproduce draft fields (times, titles, candidates, flags,
+     `prs_inline`) and do NOT write the `PRs:` list anywhere: when a block
+     has `prs_inline`, `record` appends it to the description itself.
+   - `notes` is one plain JSON string (never an array): a day-level remark —
+     e.g. a calendar event that should not count as work, or an incomplete
+     day per `flags` (`source_incomplete:*`, `no_confirmed_intervals`).
+     Omit the field when there is nothing to say. The day-level `notes`
+     line is run-context only: it is NOT persisted as durable entry data —
+     anything that must persist goes into a block's `descriptions` entry.
+   - Do not re-read the draft afterwards and do not write a full reviewed
+     file: `record` composes it. (`--file reviewed.json` remains a recovery
+     path only.)
 
 4. **[Script] Record the reviewed entries.**
 
    ```sh
-   "$TS_BINARY" record --config "$TS_CONFIG" --date "$DAY" --file "$TMP/reviewed.json"
+   "$TS_BINARY" record --config "$TS_CONFIG" --date "$DAY" --draft "$TMP/draft.json" --descriptions "$TMP/descriptions.json"
    ```
 
    Idempotent per time block: a re-run updates the same block in place and
@@ -108,7 +117,9 @@ judgment step.
 
 - A failed `collect` or `draft` may be re-run; each run is one new
   collection attempt and recording stays idempotent.
-- If `record` rejects the reviewed draft (empty description, missing
-  `PRs:` list, duplicate block), fix the named block and re-run record.
+- If `record` rejects the composition (missing/empty description or an
+  unknown `block_id`), fix the named block in `$TMP/descriptions.json` and
+  re-run record. On the `--file reviewed.json` recovery path the original
+  contract holds: empty description, missing `PRs:` list, duplicate block.
 - Remote timesheet submission is out of scope for this skill: it stays on
   the interactive, human-approved workflow.
