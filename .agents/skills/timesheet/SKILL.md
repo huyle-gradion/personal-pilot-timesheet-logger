@@ -9,7 +9,7 @@ Inputs (resolve once; never commit): `TS_BINARY=<repo>/bin/timesheet`, `TS_CONFI
 
 1. **[Script] Run** (re-runnable; a failed source never blocks the day): `"$TS_BINARY" run --config "$TS_CONFIG" --env-file "$TS_ENV" --date "$DAY" > "$TMP/draft.json"` - stdout is the entire judgment input.
 
-2. **[AI] Review**: judge ONLY `$TMP/draft.json` (never raw git log/calendar/prior days); write ONLY `$TMP/descriptions.json`: `{"notes": "<string>", "descriptions": {"<block_id>": "<prose>"}}` - one grouped-topic entry per block; no draft fields or `PRs:` list (`record` appends `prs_inline`); `notes` = one JSON string or omit; `--file reviewed.json` = recovery only.
+2. **[AI] Review**: judge ONLY `$TMP/draft.json` (never raw git log/calendar/prior days); write ONLY `$TMP/descriptions.json`: `{"notes": "<string>", "descriptions": {"<block_id>": "<prose>"}}` - one grouped-topic entry per block; no draft fields or `PRs:` list (`record` appends `prs_inline`); `notes` = one JSON string or omit; `--file reviewed.json` = recovery only. A block may carry `outside_work_hours` + `work_hours_reason` (`day_not_in_policy`, `before_window`, `between_windows`, `after_window`, `partial`): informational only - outside main hours is allowed, so never reject, skip, or shift a block for it.
 
 3. **[Script] Record** (idempotent per block): `"$TS_BINARY" record --config "$TS_CONFIG" --date "$DAY" --draft "$TMP/draft.json" --descriptions "$TMP/descriptions.json"` - rejection (missing/empty description, unknown `block_id`) => fix, re-run. Re-collected day => re-record with `--replace` (file = day's complete content; absent blocks removed). **[Script] Verify**: `"$TS_BINARY" status --config "$TS_CONFIG" --date "$DAY"`.
 

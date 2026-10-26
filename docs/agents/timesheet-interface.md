@@ -1,6 +1,6 @@
-# Timesheet interface (`0.2.0-dev.2`)
+# Timesheet interface (`0.2.0-dev.3`)
 
-Application version: `0.2.0-dev.2` (unreleased development stamp; the
+Application version: `0.2.0-dev.3` (unreleased development stamp; the
 public release line remains `0.1.1` until this ships).
 Protocol schema: `1`. State schema: `3`.
 
@@ -86,7 +86,9 @@ there is no second protocol and no new request grammar.
   intervals outside every meeting become work blocks; evidence topics attach
   to the first block their time span overlaps; remaining topics form one
   evidence block; a day with no time anchors still yields one whole-day
-  block. This draft is the skill's entire model input.
+  block. When `work_hours` is configured, blocks are additionally annotated
+  (see [Work-hours annotation](#work-hours-annotation-optional-non-blocking)).
+  This draft is the skill's entire model input.
 - `run` composes collect and draft in one process: the same single bounded
   collection attempt, then the compact draft. stdout carries ONLY the draft
   JSON (the collect source report is not printed; its substance is already in
@@ -938,6 +940,13 @@ echoing file contents.
     "enabled": true,
     "endpoint": "https://mcp.example.invalid/mcp",
     "token_env": "GRADION_MCP_TOKEN"
+  },
+  "work_hours": {
+    "days": ["mon", "tue", "wed", "thu", "fri"],
+    "windows": [
+      {"start": "09:00", "end": "12:00"},
+      {"start": "13:00", "end": "18:00"}
+    ]
   }
 }
 ```
@@ -962,6 +971,9 @@ echoing file contents.
 | `gradion` | no | Disabled-by-default remote boundary. Reads verify capability-only; writes exist only behind the approval ledger. |
 | `gradion.endpoint` | if enabled | Launcher-provisioned MCP endpoint. Never echoed into a response, receipt, error or state document. |
 | `gradion.token_env` | no | Credential variable **name**, default `GRADION_MCP_TOKEN`. Only the binary resolves its value. |
+| `work_hours` | no | Optional, presentation-only main-work-time policy for the draft annotation. Omitted means no annotation and byte-identical output. |
+| `work_hours.days` | if present | Non-empty list of exactly `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` (lowercase, three letters; nothing is normalized). |
+| `work_hours.windows` | if present | One to four same-day `HH:MM` windows, each with `start` before `end`, none overlapping. |
 
 `check_environment` returns `required`, `missing`, and `present` **names** only.
 It performs no network call. An inherited empty value overrides a file value, so
@@ -971,6 +983,40 @@ never requires a remote credential.
 R1 has no required or optional credential variable names of its own. The
 `required_env` list is an owner-declared, name-only reservation for later named
 slices; it never causes R1 local operations to fail or reach the network.
+
+### Work-hours annotation (optional, non-blocking)
+
+`work_hours` is an optional, presentation-only policy naming the team's main
+work time. It never rejects, warns, blocks, or invents a block, and a
+configuration without it renders exactly as before.
+
+Validation is offline and fail-closed with `config_invalid`, naming the
+offending value: `days` must be non-empty and use exactly the lowercase
+three-letter tokens `mon`…`sun` (nothing is normalised silently); `windows`
+must be non-empty and at most four; each `start`/`end` must be 24-hour `HH:MM`
+with `start` before `end`; and no two windows may overlap. An unknown key
+inside `work_hours` (for example `max_block_minutes` or `outside_allowed`) is
+rejected by the strict decoder. The four-hour per-entry bound is the remote's
+fixed policy, not a `work_hours` setting, and cannot be raised through
+configuration.
+
+`draft` and `run` then annotate each block against the day's windows in the
+day's recorded timezone. Every absolute provider instant — meeting anchors and
+evidence-topic anchors/items, which arrive as RFC3339 in the provider's offset —
+is resolved into the recorded day's timezone before a clock is derived (a
+`07:00Z` anchor on an `Asia/Ho_Chi_Minh` day reads `14:00`), so the block a
+reviewer reads, the topic-to-block attachment, the annotation and the recorded
+entry all agree. A block that is not entirely inside one window gains
+`outside_work_hours: true` and `work_hours_reason`, one of `day_not_in_policy`
+(weekday not listed), `before_window`, `between_windows` (a gap such as lunch),
+`after_window`, or `partial` (partly inside and partly outside a window, for
+example a block spanning the lunch gap). A block entirely inside one window
+carries neither field, and a block with no usable same-day start/end is left
+untouched. The draft also echoes the policy it applied
+(`work_hours`, the same `days`/`windows` shape) and omits that key entirely when
+no policy is configured, so every reason token can be checked against the policy
+that produced it. Work outside main hours is allowed with no ceiling: the
+annotation changes no span, duration, or recorded entry.
 
 ## Environment file and precedence
 

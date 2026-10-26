@@ -29,6 +29,9 @@ func LoadConfig(path string) (*Config, error) {
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
+		if field, ok := unknownJSONField(err); ok {
+			return nil, newError(CodeConfigInvalid, fmt.Sprintf("config: unknown field %q", field))
+		}
 		return nil, newError(CodeConfigInvalid, "config file is not valid JSON for the supported schema")
 	}
 	if err := ensureJSONEOF(dec); err != nil {
@@ -84,7 +87,70 @@ func (c *Config) validate() error {
 	if err := c.validateSources(); err != nil {
 		return err
 	}
+	if err := c.validateWorkHours(); err != nil {
+		return err
+	}
 	return c.validateR3()
+}
+
+// validWorkDayTokens is the exact accepted weekday vocabulary for work_hours.
+// Nothing is normalized: "Mon", "monday" and "MON" are rejected by name.
+var validWorkDayTokens = map[string]bool{
+	"mon": true, "tue": true, "wed": true, "thu": true,
+	"fri": true, "sat": true, "sun": true,
+}
+
+// maxWorkWindows bounds the day's main-work windows. Two or three windows cover
+// a split day; more is a configuration error rather than a policy shape.
+const maxWorkWindows = 4
+
+// validateWorkHours checks the optional, non-blocking main-work-time policy.
+// It is presentation-only: a valid policy annotates the draft and a nil one
+// changes nothing. Every failure names the offending value.
+func (c *Config) validateWorkHours() error {
+	w := c.WorkHours
+	if w == nil {
+		return nil
+	}
+	if len(w.Days) == 0 {
+		return newError(CodeConfigInvalid, "config: work_hours.days is required")
+	}
+	for _, day := range w.Days {
+		if !validWorkDayTokens[day] {
+			return newError(CodeConfigInvalid, fmt.Sprintf("config: work_hours.days contains an invalid day %q (use mon tue wed thu fri sat sun)", day))
+		}
+	}
+	if len(w.Windows) == 0 {
+		return newError(CodeConfigInvalid, "config: work_hours.windows is required")
+	}
+	if len(w.Windows) > maxWorkWindows {
+		return newError(CodeConfigInvalid, fmt.Sprintf("config: work_hours.windows has %d windows; at most %d are allowed", len(w.Windows), maxWorkWindows))
+	}
+	starts := make([]int, len(w.Windows))
+	ends := make([]int, len(w.Windows))
+	for i, win := range w.Windows {
+		startMin, err := parseClock(win.Start)
+		if err != nil {
+			return newError(CodeConfigInvalid, fmt.Sprintf("config: work_hours.windows[%d].start %q is not HH:MM", i, win.Start))
+		}
+		endMin, err := parseClock(win.End)
+		if err != nil {
+			return newError(CodeConfigInvalid, fmt.Sprintf("config: work_hours.windows[%d].end %q is not HH:MM", i, win.End))
+		}
+		if startMin >= endMin {
+			return newError(CodeConfigInvalid, fmt.Sprintf("config: work_hours.windows[%d] start %q must be before end %q", i, win.Start, win.End))
+		}
+		starts[i], ends[i] = startMin, endMin
+	}
+	for i := range w.Windows {
+		for j := i + 1; j < len(w.Windows); j++ {
+			if starts[i] < ends[j] && starts[j] < ends[i] {
+				return newError(CodeConfigInvalid, fmt.Sprintf("config: work_hours.windows[%d] %s-%s overlaps windows[%d] %s-%s",
+					i, w.Windows[i].Start, w.Windows[i].End, j, w.Windows[j].Start, w.Windows[j].End))
+			}
+		}
+	}
+	return nil
 }
 
 // validateR3 checks the disabled-by-default R3 provisions: explicit legacy
@@ -366,6 +432,24 @@ func readSmallFile(path string, max int64) ([]byte, error) {
 		return nil, errors.New("file is too large")
 	}
 	return os.ReadFile(path)
+}
+
+// unknownJSONField extracts the field name from encoding/json's unknown-field
+// diagnostic, which DisallowUnknownFields emits as `json: unknown field "x"`.
+// Only that diagnostic is surfaced; every other decoder error stays generic so
+// no file content is echoed.
+func unknownJSONField(err error) (string, bool) {
+	const prefix = `json: unknown field `
+	msg := err.Error()
+	if !strings.HasPrefix(msg, prefix) {
+		return "", false
+	}
+	field := strings.TrimSpace(strings.TrimPrefix(msg, prefix))
+	field = strings.Trim(field, `"`)
+	if field == "" {
+		return "", false
+	}
+	return field, true
 }
 
 func ensureJSONEOF(dec *json.Decoder) error {

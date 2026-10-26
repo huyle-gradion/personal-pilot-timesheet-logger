@@ -121,6 +121,7 @@ func parseRecordFlags(args []string) (*recordFlags, error) {
 // directly, one typed request at a time.
 type headlessSession struct {
 	session *timesheet.Session
+	cfg     *timesheet.Config
 	seq     int
 	close   func()
 }
@@ -144,6 +145,7 @@ func openHeadless(configPath, envFile string) (*headlessSession, error) {
 	}
 	return &headlessSession{
 		session: timesheet.NewSession(cfg, env, store),
+		cfg:     cfg,
 		close:   func() { _ = store.Close() },
 	}, nil
 }
@@ -245,7 +247,18 @@ func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, string, e
 		return timesheet.Draft{}, "", fmt.Errorf("draft: unexpected review payload")
 	}
 	_, _ = h.call("close", timesheet.Request{})
-	return timesheet.BuildDraft(review, timesheet.AppVersion), collectionID, nil
+	draft := timesheet.BuildDraft(review, timesheet.AppVersion)
+	// Work-hours annotation is presentation-only: it reads the loaded config's
+	// optional policy and the day's recorded timezone, and leaves every block
+	// untouched when no policy is configured. A day whose timezone cannot be
+	// loaded is left unannotated rather than annotated in a guessed zone; the
+	// review already fails earlier for such a day, so this is defence in depth.
+	if h.cfg != nil && h.cfg.WorkHours != nil {
+		if loc := timesheet.DayLocationOrNil(review.Timezone); loc != nil {
+			timesheet.AnnotateWorkHours(&draft, h.cfg.WorkHours, loc)
+		}
+	}
+	return draft, collectionID, nil
 }
 
 // runDraft collects the day and prints the compact draft for the judgment step.
