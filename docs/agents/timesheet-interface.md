@@ -1,6 +1,6 @@
-# Timesheet interface (`0.2.0-dev.1`)
+# Timesheet interface (`0.2.0-dev.2`)
 
-Application version: `0.2.0-dev.1` (unreleased development stamp; the
+Application version: `0.2.0-dev.2` (unreleased development stamp; the
 public release line remains `0.1.1` until this ships).
 Protocol schema: `1`. State schema: `3`.
 
@@ -177,36 +177,55 @@ every mutation and for `save`/`cancel`; a mismatch fails with `stale_revision`.
   whose midnight is skipped starts at its first real instant.
 - **GitHub** `status` is `complete` (all enabled families fetched to exhaustion),
   `incomplete` (a family hit an honest bound — page cap, search 1000-result cap
-  or `incomplete_results`, the submitted-review candidate ceiling, the events
-  window, an HTTP failure such as a 403 on one repository, an omitted
-  unverifiable commit ownership, or topic item-cap truncation), or
-  `missing_credentials`. Attribution is strictly by provider-named actor,
+  or `incomplete_results`, the submitted-review candidate ceiling, the
+  issue-target lookup bound, the events bound (a 422 past the retained window
+  or the collector's event page ceiling), an HTTP failure such as a 403 on one
+  repository, an omitted unverifiable commit ownership, or topic item-cap
+  truncation), or `missing_credentials`. Attribution is strictly by
+  provider-named actor,
   verified in the provider's own response bodies (`author` filter pulses
   verified against the commit's GitHub user document, `login` qualifier plus
-  `user.login`, `reviewer user.login` on the reviews endpoint, `actor.login`);
-  a response that names another actor is dropped, and a commit with no user
-  document is omitted (a commit-author email is a filter value, not verified
-  ownership) with the omission reported in the family detail.
-  Families: commits (`/repos/{o}/{r}/commits`), authored pull requests
-  (search `author:`), submitted PR reviews (search `reviewed-by:` candidates
-  across every PR the user reviewed, independent of when the resource was last
-  updated; each candidate verified at
-  `/repos/{o}/{r}/pulls/{pull_number}/reviews` and filtered by the exact
-  `submitted_at` instant — approval-only reviews appear regardless of the
-  events feed, and a review submitted on the day is retained after later PR
-  activity), PR review comments
-  (`/repos/{o}/{r}/pulls/comments`), issue comments
-  (`/repos/{o}/{r}/issues/comments`), and the bounded events feed
-  (`/repos/{o}/{r}/events`, always reported incomplete). One provider action
-  seen through two families carries one canonical event identity and its
-  provenance is merged (issue comment `gh:{repo}:issue-comment:{id}`,
-  PR review comment `gh:{repo}:pr-review-comment:{id}`, submitted review
-  `gh:{repo}:review:{id}`); distinct actions keep distinct identities. Topics
-  group by retained provider resource identity (`resource` field), and a topic
-  with more items than the 50-item cap records `truncated` with the dropped
-  count. Item `kind`s: `commit`, `authored_pull_request`, `submitted_pr_review`,
-  `pr_review_comment`, `issue_comment`, `discussion`, `discussion_comment`,
-  `event`.
+  `user.login`, `merged_by.login` on merged pull requests, `reviewer
+  user.login` on the reviews endpoint, `actor.login`); a response that names
+  another actor is dropped, and a commit with no user document is omitted (a
+  commit-author email is a filter value, not verified ownership) with the
+  omission reported in the family detail.
+  The five team proof-of-work shapes are: open PR (authored pull request),
+  merge PR (`merged_pull_request`), comment in PR
+  (`pr_conversation_comment`), comment in issue (`issue_comment`), and attend
+  calendar event. Families: commits (`/repos/{o}/{r}/commits`), authored pull
+  requests (search `author:`), merged pull requests (search `merged:` date
+  range, then client-side `merged_by.login` and exact `merged_at` verification
+  inside the day window; there is no `merged-by:` qualifier), submitted PR
+  reviews (search `reviewed-by:` candidates across every PR the user
+  reviewed, independent of when the resource was last updated; each candidate
+  verified at `/repos/{o}/{r}/pulls/{pull_number}/reviews` and filtered by
+  the exact `submitted_at` instant — approval-only reviews appear regardless
+  of the events feed, and a review submitted on the day is retained after
+  later PR activity), PR review comments (`/repos/{o}/{r}/pulls/comments`),
+  issue comments (`/repos/{o}/{r}/issues/comments`), and the bounded events
+  feed (`/repos/{o}/{r}/events`, reported `windowed` in its steady state by
+  provider design: only the past 30 days, up to 300 events per timeline; a 422
+  past the retained window or the collector's page ceiling reports
+  `incomplete`). One provider action seen through two families carries one
+  canonical event identity and its provenance
+  is merged (issue comment `gh:{repo}:issue-comment:{id}`, PR review comment
+  `gh:{repo}:pr-review-comment:{id}`, submitted review
+  `gh:{repo}:review:{id}`, merge `gh:{repo}:pr-merge:{number}`); distinct
+  actions keep distinct identities. The issues/comments document carries no
+  `pull_request` field, so each retained comment's number is resolved against
+  `GET /repos/{o}/{r}/issues/{n}` (whose non-null `pull_request` key is the
+  authority): a PR conversation comment becomes `pr_conversation_comment` with
+  `pr:{repo}:{n}`, otherwise the item stays `issue_comment` with
+  `issue:{repo}:{n}`. Resolutions are cached per run and bounded to 50
+  lookups per repository per attempt; an unknown answer or the ceiling leaves
+  the item an issue comment and reports the family `incomplete` with the
+  count, never a guess. Topics group by retained provider resource identity
+  (`resource` field), and a topic with more items than the 50-item cap records
+  `truncated` with the dropped count. Item `kind`s: `commit`,
+  `authored_pull_request`, `merged_pull_request`, `submitted_pr_review`,
+  `pr_review_comment`, `pr_conversation_comment`, `issue_comment`,
+  `discussion`, `discussion_comment`, `event`.
 - **Calendar** `status` is `complete`/`incomplete`/`empty`/`missing_credentials`.
   Series expand over the full recurrence set RRULE ∪ RDATE − EXDATE with each
   property's own TZID/value form and de-duplication, for timed and all-day

@@ -29,7 +29,7 @@ import (
 // is intentional: they have no semantics for native approvals, write intents or
 // execution history.
 const (
-	AppVersion        = "0.2.0-dev.1"
+	AppVersion        = "0.2.0-dev.2"
 	ProtocolSchema    = 1
 	stateSchema       = 3
 	legacyStateSchema = 1
@@ -858,13 +858,23 @@ const (
 	maxEvidenceMeetings  = 200
 	maxTopicItems        = 50
 	maxGithubFamilyPages = 20
-	// maxSearchResultPages bounds the two search endpoint families (the
-	// authored-PR search and the submitted-review candidate search). The
-	// search endpoint's pagination semantics differ from the rest endpoints
-	// (documented 1,000-result bound, incomplete_results flag), so it carries
-	// its own documented ceiling instead of the shared maxGithubFamilyPages;
-	// reaching it makes the family incomplete, never silently exhausted.
+	// maxSearchResultPages bounds the three search endpoint families (the
+	// authored-PR search, the merged-PR search and the submitted-review
+	// candidate search). The search endpoint's pagination semantics differ
+	// from the rest endpoints (documented 1,000-result bound,
+	// incomplete_results flag), so it carries its own documented ceiling
+	// instead of the shared maxGithubFamilyPages; reaching it makes the
+	// family incomplete, never silently exhausted.
 	maxSearchResultPages = 10
+	// maxIssueTargetLookups bounds how many documented issue lookups
+	// (GET /repos/{o}/{r}/issues/{n}, the only authoritative pull-request
+	// discriminator for an issue comment) the issue_comments family issues per
+	// repository per attempt. Lookups are cached per run, so one PR
+	// conversation with many comments costs one lookup. Exceeding the ceiling
+	// leaves the affected items classified as issue comments and makes the
+	// family incomplete with the honest count — never a guess, never a family
+	// failure.
+	maxIssueTargetLookups = 50
 	// maxErrorBodyBytes bounds how much of a non-200 provider response body is
 	// read for the sanitized family diagnostic (see sanitizeHTTPDiagnostic in
 	// github.go). The snippet is rendered sanitized and bounded: URLs and
@@ -950,7 +960,7 @@ type SourceAttempt struct {
 // preserves the endpoint family, the bound that stopped it, and how many
 // attributable items were retained.
 type FamilyReport struct {
-	Family      string `json:"family"` // commits|authored_pull_requests|submitted_pr_reviews|pr_review_comments|issue_comments|repo_events
+	Family      string `json:"family"` // commits|authored_pull_requests|merged_pull_requests|submitted_pr_reviews|pr_review_comments|issue_comments|repo_events
 	QueriedRepo string `json:"queried_repo"`
 	Count       int    `json:"count"`
 	Status      string `json:"status"` // complete|incomplete|failed|empty|windowed

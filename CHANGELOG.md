@@ -2,8 +2,25 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
-## Unreleased (0.2.0-dev.1)
+## Unreleased (0.2.0-dev.2)
 
+- Collect the merge-PR and comment-in-PR proof-of-work shapes (issue #175):
+  a new `merged_pull_requests` search family attributes a merge only when
+  `merged_by.login` names the configured user and `merged_at` falls inside the
+  day's `[start, end)` window, and the events feed's `PullRequestEvent` maps to
+  the same canonical `gh:{repo}:pr-merge:{number}` identity so provenance
+  merges instead of double counting (a merge whose `merged_at` is outside the
+  day degrades to the generic event, never to a merge attributed to the day). Issue comments are now classified from the
+  documented issue document: a PR conversation comment is
+  `pr_conversation_comment` grouped under the PR, otherwise it stays
+  `issue_comment`; lookups are cached per run and bounded to 50, and an unknown
+  answer or the ceiling marks the family incomplete with the count instead of
+  guessing.
+- Fix overnight staging (issue #173): a midnight-crossing ledger entry
+  (23:00-01:00) now stages its recorded span onto the next local day instead
+  of being read as unparsable and silently lost; zero-duration entries are
+  skipped without aborting the day, and `stage --revise` reports the durable
+  interval ids it replaced.
 - Add the headless skill surface: `timesheet collect`, `draft`, `record` and
   `status` subcommands that construct the same session `serve` uses and drive
   its dispatcher in-process. No protocol, state-schema, store or submission
@@ -18,7 +35,7 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
   idempotently per time block with full source references kept for checking.
 - Add `scripts/tokens.py`: idempotent per-(date, runtime, session) token
   capture from Claude Code or Pi transcripts into `benchmarks/tokens.csv`.
-- Development stamp `0.2.0-dev.1`; release stamping, adapter version and
+- Development stamp `0.2.0-dev.2`; release stamping, adapter version and
   publication remain owner-gated. Existing state, entries and credential paths
   are untouched.
 

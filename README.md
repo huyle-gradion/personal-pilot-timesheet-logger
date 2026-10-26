@@ -1,6 +1,6 @@
 # Timesheet
 
-Application version: **`0.2.0-dev.1`** (unreleased development stamp; the
+Application version: **`0.2.0-dev.2`** (unreleased development stamp; the
 published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
 
 This repository is one timesheet product: a single compiled Go binary owns all

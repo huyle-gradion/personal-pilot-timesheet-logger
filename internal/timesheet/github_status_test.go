@@ -10,9 +10,9 @@ package timesheet
 //   - a fully-walked repo_events family (busy or quiet) reports the dedicated
 //     `windowed` status, never `empty`/`complete`/`incomplete`;
 //   - the aggregate source detail counts only `failed` + `incomplete`
-//     families, so a fully collected day reads complete, not "1 of 6";
+//     families, so a fully collected day reads complete, not "1 of 7";
 //   - a genuine 403 still reports `failed`;
-//   - the two search families run under maxSearchResultPages, not the shared
+//   - the three search families run under maxSearchResultPages, not the shared
 //     REST ceiling;
 //   - a windowed-only day passes the source gate without any acknowledgment.
 
@@ -75,13 +75,19 @@ func syntheticAttributablePage(n int) []map[string]any {
 }
 
 // githubStatusFixture is a loopback provider serving clean defaults for all
-// six collector families. eventsHandler, when non-nil, replaces the default
+// seven collector families. eventsHandler, when non-nil, replaces the default
 // repo-events handler; searchHandler likewise replaces the clean
-// /search/issues default. Counters record how many requests each saw.
+// /search/issues default. issueCommentsHandler and issueLookupHandler replace
+// the issue-comments and issue-document handlers when set before the first
+// request (issue #175 classification tests). Counters record how many requests
+// each saw.
 type githubStatusFixture struct {
-	mux         *http.ServeMux
-	server      *httptest.Server
-	searchCalls *int
+	mux                  *http.ServeMux
+	server               *httptest.Server
+	searchCalls          *int
+	issueCommentsHandler http.HandlerFunc
+	issueLookupHandler   http.HandlerFunc
+	issueLookupCalls     *int
 }
 
 func newGithubStatusFixture(t *testing.T, eventsHandler, searchHandler http.HandlerFunc) *githubStatusFixture {
@@ -98,8 +104,21 @@ func newGithubStatusFixture(t *testing.T, eventsHandler, searchHandler http.Hand
 		_ = json.NewEncoder(w).Encode([]map[string]any{})
 	})
 	f.mux.HandleFunc("/repos/o/r/issues/comments", func(w http.ResponseWriter, r *http.Request) {
+		if f.issueCommentsHandler != nil {
+			f.issueCommentsHandler(w, r)
+			return
+		}
 		jsonOK(w)
 		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	f.issueLookupCalls = new(int)
+	f.mux.HandleFunc("/repos/o/r/issues/", func(w http.ResponseWriter, r *http.Request) {
+		*f.issueLookupCalls++
+		if f.issueLookupHandler != nil {
+			f.issueLookupHandler(w, r)
+			return
+		}
+		http.NotFound(w, r)
 	})
 	f.mux.HandleFunc("/repos/o/r/pulls/0/reviews", func(w http.ResponseWriter, r *http.Request) {
 		jsonOK(w)
@@ -194,7 +213,7 @@ func TestRepoEvents422PastRetainedWindowIsIncomplete(t *testing.T) {
 
 // TestRepoEvents422AggregateCountsOneLimitedFamily pins the aggregate wording:
 // a 422-limited repo_events family among otherwise clean families reads
-// "1 of 6 family queries reported limited or failed coverage" and the source
+// "1 of 7 family queries reported limited or failed coverage" and the source
 // stays incomplete.
 func TestRepoEvents422AggregateCountsOneLimitedFamily(t *testing.T) {
 	f := newGithubStatusFixture(t, func(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +237,7 @@ func TestRepoEvents422AggregateCountsOneLimitedFamily(t *testing.T) {
 	if got.Status != StatusIncomplete {
 		t.Fatalf("source status = %q, want %q", got.Status, StatusIncomplete)
 	}
-	if !strings.Contains(got.Detail, "1 of 6 family queries reported limited or failed coverage") {
+	if !strings.Contains(got.Detail, "1 of 7 family queries reported limited or failed coverage") {
 		t.Fatalf("aggregate detail = %q, want the 1-of-6 bounded-family wording", got.Detail)
 	}
 }
@@ -300,8 +319,8 @@ func TestRepoEvents403StaysFailed(t *testing.T) {
 }
 
 // TestSearchFamiliesBoundToMaxSearchResultPages pins that the dead constant
-// now binds: both search families stop after maxSearchResultPages pages with
-// more pages available, and report the 10-page ceiling in their detail.
+// now binds: each search family stops after maxSearchResultPages pages with
+// more pages available, and reports the 10-page ceiling in its detail.
 func TestSearchFamiliesBoundToMaxSearchResultPages(t *testing.T) {
 	alwaysFullPage := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -317,6 +336,20 @@ func TestSearchFamiliesBoundToMaxSearchResultPages(t *testing.T) {
 	t.Run("authored_pull_requests", func(t *testing.T) {
 		f := newGithubStatusFixture(t, nil, alwaysFullPage)
 		_, report := fetchAuthoredPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, statusTestWindow.Add(24*time.Hour))
+		if *f.searchCalls != maxSearchResultPages {
+			t.Fatalf("search requests = %d, want %d (maxSearchResultPages must bind)", *f.searchCalls, maxSearchResultPages)
+		}
+		if report.Status != StatusIncomplete {
+			t.Fatalf("family status = %q, want %q", report.Status, StatusIncomplete)
+		}
+		if !strings.Contains(report.Detail, fmt.Sprintf("%d-page pagination ceiling", maxSearchResultPages)) {
+			t.Fatalf("detail %q must name the maxSearchResultPages ceiling", report.Detail)
+		}
+	})
+
+	t.Run("merged_pull_requests", func(t *testing.T) {
+		f := newGithubStatusFixture(t, nil, alwaysFullPage)
+		_, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, statusTestWindow.Add(24*time.Hour))
 		if *f.searchCalls != maxSearchResultPages {
 			t.Fatalf("search requests = %d, want %d (maxSearchResultPages must bind)", *f.searchCalls, maxSearchResultPages)
 		}
