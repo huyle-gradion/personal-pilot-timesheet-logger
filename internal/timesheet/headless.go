@@ -84,12 +84,35 @@ type Draft struct {
 
 const draftSourcesPerBlock = 8
 
+// draftSeed is one candidate draft block before the overlap merge: its JSON
+// shape, its same-day span, whether it carries a real clock anchor, and the
+// review topics that attached to it. topics holds indices into the review's
+// topic slice so a cluster head replays them in evidence order, which is the
+// same order record-time source re-attachment folds them in.
+//
+// A seed with startM >= endM (the whole-day fallback, a spanless evidence
+// block, a zero-duration evidence span) is never a merge candidate: it
+// overlaps nothing and keeps its own block.
+type draftSeed struct {
+	blk    DraftBlock
+	startM int
+	endM   int
+	hasM   bool
+	// overflow carries each topic candidate's durable overflow counts,
+	// aligned with blk.TopicCandidates, so compactTopicsRender can attach
+	// combined summaries to the grouped lines after #148's grouping runs.
+	overflow []*topicOverflow
+	topics   []int
+}
+
 // BuildDraft applies the fixed, documented partitioning rule to one review:
 // meetings (not declined, not cancelled, not all-day) become blocks in start
-// order; confirmed intervals outside every meeting become work blocks; topics
-// attach to the first block their time span overlaps; remaining topics form one
-// evidence block; a day with no anchors at all still yields one entry-shaped
-// block so the log never silently skips a day.
+// order; confirmed intervals become work blocks; topics attach to the first
+// block their time span overlaps; remaining topics form one evidence block; a
+// day with no anchors at all still yields one entry-shaped block so the log
+// never silently skips a day. Blocks that strictly overlap merge into one
+// block over the union span (issue #183), so concurrent POWs are named
+// together and a meeting absorbs the POWs inside it.
 func BuildDraft(review Review, appVersion string) Draft {
 	d := Draft{
 		Date:       review.Date,
@@ -127,17 +150,7 @@ func BuildDraft(review Review, appVersion string) Draft {
 	// defect this closes).
 	dayLoc := DayLocationOrNil(review.Timezone)
 
-	type block struct {
-		blk    DraftBlock
-		startM int
-		endM   int
-		hasM   bool
-		// overflow carries each topic candidate's durable overflow counts,
-		// aligned with blk.TopicCandidates, so compactTopicsRender can attach
-		// combined summaries to the grouped lines after #148's grouping runs.
-		overflow []*topicOverflow
-	}
-	var blocks []block
+	var blocks []draftSeed
 	eligibleMeetings := 0
 
 	for _, m := range meetings {
@@ -150,7 +163,7 @@ func BuildDraft(review Review, appVersion string) Draft {
 			continue
 		}
 		eligibleMeetings++
-		blocks = append(blocks, block{
+		blocks = append(blocks, draftSeed{
 			blk: DraftBlock{
 				Kind:         "meeting",
 				Start:        clockString(startM),
@@ -162,23 +175,16 @@ func BuildDraft(review Review, appVersion string) Draft {
 		})
 	}
 
+	// A work segment is kept even when it overlaps a meeting or another work
+	// segment: the overlap merge below folds concurrent POWs into one block
+	// instead of dropping the later one (issue #183).
 	for _, seg := range review.Confirmed.Segments {
 		startM, okS := draftClock(seg.Start)
 		endM, okE := draftClock(seg.End)
 		if !okS || !okE || endM <= startM {
 			continue
 		}
-		overlaps := false
-		for i := range blocks {
-			if blocks[i].hasM && startM < blocks[i].endM && endM > blocks[i].startM {
-				overlaps = true
-				break
-			}
-		}
-		if overlaps {
-			continue
-		}
-		blocks = append(blocks, block{
+		blocks = append(blocks, draftSeed{
 			blk: DraftBlock{
 				Kind:         "work",
 				Start:        clockString(startM),
@@ -198,7 +204,8 @@ func BuildDraft(review Review, appVersion string) Draft {
 		targets[i] = draftSpan{index: i, startM: blocks[i].startM, endM: blocks[i].endM}
 	}
 	var unallocated []TopicCandidate
-	for _, t := range topics {
+	var unallocatedIdx []int
+	for ti, t := range topics {
 		firstM, okF := anchorClock(t.FirstAt, dayLoc)
 		lastM, okL := anchorClock(t.LastAt, dayLoc)
 		if okF && okL {
@@ -209,19 +216,22 @@ func BuildDraft(review Review, appVersion string) Draft {
 				blocks[i].blk.TopicCandidates = append(blocks[i].blk.TopicCandidates, t.Title)
 				blocks[i].overflow = append(blocks[i].overflow, topicOverflowOf(t, dayLoc))
 				blocks[i].blk = mergeTopicItems(blocks[i].blk, t)
+				blocks[i].topics = append(blocks[i].topics, ti)
 				continue
 			}
 		}
 		unallocated = append(unallocated, t)
+		unallocatedIdx = append(unallocatedIdx, ti)
 	}
 
 	if len(unallocated) > 0 {
-		eb := block{blk: DraftBlock{Kind: "evidence", Completeness: completeness}}
+		eb := draftSeed{blk: DraftBlock{Kind: "evidence", Completeness: completeness}}
 		minM, maxM := -1, -1
-		for _, t := range unallocated {
+		for k, t := range unallocated {
 			eb.blk.TopicCandidates = append(eb.blk.TopicCandidates, t.Title)
 			eb.overflow = append(eb.overflow, topicOverflowOf(t, dayLoc))
 			eb.blk = mergeTopicItems(eb.blk, t)
+			eb.topics = append(eb.topics, unallocatedIdx[k])
 			for _, item := range t.Items {
 				if m, ok := anchorClock(item.Time, dayLoc); ok {
 					if minM == -1 || m < minM {
@@ -235,6 +245,7 @@ func BuildDraft(review Review, appVersion string) Draft {
 		}
 		if minM >= 0 && maxM >= minM {
 			eb.blk.Start, eb.blk.End = clockString(minM), clockString(maxM)
+			eb.startM, eb.endM = minM, maxM
 		} else {
 			eb.blk.Start, eb.blk.End = "", ""
 		}
@@ -242,7 +253,7 @@ func BuildDraft(review Review, appVersion string) Draft {
 	}
 
 	if len(blocks) == 0 {
-		blocks = append(blocks, block{blk: DraftBlock{
+		blocks = append(blocks, draftSeed{blk: DraftBlock{
 			Kind:         "day",
 			Completeness: completeness,
 		}})
@@ -250,6 +261,8 @@ func BuildDraft(review Review, appVersion string) Draft {
 	if eligibleMeetings == 0 {
 		d.DayNote = "no calendar events"
 	}
+
+	blocks = mergeDraftSeeds(blocks, topics, dayLoc)
 
 	sort.SliceStable(blocks, func(i, j int) bool {
 		if blocks[i].hasM != blocks[j].hasM {
@@ -275,6 +288,107 @@ func BuildDraft(review Review, appVersion string) Draft {
 		d.Blocks = append(d.Blocks, blocks[i].blk)
 	}
 	return d
+}
+
+// mergeDraftSeeds folds each connected component of strictly overlapping
+// seeds into one block over the union span. A cluster holding a meeting
+// renders a meeting, because a meeting absorbs the POWs inside it rather than
+// the other way round: the meeting's title stays and the absorbed POWs are
+// named through their folded topic candidates. Every other cluster keeps the
+// head's kind, joins each contributor's title, and replays the contributors'
+// topics in evidence order, which is the order record-time re-attachment
+// folds them in.
+func mergeDraftSeeds(seeds []draftSeed, topics []TopicCandidate, dayLoc *time.Location) []draftSeed {
+	var spans []powSpan
+	var at []int
+	for i := range seeds {
+		if seeds[i].startM >= seeds[i].endM {
+			continue
+		}
+		spans = append(spans, powSpan{
+			id:     seeds[i].blk.Kind + "-" + seeds[i].blk.Start + "-" + seeds[i].blk.End,
+			kind:   seeds[i].blk.Kind,
+			startM: seeds[i].startM, endM: seeds[i].endM,
+		})
+		at = append(at, i)
+	}
+	if len(spans) == 0 {
+		return seeds
+	}
+	merged := make([]draftSeed, 0, len(seeds))
+	inCluster := make([]bool, len(seeds))
+	for _, cluster := range mergeSpans(spans) {
+		members := make([]int, len(cluster))
+		for k, si := range cluster {
+			members[k] = at[si]
+			inCluster[at[si]] = true
+		}
+		merged = append(merged, foldDraftCluster(seeds, members, topics, dayLoc))
+	}
+	for i := range seeds {
+		if !inCluster[i] {
+			merged = append(merged, seeds[i])
+		}
+	}
+	return merged
+}
+
+// foldDraftCluster renders one cluster. A single-member cluster is returned
+// untouched so a day with no overlap keeps its exact previous shape. A
+// multi-member cluster takes the head's start (the earliest in the cluster),
+// the latest end, and the union's clock strings.
+func foldDraftCluster(seeds []draftSeed, members []int, topics []TopicCandidate, dayLoc *time.Location) draftSeed {
+	head := seeds[members[0]]
+	if len(members) == 1 {
+		return head
+	}
+	out := draftSeed{
+		blk: DraftBlock{
+			Kind:         head.blk.Kind,
+			Start:        head.blk.Start,
+			Completeness: head.blk.Completeness,
+		},
+		startM: head.startM,
+		endM:   head.endM,
+		hasM:   head.hasM,
+	}
+	var titles []string
+	meetingTitle := ""
+	for _, i := range members {
+		s := seeds[i]
+		if s.hasM {
+			out.hasM = true
+		}
+		if s.endM > out.endM {
+			out.endM = s.endM
+		}
+		if s.blk.Kind == "meeting" {
+			out.blk.Kind = "meeting"
+			if meetingTitle == "" {
+				meetingTitle = s.blk.Title
+			}
+			continue
+		}
+		titles = append(titles, s.blk.Title)
+	}
+	out.blk.End = clockString(out.endM)
+	if out.blk.Kind == "meeting" {
+		out.blk.Title = meetingTitle
+	} else {
+		out.blk.Title = joinText(titles...)
+	}
+	var topicIdx []int
+	for _, i := range members {
+		topicIdx = append(topicIdx, seeds[i].topics...)
+	}
+	sort.Ints(topicIdx)
+	for _, ti := range topicIdx {
+		t := topics[ti]
+		out.blk.TopicCandidates = append(out.blk.TopicCandidates, t.Title)
+		out.overflow = append(out.overflow, topicOverflowOf(t, dayLoc))
+		out.blk = mergeTopicItems(out.blk, t)
+	}
+	return out
 }
 
 // Work-hours annotation reasons. These tokens are contractual: they appear in
