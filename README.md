@@ -50,12 +50,14 @@ compact one-day draft JSON produced by:
 ```bash
 bin/timesheet collect --config <config> [--env-file <env>] [--date <date>]
 bin/timesheet draft   --config <config> [--env-file <env>] [--date <date>]
+bin/timesheet run     --config <config> [--env-file <env>] [--date <date>]
 bin/timesheet record  --config <config> [--date <date>] --file reviewed.json [--replace]
 bin/timesheet status  --config <config> [--date <date>]
 ```
 
 For these five commands an omitted `--date` means today in the configured
-timezone, resolved by the binary; an explicit `--date` always wins.
+timezone, resolved by the binary; a supplied `--date` always wins and must be a
+real date.
 
 `record --replace` (issue #162) treats the reviewed file as the day's complete
 content: all blocks for the day are replaced with the file's blocks (ids from

@@ -40,11 +40,25 @@ func dateFlagUsage(name string) string {
 	return "day to operate on, YYYY-MM-DD (required)"
 }
 
-// validateDate applies the one requiredness decision to a parsed --date: an
-// omitted date is accepted only where it means today, and a date that is given
-// is always validated. An explicit date always wins.
-func validateDate(name, date string) error {
-	if strings.TrimSpace(date) == "" {
+// dateSupplied reports whether the caller gave --date at all. The flag package
+// stores the same "" for an omitted flag and an explicit --date "", so the only
+// honest signal is which flags it recorded as set during Parse.
+func dateSupplied(flags *flag.FlagSet) bool {
+	supplied := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "date" {
+			supplied = true
+		}
+	})
+	return supplied
+}
+
+// validateDate applies the one requiredness decision to a parsed --date. Only a
+// flag that was never given may mean today, and only for dateOptionalCommands.
+// Any supplied value, including an empty or whitespace-only one, must parse as
+// a real date; nothing is trimmed into acceptance.
+func validateDate(name, date string, supplied bool) error {
+	if !supplied {
 		if !dateOptionalCommands[name] {
 			return fmt.Errorf("%s requires --date", name)
 		}
@@ -78,16 +92,16 @@ func parseHeadlessFlags(name string, args []string) (*headlessFlags, error) {
 	if f.configPath == "" {
 		return nil, fmt.Errorf("%s requires --config", name)
 	}
-	if err := validateDate(name, f.date); err != nil {
+	if err := validateDate(name, f.date, dateSupplied(flags)); err != nil {
 		return nil, err
 	}
 	return f, nil
 }
 
-// recordFlags carries the record subcommand's inputs: --config/--env-file/
-// --date always, plus exactly one input mode — the recovery --file reviewed
-// JSON, or the descriptions-only --draft + --descriptions pair — and the
-// optional --replace merge mode.
+// recordFlags carries the record subcommand's inputs: --config and --env-file,
+// --date (omitted means today in the configured timezone), exactly one input
+// mode — the recovery --file reviewed JSON, or the descriptions-only --draft +
+// --descriptions pair — and the optional --replace merge mode.
 type recordFlags struct {
 	configPath   string
 	envFile      string
@@ -124,7 +138,7 @@ func parseRecordFlags(args []string) (*recordFlags, error) {
 	if f.configPath == "" {
 		return nil, fmt.Errorf("record requires --config")
 	}
-	if err := validateDate("record", f.date); err != nil {
+	if err := validateDate("record", f.date, dateSupplied(flags)); err != nil {
 		return nil, err
 	}
 	if f.file != "" && (f.draft != "" || f.descriptions != "") {
@@ -293,10 +307,11 @@ func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, string, e
 var clockNow = time.Now
 
 // resolveDay returns the day a command operates on. An explicit date always
-// wins; an omitted one is today in the configured timezone, so a one-command
-// daily driver never has to compute the local date from the host clock.
+// wins; only an empty date, which means the flag was never given, is today in
+// the configured timezone, so a one-command daily driver never has to compute
+// the local date from the host clock.
 func resolveDay(configPath, date string) (string, error) {
-	if strings.TrimSpace(date) != "" {
+	if date != "" {
 		return date, nil
 	}
 	cfg, err := timesheet.LoadConfig(configPath)
@@ -541,7 +556,7 @@ func parseFinalizeFlags(name string, args []string) (*finalizeFlags, error) {
 	if f.configPath == "" {
 		return nil, fmt.Errorf("%s requires --config", name)
 	}
-	if err := validateDate(name, f.date); err != nil {
+	if err := validateDate(name, f.date, dateSupplied(flags)); err != nil {
 		return nil, err
 	}
 	return f, nil

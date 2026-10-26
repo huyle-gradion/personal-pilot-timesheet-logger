@@ -249,6 +249,71 @@ func TestDayScopedCommandWithoutDateStillRejects(t *testing.T) {
 	}
 }
 
+// TestSuppliedDateMustParseAsADate pins that only a flag that was never given
+// means today: an explicit empty or whitespace-only --date is a malformed
+// value, never a request for the current day, and it performs no work.
+func TestSuppliedDateMustParseAsADate(t *testing.T) {
+	pinClock(t)
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	cfg, statePath := writeSyntheticConfig(t, "Asia/Ho_Chi_Minh")
+	dir := t.TempDir()
+	reviewed := writeReviewed(t, dir, "2026-10-27", "b1", "work")
+
+	commands := []struct {
+		name string
+		run  func([]string) error
+		args []string
+	}{
+		{name: "collect", run: runCollect, args: []string{"--config", cfg}},
+		{name: "draft", run: runDraft, args: []string{"--config", cfg}},
+		{name: "run", run: runRun, args: []string{"--config", cfg}},
+		{name: "record", run: runRecord, args: []string{"--config", cfg, "--file", reviewed}},
+		{name: "status", run: runStatus, args: []string{"--config", cfg}},
+	}
+	values := []struct{ label, value string }{
+		{label: "whitespace", value: " "},
+		{label: "empty", value: ""},
+	}
+	for _, command := range commands {
+		for _, value := range values {
+			t.Run(command.name+"/"+value.label, func(t *testing.T) {
+				args := append(append([]string{}, command.args...), "--date", value.value)
+				out, _, err := captureOutput(t, func() error {
+					return command.run(args)
+				})
+				want := command.name + ": --date must be YYYY-MM-DD"
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("%s --date %q: err = %v, want %q", command.name, value.value, err, want)
+				}
+				if len(out) != 0 {
+					t.Fatalf("%s --date %q printed output, want none: %s", command.name, value.value, out)
+				}
+			})
+		}
+	}
+
+	// A command that always requires a date rejects a whitespace value the same
+	// way rather than treating it as supplied-and-valid.
+	t.Run("stage/whitespace", func(t *testing.T) {
+		err := runStage([]string{"--config", cfg, "--date", " "})
+		if err == nil || !strings.Contains(err.Error(), "stage: --date must be YYYY-MM-DD") {
+			t.Fatalf("stage --date %q: err = %v, want %q", " ", err, "stage: --date must be YYYY-MM-DD")
+		}
+	})
+
+	// No rejected invocation may collect, record, or write an artifact.
+	if _, err := os.Stat(filepath.Join(tmp, "timesheet")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a rejected --date wrote an artifact directory: %v", err)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a rejected --date opened the store: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(statePath), "entries")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a rejected --date wrote entries: %v", err)
+	}
+}
+
 // TestDateFlagHelpNamesOmission pins --help to the same requiredness decision
 // as the parser for every command that accepts an omitted date.
 func TestDateFlagHelpNamesOmission(t *testing.T) {
