@@ -29,7 +29,7 @@ import (
 // is intentional: they have no semantics for native approvals, write intents or
 // execution history.
 const (
-	AppVersion        = "0.2.0-dev.3"
+	AppVersion        = "0.2.0-dev.4"
 	ProtocolSchema    = 1
 	stateSchema       = 3
 	legacyStateSchema = 1

@@ -83,3 +83,20 @@ func TestDraftWithoutWorkHoursUnannotated(t *testing.T) {
 		t.Fatalf("no-policy draft annotated a block: %+v", draft.Blocks)
 	}
 }
+
+// TestParseHeadlessFlagsAllowsOmittedDateForDailyDriver: the one-command daily
+// driver passes no --date, so collect/draft/run must accept its absence while
+// still rejecting a malformed explicit date (issue #179).
+func TestParseHeadlessFlagsAllowsOmittedDateForDailyDriver(t *testing.T) {
+	for _, name := range []string{"collect", "draft", "run"} {
+		if _, err := parseHeadlessFlags(name, []string{"--config", "/tmp/config.json"}, true, false); err != nil {
+			t.Fatalf("%s without --date: %v", name, err)
+		}
+		if _, err := parseHeadlessFlags(name, []string{"--config", "/tmp/config.json", "--date", "26-10-2026"}, true, false); err == nil {
+			t.Fatalf("%s must still reject a malformed --date", name)
+		}
+		if _, err := parseHeadlessFlags(name, []string{"--config", "/tmp/config.json", "--date", "2026-10-26"}, true, false); err != nil {
+			t.Fatalf("%s with a valid --date: %v", name, err)
+		}
+	}
+}

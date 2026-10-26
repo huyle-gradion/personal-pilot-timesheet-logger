@@ -2,7 +2,13 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
-## Unreleased (0.2.0-dev.3)
+## Unreleased (0.2.0-dev.4)
+
+- Make `log today's work` one command (issue #179): `collect`, `draft` and `run`
+  accept an omitted `--date`, which the binary resolves to today in the
+  configured timezone instead of trusting the host clock, and Pi gets
+  `.pi/prompts/timesheet.md` so `/timesheet log today work` reaches the skill
+  with no Node adapter in the path. An explicit `--date` still wins.
 
 - Annotate the one-day draft from an optional `work_hours` policy (issue #174):
   `days` use exactly `mon`…`sun` and one to four non-overlapping same-day
@@ -53,7 +59,7 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
   idempotently per time block with full source references kept for checking.
 - Add `scripts/tokens.py`: idempotent per-(date, runtime, session) token
   capture from Claude Code or Pi transcripts into `benchmarks/tokens.csv`.
-- Development stamp `0.2.0-dev.3`; release stamping, adapter version and
+- Development stamp `0.2.0-dev.4`; release stamping, adapter version and
   publication remain owner-gated. Existing state, entries and credential paths
   are untouched.
 

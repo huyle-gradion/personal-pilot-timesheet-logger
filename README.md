@@ -1,6 +1,6 @@
 # Timesheet
 
-Application version: **`0.2.0-dev.3`** (unreleased development stamp; the
+Application version: **`0.2.0-dev.4`** (unreleased development stamp; the
 published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
 
 This repository is one timesheet product: a single compiled Go binary owns all
@@ -34,6 +34,11 @@ flag), startup failure and stream failure exit `1`. Usage errors make no
 remote call.
 
 ## Daily log skill
+
+Daily driver, in a Pi session: type `/timesheet log today work`. Pi expands
+`.pi/prompts/timesheet.md` into the skill below, and the binary resolves
+"today" in the configured timezone, so no Node launcher is involved. The
+launcher and TUI remain available as an optional surface, not a requirement.
 
 The assignment deliverable is a runner-agnostic skill folder:
 `.agents/skills/timesheet/SKILL.md`, picked up by Claude Code

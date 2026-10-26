@@ -45,10 +45,14 @@ func parseHeadlessFlags(name string, args []string, needDate, needFile bool) (*h
 	if f.configPath == "" {
 		return nil, fmt.Errorf("%s requires --config", name)
 	}
-	if needDate {
-		if f.date == "" {
-			return nil, fmt.Errorf("%s requires --date", name)
-		}
+	// --date is optional only for the daily-driver commands, where an omitted
+	// date means today in the configured timezone, resolved by the binary
+	// (issue #179). Every other command still requires it. An explicit date is
+	// always validated and always wins.
+	if needDate && f.date == "" && !dateOptionalCommands[name] {
+		return nil, fmt.Errorf("%s requires --date", name)
+	}
+	if needDate && f.date != "" {
 		if _, err := time.Parse("2006-01-02", f.date); err != nil {
 			return nil, fmt.Errorf("%s: --date must be YYYY-MM-DD", name)
 		}
@@ -197,15 +201,19 @@ func runCollect(args []string) error {
 	if err != nil {
 		return err
 	}
+	day, err := resolveDay(f.configPath, f.date)
+	if err != nil {
+		return err
+	}
 	h, err := openHeadless(f.configPath, f.envFile)
 	if err != nil {
 		return err
 	}
 	defer h.done()
-	if _, err := h.call("open_day", timesheet.Request{Day: f.date}); err != nil {
+	if _, err := h.call("open_day", timesheet.Request{Day: day}); err != nil {
 		return err
 	}
-	res, err := h.call("collect", timesheet.Request{Day: f.date})
+	res, err := h.call("collect", timesheet.Request{Day: day})
 	if err != nil {
 		return err
 	}
@@ -261,13 +269,35 @@ func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, string, e
 	return draft, collectionID, nil
 }
 
+// dateOptionalCommands are the commands a daily driver runs without a date;
+// the binary resolves today in the configured timezone for them.
+var dateOptionalCommands = map[string]bool{"collect": true, "draft": true, "run": true}
+
+// resolveDay returns the day a command operates on. An explicit date always
+// wins; an omitted one is today in the configured timezone, so a one-command
+// daily driver never has to compute the local date from the host clock.
+func resolveDay(configPath, date string) (string, error) {
+	if strings.TrimSpace(date) != "" {
+		return date, nil
+	}
+	cfg, err := timesheet.LoadConfig(configPath)
+	if err != nil {
+		return "", err
+	}
+	return timesheet.TodayIn(cfg.Timezone, time.Now())
+}
+
 // runDraft collects the day and prints the compact draft for the judgment step.
 func runDraft(args []string) error {
 	f, err := parseHeadlessFlags("draft", args, true, false)
 	if err != nil {
 		return err
 	}
-	draft, _, err := buildDayDraft(f.configPath, f.envFile, f.date)
+	day, err := resolveDay(f.configPath, f.date)
+	if err != nil {
+		return err
+	}
+	draft, _, err := buildDayDraft(f.configPath, f.envFile, day)
 	if err != nil {
 		return err
 	}
@@ -289,7 +319,11 @@ func runRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	draft, collectionID, err := buildDayDraft(f.configPath, f.envFile, f.date)
+	day, err := resolveDay(f.configPath, f.date)
+	if err != nil {
+		return err
+	}
+	draft, collectionID, err := buildDayDraft(f.configPath, f.envFile, day)
 	if err != nil {
 		return err
 	}

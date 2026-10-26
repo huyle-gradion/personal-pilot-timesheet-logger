@@ -1,6 +1,6 @@
-# Timesheet interface (`0.2.0-dev.3`)
+# Timesheet interface (`0.2.0-dev.4`)
 
-Application version: `0.2.0-dev.3` (unreleased development stamp; the
+Application version: `0.2.0-dev.4` (unreleased development stamp; the
 public release line remains `0.1.1` until this ships).
 Protocol schema: `1`. State schema: `3`.
 
@@ -36,9 +36,9 @@ complete observation.
 ```text
 timesheet version
 timesheet serve --config <path> --env-file <path>
-timesheet collect --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-timesheet draft --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-timesheet run --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+timesheet collect --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
+timesheet draft --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
+timesheet run --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 timesheet record --config <path> --date <YYYY-MM-DD> --file <reviewed.json>
 timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 ```
@@ -76,6 +76,10 @@ store and never interferes with a running `serve`.
 layer of the timesheet skill (`.agents/skills/timesheet/`). They construct
 the same session `serve` uses and drive its request dispatcher in-process;
 there is no second protocol and no new request grammar.
+
+`collect`, `draft` and `run` treat an omitted `--date` as today in the
+configured `timezone`, resolved by the binary rather than the host clock; an
+explicit `--date` always wins. The resolved date appears as `date` in the draft.
 
 - `collect` performs exactly one bounded collection attempt for the day and
   prints its result (per-source status, topic and meeting counts).

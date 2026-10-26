@@ -809,6 +809,21 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
+// TodayIn resolves the local date of one instant in a configured timezone.
+// The daily driver calls this with time.Now so an omitted --date means today on
+// the recorded day's clock, not the host clock: a UTC host and an
+// Asia/Ho_Chi_Minh user disagree for seven hours every evening.
+func TodayIn(timezone string, now time.Time) (string, error) {
+	if strings.TrimSpace(timezone) == "" {
+		return "", newError(CodeConfigInvalid, "config: timezone is required to resolve today")
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return "", newError(CodeConfigInvalid, "config: timezone is not a recognised IANA timezone")
+	}
+	return now.In(loc).Format("2006-01-02"), nil
+}
+
 // DayLocationOrNil resolves a recorded day's IANA timezone for anchor
 // conversion. An empty or unloadable zone yields nil, which means "take the
 // anchor at its own offset": empty time.LoadLocation("") would otherwise

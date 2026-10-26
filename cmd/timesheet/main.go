@@ -16,9 +16,9 @@ func usage() {
 Usage:
   timesheet version
   timesheet serve --config <path> --env-file <path>
-  timesheet collect --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-  timesheet draft --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-  timesheet run --config <path> [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet collect --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
+  timesheet draft --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
+  timesheet run --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet record --config <path> --date <YYYY-MM-DD> (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>) [--replace]
   timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet stage --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>] [--revise]

@@ -187,7 +187,6 @@ func TestRunFlagErrors(t *testing.T) {
 		want string
 	}{
 		{name: "missing config", args: []string{"--date", "2026-10-20"}, want: "run requires --config"},
-		{name: "missing date", args: []string{"--config", cfg}, want: "run requires --date"},
 		{name: "bad date format", args: []string{"--config", cfg, "--date", "20-10-2026"}, want: "run: --date must be YYYY-MM-DD"},
 		{name: "positional args", args: []string{"--config", cfg, "--date", "2026-10-20", "extra"}, want: "run does not accept positional arguments"},
 	}
@@ -199,6 +198,11 @@ func TestRunFlagErrors(t *testing.T) {
 	}
 	if !errors.Is(runRun([]string{"--help"}), flag.ErrHelp) {
 		t.Fatalf("--help should surface flag.ErrHelp, got %v", runRun([]string{"--help"}))
+	}
+	// Issue #179: an omitted --date is valid for the daily driver and resolves
+	// today in the configured timezone.
+	if err := runRun([]string{"--config", cfg}); err != nil {
+		t.Fatalf("run without --date must resolve today, got %v", err)
 	}
 }
 
