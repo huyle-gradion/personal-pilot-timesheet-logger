@@ -134,6 +134,12 @@ func TestStageReviseReplacesFinalizedDayWithChunks(t *testing.T) {
 	if !receipt.Refinalized || receipt.Replaced != 1 {
 		t.Fatalf("revise receipt = %+v, want refinalized with 1 replaced interval", receipt)
 	}
+	// The pre-derivation removals are reported: the old durable interval this
+	// revision replaced appears in receipt.Removed by its durable id even though
+	// no derivation of this run removed it (issue #173).
+	if len(receipt.Removed) != 1 || receipt.Removed[0].IntervalID != "iv-overlong-1" {
+		t.Fatalf("revise removed = %+v, want the replaced durable interval iv-overlong-1", receipt.Removed)
+	}
 	if receipt.StagedIntervals != 3 {
 		t.Fatalf("revise staged_intervals = %d, want 3 (2 chunks + 1 meeting)", receipt.StagedIntervals)
 	}
@@ -161,6 +167,17 @@ func TestStageReviseReplacesFinalizedDayWithChunks(t *testing.T) {
 		t.Fatalf("re-record ledger without the meeting: %v", err)
 	}
 	second := runStageCapture(t, []string{"--config", cfg, "--date", testDate, "--revise"})
+	// Every pre-derivation removal of the second revise is the durable set the
+	// first revise saved, reported by its own ids.
+	removed := map[string]bool{}
+	for _, ref := range second.Removed {
+		removed[ref.IntervalID] = true
+	}
+	for _, iv := range day.Confirmed {
+		if !removed[iv.ID] {
+			t.Fatalf("second revise removed = %+v, want the durable interval %s it replaced", second.Removed, iv.ID)
+		}
+	}
 	day = readDurableDay(t, cfg, testDate)
 	if len(day.Confirmed) != 2 || second.StagedIntervals != 2 {
 		t.Fatalf("after ledger removal: confirmed = %d, staged = %d; want only the 2 chunks", len(day.Confirmed), second.StagedIntervals)

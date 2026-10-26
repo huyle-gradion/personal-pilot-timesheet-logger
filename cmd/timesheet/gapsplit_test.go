@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
@@ -152,4 +153,107 @@ func TestEffectiveEntrySpansDisjointUnchanged(t *testing.T) {
 	})
 	assertSpans(t, "a", spansOf(t, m, "a"), [][2]string{{"09:00", "10:00"}})
 	assertSpans(t, "b", spansOf(t, m, "b"), [][2]string{{"11:00", "11:15"}})
+}
+
+// TestStageUnparsableTimesSkipReason: an entry whose anchors are not times the
+// review carries is skipped with its OWN reason naming the bad times — never
+// with the fully-claimed reason, which only genuine duplicates may carry
+// (issue #173). The day's other entries still stage.
+func TestStageUnparsableTimesSkipReason(t *testing.T) {
+	cfg := writeTestConfig(t)
+	seedEntries(t, cfg, testDate, []timesheet.ReviewedBlock{
+		timedBlock("bad-1", "23:00", "1am", "Block with a malformed end time"),
+		timedBlock("good-1", "09:00", "10:00", "Clean block"),
+	})
+	receipt := runStageCapture(t, []string{"--config", cfg, "--date", testDate})
+	if len(receipt.Skipped) != 1 || receipt.Skipped[0].BlockID != "bad-1" {
+		t.Fatalf("skipped = %+v, want exactly bad-1", receipt.Skipped)
+	}
+	reason := receipt.Skipped[0].Reason
+	if !strings.Contains(reason, "cannot be parsed") || !strings.Contains(reason, "1am") {
+		t.Fatalf("skip reason = %q, want the unparsable-times reason naming the bad end time", reason)
+	}
+	if strings.Contains(reason, "fully claimed") {
+		t.Fatalf("skip reason = %q, want the fully-claimed reason reserved for genuinely claimed entries", reason)
+	}
+	if len(receipt.Staged) != 1 || receipt.Staged[0].BlockID != "good-1" {
+		t.Fatalf("staged = %+v, want only the clean block", receipt.Staged)
+	}
+}
+
+// TestStageZeroDurationEntrySkipReason: a 09:00→09:00 entry is NOT an overnight
+// span — it has zero duration, and the interval op refuses start == end. Passing
+// it through the overnight branch aborted the whole stage command with
+// `invalid_interval` and blocked every other entry of the day (issue #173). It is
+// skipped with its own reason, and a valid block on the same day still stages.
+func TestStageZeroDurationEntrySkipReason(t *testing.T) {
+	cfg := writeTestConfig(t)
+	seedEntries(t, cfg, testDate, []timesheet.ReviewedBlock{
+		timedBlock("zero-1", "09:00", "09:00", "Block with no duration"),
+		timedBlock("good-1", "10:00", "11:00", "Clean block"),
+	})
+	receipt := runStageCapture(t, []string{"--config", cfg, "--date", testDate})
+	if len(receipt.Skipped) != 1 || receipt.Skipped[0].BlockID != "zero-1" {
+		t.Fatalf("skipped = %+v, want exactly zero-1", receipt.Skipped)
+	}
+	reason := receipt.Skipped[0].Reason
+	if !strings.Contains(reason, "zero duration") || !strings.Contains(reason, "09:00") {
+		t.Fatalf("skip reason = %q, want the zero-duration reason naming the entry's times", reason)
+	}
+	if strings.Contains(reason, "fully claimed") {
+		t.Fatalf("skip reason = %q, want the fully-claimed reason reserved for genuinely claimed entries", reason)
+	}
+	if len(receipt.Staged) != 1 || receipt.Staged[0].BlockID != "good-1" {
+		t.Fatalf("staged = %+v, want only the clean block (no whole-day abort)", receipt.Staged)
+	}
+	if receipt.StagedIntervals != 1 {
+		t.Fatalf("staged_intervals = %d, want 1", receipt.StagedIntervals)
+	}
+}
+
+// TestStageOvernightBlockEndToEnd is the issue #173 regression: the gap-aware
+// resolver excludes a span whose end is not after its start, and the derivation
+// then reported the block as "fully claimed by more specific entries" and
+// dropped it — silent loss of a real overnight block. A 23:00→01:00 block must
+// stage as ONE overnight interval, survive confirm and save, and never carry
+// the false fully-claimed reason.
+func TestStageOvernightBlockEndToEnd(t *testing.T) {
+	cfg := writeTestConfig(t)
+	seedEntries(t, cfg, testDate, []timesheet.ReviewedBlock{
+		timedBlock("night-1", "23:00", "01:00", "Overnight release watch"),
+	})
+	receipt := runStageCapture(t, []string{"--config", cfg, "--date", testDate})
+	for _, skip := range receipt.Skipped {
+		if strings.Contains(skip.Reason, "fully claimed") {
+			t.Fatalf("overnight block skipped as %q, want it staged as one interval", skip.Reason)
+		}
+	}
+	if len(receipt.Skipped) != 0 {
+		t.Fatalf("skipped = %+v, want no skips", receipt.Skipped)
+	}
+	if len(receipt.Staged) != 1 {
+		t.Fatalf("staged = %+v, want the block's single overnight interval", receipt.Staged)
+	}
+	if ref := receipt.Staged[0]; ref.BlockID != "night-1" || ref.Chunk != 0 || ref.Chunks != 0 {
+		t.Fatalf("staged ref = %+v, want night-1 as one unsplit interval", ref)
+	}
+	if err := runConfirm([]string{"--config", cfg, "--date", testDate}); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if err := runSave([]string{"--config", cfg, "--date", testDate}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	day := readDurableDay(t, cfg, testDate)
+	if len(day.Confirmed) != 1 {
+		t.Fatalf("confirmed = %+v, want the single overnight interval", day.Confirmed)
+	}
+	if iv := day.Confirmed[0]; iv.Start != "23:00" || iv.End != "01:00" {
+		t.Fatalf("confirmed interval = %s-%s, want the recorded span 23:00-01:00", iv.Start, iv.End)
+	}
+	// The saved revision's view counts only the part on the starting local day
+	// (23:00-24:00); the 01:00 tail is the next day's allocation — the same
+	// cross-midnight split every overnight interval gets.
+	if n := len(day.History); n == 0 || day.History[n-1].TotalMinutes != 60 {
+		t.Fatalf("history = %+v, want the saved revision's 60 minutes on the starting day", day.History)
+	}
 }

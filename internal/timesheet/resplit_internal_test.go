@@ -9,7 +9,9 @@ import (
 
 // TestSanitizeProviderDetail: the write-receipt detail is bounded, control
 // characters and URLs are stripped, and credential-bearing query strings never
-// survive (issue #167).
+// survive (issue #167). URL stripping is the ONLY removal promised — text
+// outside a URL is passed through — and the effective bound is the sanitizer's
+// own 240 runes, not maxDetailRunes (issue #173).
 func TestSanitizeProviderDetail(t *testing.T) {
 	raw := "Entry exceeds the 4 hour limit.\nSee https://workspace.gradion.com/api/mcp?token=ghp_secret123 for details.\r\n\x00"
 	got := sanitizeProviderDetail(raw)
@@ -24,6 +26,10 @@ func TestSanitizeProviderDetail(t *testing.T) {
 	}
 	if got != truncateRunes(got, maxDetailRunes) {
 		t.Fatalf("sanitizeProviderDetail = %q, want it rune-bounded", got)
+	}
+	long := sanitizeProviderDetail(strings.Repeat("x", maxDetailRunes*4))
+	if n := len([]rune(long)); n > maxTitleRunes+1 {
+		t.Fatalf("sanitizeProviderDetail bound = %d runes, want the documented 240 (+ellipsis)", n)
 	}
 }
 

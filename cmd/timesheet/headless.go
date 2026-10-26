@@ -596,7 +596,7 @@ func parseDecideFlags(args []string) (*decideFlags, error) {
 // ref per chunk: Chunk is the 1-based chunk number and Chunks the total, both
 // omitted for unsplit single-interval blocks.
 type StageBlockRef struct {
-	BlockID    string `json:"block_id"`
+	BlockID    string `json:"block_id,omitempty"`
 	IntervalID string `json:"interval_id,omitempty"`
 	Chunk      int    `json:"chunk,omitempty"`
 	Chunks     int    `json:"chunks,omitempty"`
@@ -719,16 +719,44 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 			})
 			continue
 		}
-		var spans [][2]string
-		for _, part := range effective[id] {
-			spans = append(spans, timesheet.SplitEntrySpans(part[0], part[1])...)
-		}
-		if len(spans) == 0 {
+		startMin, endMin, ok := timesheet.EntrySpanBounds(e.Start, e.End)
+		if !ok {
 			receipt.Skipped = append(receipt.Skipped, StageSkip{
 				BlockID: id,
-				Reason:  "entry's time is fully claimed by more specific entries; its minutes are already staged under them",
+				Reason:  fmt.Sprintf("entry's times cannot be parsed (start %q, end %q); times are never invented", e.Start, e.End),
 			})
 			continue
+		}
+		var spans [][2]string
+		if endMin == startMin {
+			// Zero-duration entry, not an overnight span: the interval op
+			// rejects start == end ("interval duration must be positive"), so
+			// passing it through would abort the whole stage command and block
+			// every other entry of the day. Skip it with its own reason.
+			receipt.Skipped = append(receipt.Skipped, StageSkip{
+				BlockID: id,
+				Reason:  fmt.Sprintf("entry has zero duration (start %q, end %q); times are never invented", e.Start, e.End),
+			})
+			continue
+		}
+		if endMin < startMin {
+			// Overnight span: the gap-aware resolver above only reasons about
+			// same-day minutes and excludes an end before its start, so this
+			// block is absent from `effective`. Pass the recorded span through
+			// unsplit — the pre-GAP-SPLIT-1 derivation — and let the interval
+			// op resolve the end onto the next day (issue #173).
+			spans = [][2]string{{e.Start, e.End}}
+		} else {
+			for _, part := range effective[id] {
+				spans = append(spans, timesheet.SplitEntrySpans(part[0], part[1])...)
+			}
+			if len(spans) == 0 {
+				receipt.Skipped = append(receipt.Skipped, StageSkip{
+					BlockID: id,
+					Reason:  "entry's time is fully claimed by more specific entries; its minutes are already staged under them",
+				})
+				continue
+			}
 		}
 		desired[id] = true
 		mapped := stageMap[id]
@@ -935,6 +963,11 @@ func runStage(args []string) error {
 // with the durable day untouched at its saved revision.
 func reviseStage(h *headlessSession, cfg *timesheet.Config, date, project string, summary timesheet.DaySummary) (*StageReceipt, error) {
 	revision := summary.Revision
+	// The pre-derivation removals are the durable intervals this revision
+	// replaces; they predate the derivation, so they carry their old durable
+	// interval id and no block_id. They are reported in receipt.Removed
+	// alongside whatever the derivation itself removes (issue #173).
+	removed := make([]StageBlockRef, 0, len(summary.Staged.Segments))
 	for _, seg := range summary.Staged.Segments {
 		if seg.OriginDate != date {
 			continue
@@ -944,6 +977,7 @@ func reviseStage(h *headlessSession, cfg *timesheet.Config, date, project string
 		}); err != nil {
 			return nil, err
 		}
+		removed = append(removed, StageBlockRef{IntervalID: seg.IntervalID})
 	}
 	// Re-open the day so the derivation sees the post-removal staged set:
 	// applyStage's same-process fast path keys off the summary's staged
@@ -961,6 +995,7 @@ func reviseStage(h *headlessSession, cfg *timesheet.Config, date, project string
 	if err != nil {
 		return nil, err
 	}
+	receipt.Removed = append(removed, receipt.Removed...)
 	confirmed, err := h.call("confirm", timesheet.Request{Day: date, Revision: &summary.Revision})
 	if err != nil {
 		return nil, err

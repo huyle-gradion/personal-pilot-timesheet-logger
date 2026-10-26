@@ -867,8 +867,9 @@ const (
 	maxSearchResultPages = 10
 	// maxErrorBodyBytes bounds how much of a non-200 provider response body is
 	// read for the sanitized family diagnostic (see sanitizeHTTPDiagnostic in
-	// github.go). The snippet is rendered sanitized and bounded; it never
-	// echoes request URLs or credential values.
+	// github.go). The snippet is rendered sanitized and bounded: URLs and
+	// control characters are stripped, but credential-shaped text outside a URL
+	// is NOT redacted, so callers must not treat the detail as credential-free.
 	maxErrorBodyBytes = 1024
 	// maxReviewPRCandidates bounds how many pull requests the submitted-review
 	// family will expand per repository in one attempt. It is a documented

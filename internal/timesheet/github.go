@@ -918,8 +918,9 @@ var providerURLRE = regexp.MustCompile(`https?://\S+`)
 // sanitizeHTTPDiagnostic renders a bounded, sanitized provider-error
 // diagnostic for a family Detail: the HTTP status plus a bounded snippet of
 // the provider body. Provider bodies embed documentation links, so URLs are
-// stripped — request URLs are never echoed and credential values never appear
-// anywhere in errors, diagnostics, state, or reports.
+// stripped and control characters are replaced; credential-shaped text outside
+// a URL is NOT redacted here, so a caller must not treat the detail as
+// credential-free.
 func sanitizeHTTPDiagnostic(status int, body []byte) string {
 	snippet := strings.TrimSpace(providerURLRE.ReplaceAllString(sanitizerText(string(body)), ""))
 	snippet = strings.TrimSpace(strings.Trim(snippet, "\",:' "))

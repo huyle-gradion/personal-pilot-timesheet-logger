@@ -1012,6 +1012,23 @@ func StagePath(statePath, date string) string {
 	return strings.TrimSuffix(EntriesPath(statePath, date), ".json") + ".stage.json"
 }
 
+// EntrySpanBounds parses one recorded entry's anchors into minutes since
+// midnight for the bridge. ok is false when either anchor is not a time shape
+// the review carries ("HH:MM" or an RFC3339 stamp); end <= start is NOT an
+// error, so the caller must never read it as unparsable. The two cases differ:
+// an end BEFORE its start is an overnight span the interval op resolves onto
+// the next day, while an end EQUAL to its start is a zero-duration entry the
+// caller skips (the interval op refuses a non-positive duration) so one bad
+// entry never aborts the day.
+func EntrySpanBounds(start, end string) (startMin, endMin int, ok bool) {
+	sm, okS := draftClock(start)
+	em, okE := draftClock(end)
+	if !okS || !okE {
+		return 0, 0, false
+	}
+	return sm, em, true
+}
+
 // SplitEntrySpans splits one recorded entry's [start, end] span into contiguous
 // chunk spans of at most maxRemoteEntryMinutes minutes each (greedy
 // left-to-right; the final chunk carries the remainder, so 479 minutes becomes

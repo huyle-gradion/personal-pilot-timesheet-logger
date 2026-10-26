@@ -307,9 +307,14 @@ func writeAckID(res mcp.CallResult) string {
 // it is never retried); an unparseable response is UNIDENTIFIED; only a real
 // acknowledgment yields an identity to verify with a read-back.
 // sanitizeProviderDetail renders a bounded, sanitized provider error text for
-// write receipts: control characters stripped, URLs removed, rune-bounded. It
-// never echoes credential values or request URLs, so a provider refusal names
-// its reason without leaking transport detail (issue #167).
+// write receipts: control characters replaced, URLs removed, rune-bounded. It
+// strips transport detail — a provider refusal names its reason without echoing
+// the request URL that carried the endpoint and query string (issue #167) — and
+// nothing more: credential-shaped text outside a URL is NOT redacted here, so a
+// caller must not treat the detail as credential-free. The effective bound is
+// 240 content runes plus an ellipsis: sanitizerText caps the text at
+// maxTitleRunes first, which the maxDetailRunes truncation below can only ever
+// re-apply unchanged.
 func sanitizeProviderDetail(s string) string {
 	snippet := strings.TrimSpace(providerURLRE.ReplaceAllString(sanitizerText(s), ""))
 	snippet = strings.TrimSpace(strings.Trim(snippet, "\",:' "))
