@@ -91,7 +91,7 @@ func newGradionWriter(cfg *Config, env map[string]string) (*GradionWriter, error
 	name := cfg.Gradion.TokenVariable()
 	token, ok := resolveEnv(env, name)
 	if !ok || strings.TrimSpace(token) == "" {
-		return nil, newError(CodeRemoteUnavailable, "credential "+name+" is missing")
+		return nil, missingCredentialError(name)
 	}
 	session, err := mcp.NewSession(mcp.Config{
 		Endpoint:         cfg.Gradion.Endpoint,

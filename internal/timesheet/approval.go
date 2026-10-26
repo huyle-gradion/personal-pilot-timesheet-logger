@@ -165,7 +165,7 @@ func approvalContextDigest(cfg *Config, env map[string]string) (string, error) {
 	name := cfg.Gradion.TokenVariable()
 	token, ok := resolveEnv(env, name)
 	if !ok || strings.TrimSpace(token) == "" {
-		return "", newError(CodeRemoteUnavailable, "credential "+name+" is missing")
+		return "", missingCredentialError(name)
 	}
 	return sha256Hex([]byte(cfg.Gradion.Endpoint + "\x00" + name + "\x00" + token)), nil
 }

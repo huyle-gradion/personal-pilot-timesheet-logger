@@ -41,6 +41,15 @@ type GradionReader struct {
 	verified bool
 }
 
+// missingCredentialError names the absent credential AND the two ways to supply
+// it. The bare "is missing" message sent an operator through the skill looking
+// for a problem in the config while the token sat in an env file that no
+// command in that run had been told to read.
+func missingCredentialError(name string) error {
+	return newError(CodeRemoteUnavailable,
+		"credential "+name+" is missing; export it in the process environment or pass --env-file with a file that defines it")
+}
+
 // NewGradionReader resolves the configured credential NAME and builds a session
 // over the launcher-provisioned endpoint. It performs no IO.
 func NewGradionReader(cfg *Config, env map[string]string) (*GradionReader, error) {
@@ -50,7 +59,7 @@ func NewGradionReader(cfg *Config, env map[string]string) (*GradionReader, error
 	name := cfg.Gradion.TokenVariable()
 	token, ok := resolveEnv(env, name)
 	if !ok || strings.TrimSpace(token) == "" {
-		return nil, newError(CodeRemoteUnavailable, "credential "+name+" is missing")
+		return nil, missingCredentialError(name)
 	}
 	session, err := mcp.NewSession(mcp.Config{
 		Endpoint:         cfg.Gradion.Endpoint,
