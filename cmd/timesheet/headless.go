@@ -19,23 +19,56 @@ import (
 // never open a second protocol surface and never touch the network beyond what
 // the configured collectors already do inside collect.
 
+// dateOptionalCommands are the commands where an omitted --date means today in
+// the configured timezone, resolved by the binary (issue #179). Every other
+// command that operates on a day still requires one. This map is the single
+// requiredness decision: the flag usage text and every parser read it.
+var dateOptionalCommands = map[string]bool{
+	"collect": true,
+	"draft":   true,
+	"run":     true,
+	"record":  true,
+	"status":  true,
+}
+
+// dateFlagUsage is the shared --date description, so --help never disagrees
+// with the parser about whether the flag may be omitted.
+func dateFlagUsage(name string) string {
+	if dateOptionalCommands[name] {
+		return "day to operate on, YYYY-MM-DD (optional; omitted means today in the configured timezone)"
+	}
+	return "day to operate on, YYYY-MM-DD (required)"
+}
+
+// validateDate applies the one requiredness decision to a parsed --date: an
+// omitted date is accepted only where it means today, and a date that is given
+// is always validated. An explicit date always wins.
+func validateDate(name, date string) error {
+	if strings.TrimSpace(date) == "" {
+		if !dateOptionalCommands[name] {
+			return fmt.Errorf("%s requires --date", name)
+		}
+		return nil
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return fmt.Errorf("%s: --date must be YYYY-MM-DD", name)
+	}
+	return nil
+}
+
 type headlessFlags struct {
 	configPath string
 	envFile    string
 	date       string
-	file       string
 }
 
-func parseHeadlessFlags(name string, args []string, needDate, needFile bool) (*headlessFlags, error) {
+func parseHeadlessFlags(name string, args []string) (*headlessFlags, error) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &headlessFlags{}
 	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
 	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
-	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD"+map[bool]string{true: " (required)", false: " (optional)"}[needDate])
-	if needFile {
-		flags.StringVar(&f.file, "file", "", "reviewed draft JSON path (required)")
-	}
+	flags.StringVar(&f.date, "date", "", dateFlagUsage(name))
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}
@@ -45,20 +78,8 @@ func parseHeadlessFlags(name string, args []string, needDate, needFile bool) (*h
 	if f.configPath == "" {
 		return nil, fmt.Errorf("%s requires --config", name)
 	}
-	// --date is optional only for the daily-driver commands, where an omitted
-	// date means today in the configured timezone, resolved by the binary
-	// (issue #179). Every other command still requires it. An explicit date is
-	// always validated and always wins.
-	if needDate && f.date == "" && !dateOptionalCommands[name] {
-		return nil, fmt.Errorf("%s requires --date", name)
-	}
-	if needDate && f.date != "" {
-		if _, err := time.Parse("2006-01-02", f.date); err != nil {
-			return nil, fmt.Errorf("%s: --date must be YYYY-MM-DD", name)
-		}
-	}
-	if needFile && f.file == "" {
-		return nil, fmt.Errorf("%s requires --file", name)
+	if err := validateDate(name, f.date); err != nil {
+		return nil, err
 	}
 	return f, nil
 }
@@ -197,7 +218,7 @@ func printJSON(v any) error {
 // acknowledge/decide can copy it without reading state.json; stdout stays the
 // collect JSON only.
 func runCollect(args []string) error {
-	f, err := parseHeadlessFlags("collect", args, true, false)
+	f, err := parseHeadlessFlags("collect", args)
 	if err != nil {
 		return err
 	}
@@ -269,9 +290,10 @@ func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, string, e
 	return draft, collectionID, nil
 }
 
-// dateOptionalCommands are the commands a daily driver runs without a date;
-// the binary resolves today in the configured timezone for them.
-var dateOptionalCommands = map[string]bool{"collect": true, "draft": true, "run": true}
+// clockNow is the one clock the headless commands read for date resolution.
+// Tests replace it to pin "today"; production leaves time.Now. TodayIn owns the
+// timezone arithmetic and resolveDay is this clock's only caller.
+var clockNow = time.Now
 
 // resolveDay returns the day a command operates on. An explicit date always
 // wins; an omitted one is today in the configured timezone, so a one-command
@@ -284,12 +306,12 @@ func resolveDay(configPath, date string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return timesheet.TodayIn(cfg.Timezone, time.Now())
+	return timesheet.TodayIn(cfg.Timezone, clockNow())
 }
 
 // runDraft collects the day and prints the compact draft for the judgment step.
 func runDraft(args []string) error {
-	f, err := parseHeadlessFlags("draft", args, true, false)
+	f, err := parseHeadlessFlags("draft", args)
 	if err != nil {
 		return err
 	}
@@ -315,7 +337,7 @@ func runDraft(args []string) error {
 // further stderr line (issue #162), so acknowledge/decide can copy it without
 // reading state.json.
 func runRun(args []string) error {
-	f, err := parseHeadlessFlags("run", args, true, false)
+	f, err := parseHeadlessFlags("run", args)
 	if err != nil {
 		return err
 	}
@@ -360,10 +382,12 @@ func runRun(args []string) error {
 //   - --file <reviewed.json>: the full reviewed file. Unchanged and still the
 //     recovery path.
 //
-// --replace (issue #162) switches the merge mode for either input: the
-// reviewed result is the day's complete content, so all blocks for --date are
-// replaced with the file's blocks (block ids from the file; blocks absent
-// from it are removed) instead of merged. Use it after re-collecting a day:
+// --date is optional (issue #179): omitted, it means today in the configured
+// timezone. --replace (issue #162) switches the merge mode for either input:
+// the reviewed result is the day's complete content, so all blocks for the
+// resolved day are replaced with the file's blocks (block ids from the file;
+// blocks absent from it are removed) instead of merged. Use it after
+// re-collecting a day:
 // the new generation supersedes the old. Without the flag the merge behavior
 // is unchanged (idempotent per block, other blocks preserved).
 //
@@ -426,7 +450,7 @@ func runRecord(args []string) error {
 // status result carries the day's per-source latest collection attempt —
 // status and collection_id — for acknowledge/decide to copy verbatim.
 func runStatus(args []string) error {
-	f, err := parseHeadlessFlags("status", args, false, false)
+	f, err := parseHeadlessFlags("status", args)
 	if err != nil {
 		return err
 	}
@@ -510,7 +534,7 @@ func parseFinalizeFlags(name string, args []string) (*finalizeFlags, error) {
 	f := &finalizeFlags{}
 	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
 	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
-	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
+	flags.StringVar(&f.date, "date", "", dateFlagUsage(name))
 	flags.StringVar(&f.project, "project", "", "project id for staged intervals (required when configuration defines multiple projects)")
 	flags.BoolVar(&f.revise, "revise", false, "stage only: replace a finalized day's confirmed intervals with a fresh derivation from the entries ledger and re-finalize at a new revision")
 	if err := flags.Parse(args); err != nil {
@@ -522,11 +546,8 @@ func parseFinalizeFlags(name string, args []string) (*finalizeFlags, error) {
 	if f.configPath == "" {
 		return nil, fmt.Errorf("%s requires --config", name)
 	}
-	if f.date == "" {
-		return nil, fmt.Errorf("%s requires --date", name)
-	}
-	if _, err := time.Parse("2006-01-02", f.date); err != nil {
-		return nil, fmt.Errorf("%s: --date must be YYYY-MM-DD", name)
+	if err := validateDate(name, f.date); err != nil {
+		return nil, err
 	}
 	return f, nil
 }
@@ -1629,7 +1650,7 @@ func runConfirm(args []string) error {
 // (resolve), and because the plan identity includes the exact blockers, the
 // re-preview after any resolve yields a NEW plan_id — never reuse the old one.
 func runPlan(args []string) error {
-	f, err := parseHeadlessFlags("plan", args, true, false)
+	f, err := parseHeadlessFlags("plan", args)
 	if err != nil {
 		return err
 	}
@@ -1661,7 +1682,7 @@ func runPlan(args []string) error {
 // receipt's observation_id, revision and unbound/candidate lists are exactly
 // the inputs the human copies into resolve's decision file.
 func runReconcile(args []string) error {
-	f, err := parseHeadlessFlags("reconcile", args, true, false)
+	f, err := parseHeadlessFlags("reconcile", args)
 	if err != nil {
 		return err
 	}
@@ -1871,7 +1892,7 @@ func renderPlanBody(p timesheet.PlanPreview) string {
 // approval_id — the input to submit — echoed prominently on the terminal.
 // The gate fires before the store opens, so a refusal makes zero remote calls.
 func runApprove(args []string) error {
-	f, err := parseHeadlessFlags("approve", args, true, false)
+	f, err := parseHeadlessFlags("approve", args)
 	if err != nil {
 		return err
 	}
@@ -1996,7 +2017,7 @@ func runSubmit(args []string) error {
 // call, no durable write) and deliberately NOT TTY-gated: the agent may run
 // it so a human can decide recovery.
 func runSubmitStatus(args []string) error {
-	f, err := parseHeadlessFlags("submit-status", args, true, false)
+	f, err := parseHeadlessFlags("submit-status", args)
 	if err != nil {
 		return err
 	}
