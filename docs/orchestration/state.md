@@ -3305,7 +3305,7 @@ The parent evidence can be regenerated with git log --first-parent --format='%h 
 
 MERGE-79 (#184) and MERGE-80 (#183) fall outside this audited range and are recorded above, so the zero-verdict count applies to the 24 PRs from #130 to #182 only. Both carry a recorded independent review at identified snapshots with explicit verdicts, three snapshots for #184 and four for #183. Neither is a GitHub review object: no review login, review comment or check run exists for either.
 
-The outstanding-records backlog through #182 closes with these 24 entries. MERGE-79 (#184) and MERGE-80 (#183) are appended above and ship in this same records pull request, under the existing next-records-PR batching rule.
+The outstanding-records backlog through #182 closes with these 24 entries. MERGE-79 (#184) and MERGE-80 (#183) are appended above and ship in this same records pull request, under the existing next-records-PR batching rule. The merge of this records pull request itself is owed as MERGE-81 in the next records pull request, by the same batching rule that keeps this one from recording itself.
 
 ## Documentation review
 
