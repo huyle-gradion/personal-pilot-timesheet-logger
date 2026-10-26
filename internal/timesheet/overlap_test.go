@@ -264,7 +264,8 @@ func TestRecordEntriesMergesOverlappingBlocks(t *testing.T) {
 
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state.json")
-	writeStateEvidence(t, statePath, "2026-10-26", review.Evidence.Topics)
+	writeStateDay(t, statePath, "2026-10-26", "Asia/Ho_Chi_Minh",
+		DayEvidence{Topics: review.Evidence.Topics}, review.Confirmed.Segments)
 	stale := ReviewedDraft{Date: "2026-10-26", Timezone: "Asia/Ho_Chi_Minh", Blocks: []ReviewedBlock{
 		{DraftBlock: DraftBlock{BlockID: "work-09:00-11:00", Kind: "work", Start: "09:00", End: "11:00",
 			TopicCandidates: []string{"API bridge"}}, Description: "Bridge PRs"},
@@ -341,11 +342,13 @@ func absorbedEvidenceReview() Review {
 
 // draftAsReviewed turns the draft the skill hands the judgment step into the
 // reviewed file record receives: the merged blocks, with a description per
-// block.
+// block and without the audit-only sources the draft never serializes.
 func draftAsReviewed(t *testing.T, d Draft) ReviewedDraft {
 	t.Helper()
 	out := ReviewedDraft{Date: d.Date, Timezone: d.Timezone}
 	for _, b := range d.Blocks {
+		b.Sources = nil
+		b.SourcesTruncated = false
 		out.Blocks = append(out.Blocks, ReviewedBlock{DraftBlock: b, Description: b.Title})
 	}
 	return out
@@ -400,7 +403,9 @@ func TestRecordSourcesMatchDraftWhenEvidenceAbsorbedIntoMeeting(t *testing.T) {
 		t.Run(shape.name, func(t *testing.T) {
 			dir := t.TempDir()
 			statePath := filepath.Join(dir, "state.json")
-			writeStateEvidence(t, statePath, "2026-10-26", review.Evidence.Topics)
+			writeStateDay(t, statePath, "2026-10-26", "Asia/Ho_Chi_Minh",
+				DayEvidence{Topics: review.Evidence.Topics, Meetings: review.Evidence.Meetings},
+				review.Confirmed.Segments)
 			if _, err := RecordEntries(statePath, "test", shape.file, false, time.Now()); err != nil {
 				t.Fatalf("record: %v", err)
 			}
@@ -597,5 +602,169 @@ func TestMergeOverlappingBlocksResolvesUnionIDCollisions(t *testing.T) {
 	}
 	if got[1].BlockID != "work-09:00-12:00" {
 		t.Fatalf("singleton id = %q, want it untouched", got[1].BlockID)
+	}
+}
+
+// --- issue #183 F-1, third round: recompute the draft's ownership ------------
+
+// recordShape records one reviewed-file shape for a review against a state that
+// carries the same durable inputs the draft saw, and returns the single
+// recorded entry.
+func recordShape(t *testing.T, review Review, file ReviewedDraft) EntryRecord {
+	t.Helper()
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	ev := DayEvidence{}
+	if review.Evidence != nil {
+		ev = DayEvidence{Topics: review.Evidence.Topics, Meetings: review.Evidence.Meetings}
+	}
+	writeStateDay(t, statePath, review.Date, review.Timezone, ev, review.Confirmed.Segments)
+	if _, err := RecordEntries(statePath, "test", file, false, time.Now()); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	f, err := ReadEntries(statePath, review.Date)
+	if err != nil || f == nil || len(f.Entries) != 1 {
+		t.Fatalf("read entries: %+v %v", f, err)
+	}
+	return f.Entries[0]
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// interleavedOwnershipReview is N-1: one meeting-owned topic sits between two
+// unallocated endpoint topics, and the untimed topic tails the evidence. The
+// evidence seed's item anchors cross into the meeting, so the meeting absorbs
+// it and the draft replays every topic in evidence order.
+func interleavedOwnershipReview() Review {
+	return draftReview(
+		[]ProposedMeeting{{Ref: "m1", Start: "2026-10-26T09:00:00+07:00", End: "2026-10-26T10:00:00+07:00", Title: "Standup"}},
+		nil,
+		[]TopicCandidate{
+			topic("Early endpoint", "08:00", "08:00", item("commit", "early", "09:20")),
+			topic("Inside meeting", "09:15", "09:20", item("pull_request", "inside", "09:15")),
+			topic("Late endpoint", "11:00", "11:00", item("commit", "late", "11:05")),
+			{Title: "Untimed topic", Items: []EvidenceItem{{Kind: "commit", Repo: "acme/api", Title: "untimed"}}},
+		},
+		nil,
+	)
+}
+
+// TestRecordSourcesFollowEvidenceOrderWhenOwnershipInterleaves is N-1: the
+// draft owns early, then inside, then late, then untimed, because it folds one
+// cluster's topics in evidence order. Both reviewed-file shapes must record
+// that exact order, with the same truncation flag (issue #183 rule 5).
+func TestRecordSourcesFollowEvidenceOrderWhenOwnershipInterleaves(t *testing.T) {
+	review := interleavedOwnershipReview()
+	draft := BuildDraft(review, "test")
+	if len(draft.Blocks) != 1 {
+		t.Fatalf("draft blocks = %+v, want the meeting only", draft.Blocks)
+	}
+	want := draft.Blocks[0]
+	if want.BlockID != "meeting-09:00-11:05" {
+		t.Fatalf("draft block = %s, want the union-derived meeting id", want.BlockID)
+	}
+	wantOrder := []string{"commit|early", "pull_request|inside", "commit|late", "commit|untimed"}
+	if got := sourceKeys(want); !sameStrings(got, wantOrder) {
+		t.Fatalf("draft sources = %v, want the evidence order %v", got, wantOrder)
+	}
+
+	shapes := []struct {
+		name string
+		file ReviewedDraft
+	}{
+		{"pre-merge blocks", ReviewedDraft{Date: "2026-10-26", Timezone: "Asia/Ho_Chi_Minh", Blocks: []ReviewedBlock{
+			{DraftBlock: DraftBlock{BlockID: "meeting-09:00-10:00", Kind: "meeting", Start: "09:00", End: "10:00",
+				TopicCandidates: []string{"Inside meeting"}}, Description: "Standup"},
+			{DraftBlock: DraftBlock{BlockID: "evidence-09:20-11:05", Kind: "evidence", Start: "09:20", End: "11:05",
+				TopicCandidates: []string{"Early endpoint", "Late endpoint", "Untimed topic"}}, Description: "Evidence"},
+		}}},
+		{"merged draft", draftAsReviewed(t, draft)},
+	}
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			got := recordShape(t, review, shape.file)
+			if got.BlockID != want.BlockID {
+				t.Fatalf("recorded block id = %s, want the draft's %s", got.BlockID, want.BlockID)
+			}
+			if order := sourceKeys(DraftBlock{Sources: got.Sources}); !sameStrings(order, wantOrder) {
+				t.Fatalf("recorded sources = %v, want %v", order, wantOrder)
+			}
+			recordedSourcesEqualDraft(t, got, want)
+		})
+	}
+}
+
+// collapsedEvidenceReview is N-2: topic A has no topic anchors and one item
+// inside the meeting, topic B's anchors start where the union block ends, and
+// topic C is untimed with an item that carries no time. All three become
+// evidence; the evidence span crosses into the meeting, so the meeting absorbs
+// the block and the union ends at B's item anchor.
+func collapsedEvidenceReview() Review {
+	return draftReview(
+		[]ProposedMeeting{{Ref: "m1", Start: "2026-10-26T09:00:00+07:00", End: "2026-10-26T10:00:00+07:00", Title: "Standup"}},
+		nil,
+		[]TopicCandidate{
+			{Title: "A unanchored", Items: []EvidenceItem{
+				{Kind: "commit", Repo: "acme/api", Title: "a", Time: "2026-10-26T09:40:00+07:00"},
+			}},
+			{Title: "B spanning", FirstAt: "2026-10-26T10:05:00+07:00", LastAt: "2026-10-26T10:10:00+07:00",
+				Items: []EvidenceItem{{Kind: "commit", Repo: "acme/api", Title: "b", Time: "2026-10-26T10:10:00+07:00"}}},
+			{Title: "C untimed", Items: []EvidenceItem{{Kind: "commit", Repo: "acme/api", Title: "c"}}},
+		},
+		nil,
+	)
+}
+
+// TestRecordSourcesKeepEvidenceAbsorbedIntoMergedMeeting is N-2: both shapes
+// must record all three topics. Building the evidence span from whatever topics
+// survived allocation against the merged block collapses it to A's single item
+// anchor, which drops A and C.
+func TestRecordSourcesKeepEvidenceAbsorbedIntoMergedMeeting(t *testing.T) {
+	review := collapsedEvidenceReview()
+	draft := BuildDraft(review, "test")
+	if len(draft.Blocks) != 1 {
+		t.Fatalf("draft blocks = %+v, want the meeting only", draft.Blocks)
+	}
+	want := draft.Blocks[0]
+	if want.BlockID != "meeting-09:00-10:10" {
+		t.Fatalf("draft block = %s, want the union-derived meeting id", want.BlockID)
+	}
+	wantOrder := []string{"commit|a", "commit|b", "commit|c"}
+	if got := sourceKeys(want); !sameStrings(got, wantOrder) {
+		t.Fatalf("draft sources = %v, want the evidence order %v", got, wantOrder)
+	}
+
+	shapes := []struct {
+		name string
+		file ReviewedDraft
+	}{
+		{"pre-merge blocks", ReviewedDraft{Date: "2026-10-26", Timezone: "Asia/Ho_Chi_Minh", Blocks: []ReviewedBlock{
+			{DraftBlock: DraftBlock{BlockID: "meeting-09:00-10:00", Kind: "meeting", Start: "09:00", End: "10:00"}, Description: "Standup"},
+			{DraftBlock: DraftBlock{BlockID: "evidence-09:40-10:10", Kind: "evidence", Start: "09:40", End: "10:10",
+				TopicCandidates: []string{"A unanchored", "B spanning", "C untimed"}}, Description: "Evidence"},
+		}}},
+		{"merged draft", draftAsReviewed(t, draft)},
+	}
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			got := recordShape(t, review, shape.file)
+			if got.BlockID != want.BlockID {
+				t.Fatalf("recorded block id = %s, want the draft's %s", got.BlockID, want.BlockID)
+			}
+			if order := sourceKeys(DraftBlock{Sources: got.Sources}); !sameStrings(order, wantOrder) {
+				t.Fatalf("recorded sources = %v, want %v", order, wantOrder)
+			}
+			recordedSourcesEqualDraft(t, got, want)
+		})
 	}
 }

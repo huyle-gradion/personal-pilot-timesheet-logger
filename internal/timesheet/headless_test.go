@@ -663,16 +663,30 @@ func TestRecordEntriesAcceptsVerbatimPRsInline(t *testing.T) {
 // --- DRAFT-COMPACT-1 amendment (orchestrator-authorized): record re-attaches
 // audit-only source references from the day's durable evidence. ---------------
 
-// writeStateEvidence writes a minimal valid state file carrying one day's
-// evidence in the existing store schema shape.
-func writeStateEvidence(t *testing.T, statePath, date string, topics []TopicCandidate) {
+// writeStateDay writes the durable slices record recomputes the draft from: one
+// day's collected evidence, its confirmed intervals projected to the
+// {start, end, description} segments BuildDraft partitions, and its timezone.
+// A caller that omits the timezone or the segments writes them absent, which is
+// the pre-existing evidence-only shape.
+func writeStateDay(t *testing.T, statePath, date, timezone string, ev DayEvidence, segments []Segment) {
 	t.Helper()
+	day := map[string]any{}
+	if timezone != "" {
+		day["timezone"] = timezone
+	}
+	if len(segments) > 0 {
+		confirmed := make([]map[string]string, 0, len(segments))
+		for _, s := range segments {
+			confirmed = append(confirmed, map[string]string{
+				"start": s.Start, "end": s.End, "description": s.Description,
+			})
+		}
+		day["confirmed"] = confirmed
+	}
 	body := map[string]any{
-		"schema": 2,
-		"days":   map[string]any{},
-		"evidence": map[string]any{
-			date: map[string]any{"topics": topics},
-		},
+		"schema":   2,
+		"days":     map[string]any{date: day},
+		"evidence": map[string]any{date: ev},
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -681,6 +695,13 @@ func writeStateEvidence(t *testing.T, statePath, date string, topics []TopicCand
 	if err := os.WriteFile(statePath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeStateEvidence writes a minimal state file carrying one day's topics in
+// the existing store schema shape.
+func writeStateEvidence(t *testing.T, statePath, date string, topics []TopicCandidate) {
+	t.Helper()
+	writeStateDay(t, statePath, date, "", DayEvidence{Topics: topics}, nil)
 }
 
 // record on a day whose durable evidence has items for a block: the recorded
@@ -692,7 +713,7 @@ func TestRecordEntriesReattachesSourcesFromDurableState(t *testing.T) {
 	statePath := filepath.Join(dir, "state.json")
 	// Two items inside the 09:00–10:00 meeting span (URLs included) and ten
 	// items outside it, so the evidence block folds 8 sources + truncation.
-	writeStateEvidence(t, statePath, "2026-10-26", []TopicCandidate{
+	topics := []TopicCandidate{
 		{Title: "Pull request #12 (acme/api)", FirstAt: "2026-10-26T09:20:00+07:00", LastAt: "2026-10-26T09:40:00+07:00",
 			Items: []EvidenceItem{
 				{Kind: "commit", Repo: "acme/api", Title: "fix window", Time: "2026-10-26T09:25:00+07:00", URL: "https://github.com/acme/api/commit/a"},
@@ -708,7 +729,10 @@ func TestRecordEntriesReattachesSourcesFromDurableState(t *testing.T) {
 				}
 				return items
 			}()},
-	})
+	}
+	meetings := []ProposedMeeting{{Ref: "m1", Title: "Standup",
+		Start: "2026-10-26T09:00:00+07:00", End: "2026-10-26T10:00:00+07:00"}}
+	writeStateDay(t, statePath, "2026-10-26", "Asia/Ho_Chi_Minh", DayEvidence{Topics: topics, Meetings: meetings}, nil)
 	reviewed := reviewed(
 		ReviewedBlock{
 			DraftBlock:  DraftBlock{BlockID: "meeting-09:00-10:00", Kind: "meeting", Start: "09:00", End: "10:00", PRs: []string{"#12 acme/api"}},
@@ -904,7 +928,9 @@ func TestRecordSourcesLandOnSameBlockBuildDraftAttached(t *testing.T) {
 	// attached it to (matched by block_id).
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state.json")
-	writeStateEvidence(t, statePath, "2026-10-26", []TopicCandidate{topic})
+	writeStateDay(t, statePath, "2026-10-26", "Asia/Ho_Chi_Minh",
+		DayEvidence{Topics: []TopicCandidate{topic}, Meetings: review.Evidence.Meetings},
+		review.Confirmed.Segments)
 	var reviewed ReviewedDraft
 	raw, err := json.Marshal(d)
 	if err != nil {
@@ -1264,28 +1290,19 @@ func TestRecordEntriesReplaceSupersedesGeneration(t *testing.T) {
 func TestRecordEntriesUsesStoredDayTimezoneWhenFileOmitsIt(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state.json")
-	body := map[string]any{
-		"schema": 2,
-		"days": map[string]any{
-			"2026-10-20": map[string]any{"timezone": "Asia/Ho_Chi_Minh"},
-		},
-		"evidence": map[string]any{
-			"2026-10-20": map[string]any{"topics": []TopicCandidate{{
-				Title:   "Pull request #7 (acme/api)",
-				FirstAt: "2026-10-20T07:20:00Z", LastAt: "2026-10-20T07:40:00Z",
-				Items: []EvidenceItem{{
-					Kind: "authored_pull_request", Repo: "acme/api", Title: "PR 7", Time: "2026-10-20T07:20:00Z",
-				}},
-			}}},
-		},
-	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(statePath, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeStateDay(t, statePath, "2026-10-20", "Asia/Ho_Chi_Minh", DayEvidence{
+		Topics: []TopicCandidate{{
+			Title:   "Pull request #7 (acme/api)",
+			FirstAt: "2026-10-20T07:20:00Z", LastAt: "2026-10-20T07:40:00Z",
+			Items: []EvidenceItem{{
+				Kind: "authored_pull_request", Repo: "acme/api", Title: "PR 7", Time: "2026-10-20T07:20:00Z",
+			}},
+		}},
+		Meetings: []ProposedMeeting{{
+			Ref: "m1", Title: "Standup",
+			Start: "2026-10-20T07:00:00Z", End: "2026-10-20T08:00:00Z",
+		}},
+	}, nil)
 
 	// No Timezone on the reviewed file: 07:20Z is 14:20 local, inside the block.
 	reviewed := ReviewedDraft{Date: "2026-10-20", Blocks: []ReviewedBlock{{

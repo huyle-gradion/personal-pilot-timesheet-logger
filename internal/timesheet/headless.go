@@ -89,8 +89,9 @@ const draftSourcesPerBlock = 8
 // draftSeed is one candidate draft block before the overlap merge: its JSON
 // shape, its same-day span, whether it carries a real clock anchor, and the
 // review topics that attached to it. topics holds indices into the review's
-// topic slice so a cluster head replays them in evidence order, which is the
-// same order record-time source re-attachment folds them in.
+// topic slice so a cluster head replays them in evidence order. That order is
+// part of the partition, and record's recompute produces the same blocks from
+// the same inputs.
 //
 // A seed with startM >= endM (the whole-day fallback, a spanless evidence
 // block, a zero-duration evidence span) is never a merge candidate: it
@@ -110,26 +111,17 @@ type draftSeed struct {
 	topics   []int
 }
 
-// BuildDraft applies the fixed, documented partitioning rule to one review:
-// meetings (not declined, not cancelled, not all-day) become blocks in start
-// order; confirmed intervals become work blocks; topics attach to the first
-// block their time span overlaps; remaining topics form one evidence block; a
-// day with no anchors at all still yields one entry-shaped block so the log
-// never silently skips a day. Blocks that strictly overlap merge into one
-// block over the union span (issue #183), so concurrent POWs are named
-// together and a meeting absorbs the POWs inside it.
+// BuildDraft applies the fixed, documented partitioning rule to one review and
+// renders the compact one-day draft. The partition itself is partitionDraft, so
+// record recomputes the same blocks and sources from the same durable inputs.
 func BuildDraft(review Review, appVersion string) Draft {
 	d := Draft{
 		Date:       review.Date,
 		Timezone:   review.Timezone,
 		AppVersion: appVersion,
 	}
-	var topics []TopicCandidate
-	var meetings []ProposedMeeting
 	var completeness map[string]string
 	if review.Evidence != nil {
-		topics = review.Evidence.Topics
-		meetings = review.Evidence.Meetings
 		completeness = map[string]string{}
 		for _, src := range review.Evidence.Sources {
 			if !src.Enabled {
@@ -145,16 +137,49 @@ func BuildDraft(review Review, appVersion string) Draft {
 		d.Flags = append(d.Flags, "no_confirmed_intervals")
 	}
 
-	// Meeting proposals carry absolute RFC3339 instants in the provider's
-	// offset (often UTC). The draft's block times must read as local wall
-	// clock on the recorded day, so every meeting instant is converted into the
-	// day's recorded timezone before it becomes a block. Without this, a
-	// 14:00 Asia/Ho_Chi_Minh meeting stored as 07:00Z rendered as a 07:00 block
-	// and any outside-work-hours annotation was computed from the wrong clock
-	// (issue #174 review finding 1; #181 records the pre-existing display
-	// defect this closes).
-	dayLoc := DayLocationOrNil(review.Timezone)
+	var topics []TopicCandidate
+	var meetings []ProposedMeeting
+	if review.Evidence != nil {
+		topics = review.Evidence.Topics
+		meetings = review.Evidence.Meetings
+	}
+	blocks, eligibleMeetings := partitionDraft(topics, meetings, review.Confirmed.Segments, review.Timezone)
+	if eligibleMeetings == 0 {
+		d.DayNote = "no calendar events"
+	}
+	for i := range blocks {
+		blocks[i].blk.Completeness = completeness
+		sortPRs(blocks[i].blk.PRs)
+		blocks[i].blk.TopicCandidates = compactTopicsRender(blocks[i].blk.TopicCandidates, blocks[i].overflow)
+		blocks[i].blk.PRsInline = prsInline(blocks[i].blk.PRs)
+		d.Blocks = append(d.Blocks, blocks[i].blk)
+	}
+	return d
+}
 
+// partitionDraft turns one day's topics, meetings and confirmed segments into
+// the ordered, id-assigned blocks the draft renders: eligible meetings in
+// start order; confirmed intervals as work blocks; topics attach to the first
+// block their time span overlaps; remaining topics form one evidence block; a
+// day with no anchors still yields one whole-day block so the log never
+// silently skips a day. Blocks that strictly overlap merge into one block over
+// the union span (issue #183), so concurrent POWs are named together and a
+// meeting absorbs the POWs inside it.
+//
+// Topic ownership, the merge and the per-block fold happen only here, and the
+// inputs are exactly what a Review carries (minus the source statuses, which
+// affect no span, id or source). BuildDraft renders the result; record
+// recomputes it from the durable evidence and confirmed intervals and matches
+// recorded blocks by id, so the two cannot drift apart by ownership.
+//
+// Meeting times are absolute RFC3339 instants in the provider's offset (often
+// UTC), so they are converted to the recorded day's local wall clock before
+// they become blocks. Without that, a 14:00 Asia/Ho_Chi_Minh meeting stored as
+// 07:00Z rendered as a 07:00 block and any outside-work-hours annotation was
+// computed from the wrong clock (issue #174 review finding 1; #181 records the
+// pre-existing display defect this closes).
+func partitionDraft(topics []TopicCandidate, meetings []ProposedMeeting, segments []Segment, timezone string) ([]draftSeed, int) {
+	dayLoc := DayLocationOrNil(timezone)
 	var blocks []draftSeed
 	eligibleMeetings := 0
 
@@ -170,11 +195,10 @@ func BuildDraft(review Review, appVersion string) Draft {
 		eligibleMeetings++
 		blocks = append(blocks, draftSeed{
 			blk: DraftBlock{
-				Kind:         "meeting",
-				Start:        clockString(startM),
-				End:          clockString(endM),
-				Title:        m.Title,
-				Completeness: completeness,
+				Kind:  "meeting",
+				Start: clockString(startM),
+				End:   clockString(endM),
+				Title: m.Title,
 			},
 			startM: startM, endM: endM, hasM: true,
 		})
@@ -183,7 +207,7 @@ func BuildDraft(review Review, appVersion string) Draft {
 	// A work segment is kept even when it overlaps a meeting or another work
 	// segment: the overlap merge below folds concurrent POWs into one block
 	// instead of dropping the later one (issue #183).
-	for _, seg := range review.Confirmed.Segments {
+	for _, seg := range segments {
 		startM, okS := draftClock(seg.Start)
 		endM, okE := draftClock(seg.End)
 		if !okS || !okE || endM <= startM {
@@ -191,19 +215,17 @@ func BuildDraft(review Review, appVersion string) Draft {
 		}
 		blocks = append(blocks, draftSeed{
 			blk: DraftBlock{
-				Kind:         "work",
-				Start:        clockString(startM),
-				End:          clockString(endM),
-				Title:        seg.Description,
-				Completeness: completeness,
+				Kind:  "work",
+				Start: clockString(startM),
+				End:   clockString(endM),
+				Title: seg.Description,
 			},
 			startM: startM, endM: endM, hasM: true,
 		})
 	}
 
-	// Topics attach to the first block their [first,last] span overlaps,
-	// with candidates visited in the shared fixed mapping order
-	// (draftTopicTarget) that record-time source re-attachment also uses.
+	// Topics attach to the first block their [first,last] span overlaps, with
+	// candidates visited in the shared fixed mapping order (draftTopicTarget).
 	targets := make([]draftSpan, len(blocks))
 	for i := range blocks {
 		targets[i] = draftSpan{index: i, startM: blocks[i].startM, endM: blocks[i].endM}
@@ -230,7 +252,7 @@ func BuildDraft(review Review, appVersion string) Draft {
 	}
 
 	if len(unallocated) > 0 {
-		eb := draftSeed{blk: DraftBlock{Kind: "evidence", Completeness: completeness}}
+		eb := draftSeed{blk: DraftBlock{Kind: "evidence"}}
 		minM, maxM := -1, -1
 		for k, t := range unallocated {
 			eb.blk.TopicCandidates = append(eb.blk.TopicCandidates, t.Title)
@@ -251,20 +273,12 @@ func BuildDraft(review Review, appVersion string) Draft {
 		if minM >= 0 && maxM >= minM {
 			eb.blk.Start, eb.blk.End = clockString(minM), clockString(maxM)
 			eb.startM, eb.endM = minM, maxM
-		} else {
-			eb.blk.Start, eb.blk.End = "", ""
 		}
 		blocks = append(blocks, eb)
 	}
 
 	if len(blocks) == 0 {
-		blocks = append(blocks, draftSeed{blk: DraftBlock{
-			Kind:         "day",
-			Completeness: completeness,
-		}})
-	}
-	if eligibleMeetings == 0 {
-		d.DayNote = "no calendar events"
+		blocks = append(blocks, draftSeed{blk: DraftBlock{Kind: "day"}})
 	}
 
 	blocks = mergeDraftSeeds(blocks, topics, dayLoc)
@@ -288,12 +302,8 @@ func BuildDraft(review Review, appVersion string) Draft {
 	ids = resolveBlockIDs(ids, fixed)
 	for i := range blocks {
 		blocks[i].blk.BlockID = ids[i]
-		sortPRs(blocks[i].blk.PRs)
-		blocks[i].blk.TopicCandidates = compactTopicsRender(blocks[i].blk.TopicCandidates, blocks[i].overflow)
-		blocks[i].blk.PRsInline = prsInline(blocks[i].blk.PRs)
-		d.Blocks = append(d.Blocks, blocks[i].blk)
 	}
-	return d
+	return blocks, eligibleMeetings
 }
 
 // mergeDraftSeeds folds each connected component of strictly overlapping
@@ -304,8 +314,8 @@ func BuildDraft(review Review, appVersion string) Draft {
 // candidate keeps its own wording beside the meeting title. Every other
 // cluster keeps the head's kind, joins each contributor's title (naming a
 // titleless one by its first topic candidate), and replays the contributors'
-// topics in evidence order, which is the order record-time re-attachment folds
-// them in.
+// topics in evidence order. That fold order is part of the partition record
+// recomputes, not something record reconstructs from the merged blocks.
 func mergeDraftSeeds(seeds []draftSeed, topics []TopicCandidate, dayLoc *time.Location) []draftSeed {
 	var spans []powSpan
 	var at []int
@@ -355,9 +365,8 @@ func foldDraftCluster(seeds []draftSeed, members []int, topics []TopicCandidate,
 	}
 	out := draftSeed{
 		blk: DraftBlock{
-			Kind:         head.blk.Kind,
-			Start:        head.blk.Start,
-			Completeness: head.blk.Completeness,
+			Kind:  head.blk.Kind,
+			Start: head.blk.Start,
 		},
 		startM: head.startM,
 		endM:   head.endM,
@@ -562,11 +571,9 @@ type draftSpan struct {
 // draftTopicTarget picks the block a topic attaches to: the first candidate
 // in the fixed mapping order — start time, then end time, then candidate
 // input order — whose span overlaps the topic's [first,last] span, or -1.
-// BuildDraft and record-time source re-attachment share this one code path,
-// so the block a recorded source lands on is provably the block the draft
-// attached it to. The reviewed blocks record reads arrive in the draft's own
-// (stable) display order, so candidate input order ties resolve identically
-// on both sides.
+// The draft partition owns every attachment through this one mapping, and
+// record recomputes that same partition, so the block a recorded source lands
+// on is provably the block the draft attached it to.
 func draftTopicTarget(cands []draftSpan, firstM, lastM int) int {
 	best := -1
 	for _, c := range cands {
@@ -1245,13 +1252,9 @@ func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, replace
 	// A reviewed file may still carry the overlapping blocks an older draft
 	// rendered. Merge first so the recorded entries are the blocks the current
 	// draft shows (issue #183 rule 5); a draft that already merged them is
-	// unchanged. The pre-merge list and its cluster mapping are kept because
-	// source re-attachment reproduces the draft's topic ownership over them.
-	// seen is rebuilt because replace mode reports the entries a merge makes
-	// obsolete as removed.
-	preMerge := reviewed.Blocks
-	var clusterOf []int
-	reviewed.Blocks, clusterOf = mergeReviewedBlocks(preMerge)
+	// unchanged. seen is rebuilt because replace mode reports the entries a
+	// merge makes obsolete as removed.
+	reviewed.Blocks = MergeOverlappingBlocks(reviewed.Blocks)
 	seen = make(map[string]bool, len(reviewed.Blocks))
 	for _, b := range reviewed.Blocks {
 		seen[b.BlockID] = true
@@ -1260,15 +1263,15 @@ func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, replace
 	// Re-attach the audit-only source references from the day's durable
 	// evidence. The AI-visible draft no longer carries sources, so the
 	// reviewed file cannot echo them; the recorded entry must still keep the
-	// full source references the pre-change draft carried (orchestrator-
-	// authorized DRAFT-COMPACT-1 amendment). This only fills entry fields —
-	// no validation rule, schema, or draft shape changes.
-	if ev, storedZone := readDayEvidenceForRecord(statePath, reviewed.Date); ev != nil {
+	// full source references the draft attached (orchestrator-authorized
+	// DRAFT-COMPACT-1 amendment). This only fills entry fields — no validation
+	// rule, schema, or draft shape changes.
+	if ev, segments, storedZone := readDayForRecord(statePath, reviewed.Date); ev != nil {
 		timezone := strings.TrimSpace(reviewed.Timezone)
 		if timezone == "" {
 			timezone = storedZone
 		}
-		reattachSources(ev, preMerge, reviewed.Blocks, clusterOf, timezone)
+		attachDraftSources(ev, segments, timezone, reviewed.Blocks)
 	}
 
 	path := EntriesPath(statePath, reviewed.Date)
@@ -1825,19 +1828,6 @@ func ParseResolutionDecision(data []byte) (ResolutionDecisionFile, error) {
 // fold uses. Blocks whose times are empty, unparsable or not increasing are
 // not candidates and keep their own fields.
 func MergeOverlappingBlocks(blocks []ReviewedBlock) []ReviewedBlock {
-	merged, _ := mergeReviewedBlocks(blocks)
-	return merged
-}
-
-// mergeReviewedBlocks folds the day's reviewed blocks and also reports, for
-// every input index, the output block it folded into. Record's source
-// re-attachment needs that mapping to keep the draft's topic ownership across
-// the merge instead of re-deriving it over the merged spans.
-func mergeReviewedBlocks(blocks []ReviewedBlock) ([]ReviewedBlock, []int) {
-	clusterOf := make([]int, len(blocks))
-	for i := range clusterOf {
-		clusterOf[i] = -1
-	}
 	startM := make([]int, len(blocks))
 	endM := make([]int, len(blocks))
 	var spans []powSpan
@@ -1855,10 +1845,7 @@ func mergeReviewedBlocks(blocks []ReviewedBlock) ([]ReviewedBlock, []int) {
 		at = append(at, i)
 	}
 	if len(spans) == 0 {
-		for i := range blocks {
-			clusterOf[i] = i
-		}
-		return blocks, clusterOf
+		return blocks
 	}
 	out := make([]ReviewedBlock, 0, len(blocks))
 	var multi []bool
@@ -1869,15 +1856,11 @@ func mergeReviewedBlocks(blocks []ReviewedBlock) ([]ReviewedBlock, []int) {
 			members[k] = at[si]
 			inCluster[at[si]] = true
 		}
-		for _, i := range members {
-			clusterOf[i] = len(out)
-		}
 		out = append(out, foldReviewedCluster(blocks, members, startM, endM))
 		multi = append(multi, len(members) > 1)
 	}
 	for i := range blocks {
 		if !inCluster[i] {
-			clusterOf[i] = len(out)
 			out = append(out, blocks[i])
 			multi = append(multi, false)
 		}
@@ -1895,7 +1878,7 @@ func mergeReviewedBlocks(blocks []ReviewedBlock) ([]ReviewedBlock, []int) {
 	for i := range out {
 		out[i].BlockID = ids[i]
 	}
-	return out, clusterOf
+	return out
 }
 
 // foldReviewedCluster renders one reviewed cluster. A single-member cluster is
@@ -1976,142 +1959,74 @@ func foldReviewedCluster(blocks []ReviewedBlock, members []int, startM, endM []i
 // --- record-time source re-attachment -----------------------------------------
 
 // stateEvidenceView is a minimal read-only projection of the durable state
-// file: record parses only the evidence section and never anything else.
+// file: record parses one day's evidence, its confirmed intervals reduced to
+// the segments BuildDraft partitions, and its timezone, and never anything
+// else.
 type stateEvidenceView struct {
 	Evidence map[string]*DayEvidence `json:"evidence"`
 	Days     map[string]struct {
-		Timezone string `json:"timezone"`
+		Timezone  string `json:"timezone"`
+		Confirmed []struct {
+			Start       string `json:"start"`
+			End         string `json:"end"`
+			Description string `json:"description"`
+		} `json:"confirmed"`
 	} `json:"days"`
 }
 
-// readDayEvidenceForRecord reads one day's durable evidence from the state
-// file for record-time source re-attachment. It never takes the store's
+// readDayForRecord reads one day's durable evidence, confirmed segments and
+// timezone for record-time source re-attachment. It never takes the store's
 // single-writer lock and never writes state, so recording still never blocks
 // on, or interferes with, a running serve process (the state file is replaced
 // atomically, so a lock-free read sees one complete version). A missing,
-// unreadable, or invalid state file yields nil: re-attachment is audit
+// unreadable, or invalid state file yields nil evidence: re-attachment is audit
 // parity, never a record precondition, and the day still records.
-func readDayEvidenceForRecord(statePath, date string) (*DayEvidence, string) {
+func readDayForRecord(statePath, date string) (*DayEvidence, []Segment, string) {
 	if statePath == "" || date == "" {
-		return nil, ""
+		return nil, nil, ""
 	}
 	data, err := os.ReadFile(statePath)
 	if err != nil {
-		return nil, ""
+		return nil, nil, ""
 	}
 	var view stateEvidenceView
 	if err := json.Unmarshal(data, &view); err != nil {
-		return nil, ""
+		return nil, nil, ""
+	}
+	day := view.Days[date]
+	var segments []Segment
+	for _, iv := range day.Confirmed {
+		segments = append(segments, Segment{Start: iv.Start, End: iv.End, Description: iv.Description})
 	}
 	// The day's stored timezone is the authority for anchor conversion, so a
 	// recovery file that dropped the key cannot silently re-attach sources on
 	// a different clock than the draft used.
-	return view.Evidence[date], view.Days[date].Timezone
+	return view.Evidence[date], segments, day.Timezone
 }
 
-// reattachSources re-derives each merged block's audit-only source references
-// from the day's durable evidence. Ownership is computed exactly as BuildDraft
-// computes it over its PRE-merge seeds: the first candidate whose span
-// overlaps the topic's [first,last] (draftTopicTarget), else the evidence
-// block; each topic then folds, in ascending evidence index with
-// mergeTopicItems (same draftSourcesPerBlock cap and sources_truncated flag),
-// into the merged cluster its owner folded into. A cluster that absorbed an
-// evidence block therefore keeps the sources the draft attached to them, even
-// when no evidence member survives the merge.
+// attachDraftSources gives each recorded block the audit-only sources the draft
+// attached to the block with the same id. Ownership is recomputed by
+// partitionDraft from the same durable inputs BuildDraft saw (the day's
+// evidence and confirmed segments in the recorded day's timezone), never
+// reconstructed from the reviewed file's post-merge shape: the merge is lossy
+// for ownership, so a cluster that absorbed an evidence block would otherwise
+// reorder its sources or rebuild a shrunken evidence span (issue #183 rule 5).
 //
-// When the reviewed file is already the merged draft, the evidence block is
-// gone. Its span is rebuilt from the unallocated topics' item anchors exactly
-// as BuildDraft builds it, and the cluster it merged into is the candidate
-// overlapping that span, so both reviewed-file shapes reproduce the draft's
-// ownership. The state's evidence is authoritative: anything the reviewed file
-// echoed is replaced. A whole-day block never carries sources.
-func reattachSources(ev *DayEvidence, reviewed, merged []ReviewedBlock, clusterOf []int, timezone string) {
-	// Topic anchors are absolute provider instants; they must be resolved in
-	// the recorded day's timezone exactly as BuildDraft does, or the recorded
-	// entry would attach sources to a different block than the draft showed.
-	// A timezone that cannot be loaded keeps the anchors' own offset, which is
-	// the pre-fix behaviour and only reachable for an unloadable day.
-	dayLoc := DayLocationOrNil(timezone)
-	var cands []draftSpan
-	evidenceIdx := -1
-	for i := range reviewed {
-		switch reviewed[i].Kind {
-		case "meeting", "work":
-			startM, okS := draftClock(reviewed[i].Start)
-			endM, okE := draftClock(reviewed[i].End)
-			if okS && okE && endM > startM {
-				cands = append(cands, draftSpan{index: i, startM: startM, endM: endM})
-			}
-		case "evidence":
-			evidenceIdx = i
+// A block id the recompute does not produce keeps whatever the reviewed file
+// carried. The AI-visible reviewed file carries no sources, so a stale or
+// hand-edited block records empty sources rather than a guessed assignment.
+func attachDraftSources(ev *DayEvidence, segments []Segment, timezone string, blocks []ReviewedBlock) {
+	seeds, _ := partitionDraft(ev.Topics, ev.Meetings, segments, timezone)
+	byID := make(map[string]DraftBlock, len(seeds))
+	for _, seed := range seeds {
+		byID[seed.blk.BlockID] = seed.blk
+	}
+	for i := range blocks {
+		recomputed, ok := byID[blocks[i].BlockID]
+		if !ok {
+			continue
 		}
+		blocks[i].Sources = recomputed.Sources
+		blocks[i].SourcesTruncated = recomputed.SourcesTruncated
 	}
-	if len(cands) == 0 && evidenceIdx < 0 {
-		return
-	}
-	folds := make([]DraftBlock, len(merged))
-	assign := func(owner, ti int) {
-		out := -1
-		if owner >= 0 && owner < len(clusterOf) {
-			out = clusterOf[owner]
-		}
-		if out >= 0 && out < len(folds) {
-			folds[out] = mergeTopicItems(folds[out], ev.Topics[ti])
-		}
-	}
-	var unallocated []int
-	for ti := range ev.Topics {
-		t := ev.Topics[ti]
-		firstM, okF := anchorClock(t.FirstAt, dayLoc)
-		lastM, okL := anchorClock(t.LastAt, dayLoc)
-		if okF && okL {
-			if i := draftTopicTarget(cands, firstM, lastM); i >= 0 {
-				assign(i, ti)
-				continue
-			}
-		}
-		unallocated = append(unallocated, ti)
-	}
-	if owner := evidenceIdx; owner >= 0 {
-		for _, ti := range unallocated {
-			assign(owner, ti)
-		}
-	} else if owner := absorbedEvidenceBlock(ev.Topics, unallocated, cands, dayLoc); owner >= 0 {
-		for _, ti := range unallocated {
-			assign(owner, ti)
-		}
-	}
-	for i := range merged {
-		merged[i].Sources = folds[i].Sources
-		merged[i].SourcesTruncated = folds[i].SourcesTruncated
-	}
-}
-
-// absorbedEvidenceBlock resolves the evidence block BuildDraft would have
-// built from the unallocated topics when the merged reviewed file no longer
-// carries it: its span is the union of those topics' item anchors, exactly as
-// BuildDraft computes it, and the block that absorbed it is the first
-// candidate overlapping that span in the shared mapping order. A span that
-// could not merge (no usable anchors, or zero duration) returns -1: the draft
-// would have kept it as a separate evidence block, which record never invents.
-func absorbedEvidenceBlock(topics []TopicCandidate, unallocated []int, cands []draftSpan, loc *time.Location) int {
-	minM, maxM := -1, -1
-	for _, ti := range unallocated {
-		for _, item := range topics[ti].Items {
-			m, ok := anchorClock(item.Time, loc)
-			if !ok {
-				continue
-			}
-			if minM < 0 || m < minM {
-				minM = m
-			}
-			if m > maxM {
-				maxM = m
-			}
-		}
-	}
-	if minM < 0 || maxM <= minM {
-		return -1
-	}
-	return draftTopicTarget(cands, minM, maxM)
 }
