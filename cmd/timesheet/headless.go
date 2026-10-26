@@ -102,19 +102,19 @@ type recordFlags struct {
 // mutually exclusive and one is required: --file alone, or --draft AND
 // --descriptions together. --replace (issue #162) switches the merge mode:
 // the reviewed result is the day's complete content and replaces all blocks
-// for --date instead of merging — for the re-collected-day case where the new
-// generation supersedes the old.
+// for the resolved day instead of merging — for the re-collected-day case where
+// the new generation supersedes the old.
 func parseRecordFlags(args []string) (*recordFlags, error) {
 	flags := flag.NewFlagSet("record", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &recordFlags{}
 	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
 	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
-	flags.StringVar(&f.date, "date", "", "day to record, YYYY-MM-DD (required)")
+	flags.StringVar(&f.date, "date", "", dateFlagUsage("record"))
 	flags.StringVar(&f.file, "file", "", "reviewed draft JSON path (recovery input mode)")
 	flags.StringVar(&f.draft, "draft", "", "draft JSON path from `timesheet draft` (descriptions-only input mode, with --descriptions)")
 	flags.StringVar(&f.descriptions, "descriptions", "", "descriptions-only JSON path (descriptions-only input mode, with --draft)")
-	flags.BoolVar(&f.replace, "replace", false, "the reviewed result is the day's complete content: replace all blocks for --date instead of merging (re-collected day; the new generation supersedes the old)")
+	flags.BoolVar(&f.replace, "replace", false, "the reviewed result is the day's complete content: replace all blocks for the resolved day instead of merging (re-collected day; the new generation supersedes the old)")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}
@@ -124,11 +124,8 @@ func parseRecordFlags(args []string) (*recordFlags, error) {
 	if f.configPath == "" {
 		return nil, fmt.Errorf("record requires --config")
 	}
-	if f.date == "" {
-		return nil, fmt.Errorf("record requires --date")
-	}
-	if _, err := time.Parse("2006-01-02", f.date); err != nil {
-		return nil, fmt.Errorf("record: --date must be YYYY-MM-DD")
+	if err := validateDate("record", f.date); err != nil {
+		return nil, err
 	}
 	if f.file != "" && (f.draft != "" || f.descriptions != "") {
 		return nil, fmt.Errorf("record takes either --file or --draft with --descriptions, not both input modes")
@@ -435,8 +432,15 @@ func runRecord(args []string) error {
 	if err != nil {
 		return err
 	}
-	if reviewed.Date != f.date {
-		return fmt.Errorf("record: --date %s does not match the reviewed draft's date %s", f.date, reviewed.Date)
+	// The day to record is the explicit --date or, when omitted, today in the
+	// configured timezone. The reviewed draft must agree with the RESOLVED day
+	// so a wrong day is visible in the error, and the receipt carries that day.
+	day, err := resolveDay(f.configPath, f.date)
+	if err != nil {
+		return err
+	}
+	if reviewed.Date != day {
+		return fmt.Errorf("record: the reviewed draft's date %s does not match the resolved day %s", reviewed.Date, day)
 	}
 	receipt, err := timesheet.RecordEntries(cfg.StatePath, timesheet.AppVersion, reviewed, f.replace, time.Now())
 	if err != nil {
@@ -445,49 +449,40 @@ func runRecord(args []string) error {
 	return printJSON(receipt)
 }
 
-// runStatus prints the store status and, for a given date, the recorded
-// entries summary. With --date, the day is opened first (issue #162) so the
-// status result carries the day's per-source latest collection attempt —
-// status and collection_id — for acknowledge/decide to copy verbatim.
+// runStatus prints the store status and the recorded entries summary for the
+// day: the explicit --date or, when omitted, today in the configured timezone.
+// The day is opened first (issue #162) so the status result carries the day's
+// per-source latest collection attempt — status and collection_id — for
+// acknowledge/decide to copy verbatim.
 func runStatus(args []string) error {
 	f, err := parseHeadlessFlags("status", args)
 	if err != nil {
 		return err
 	}
-	if f.date != "" {
-		if _, err := time.Parse("2006-01-02", f.date); err != nil {
-			return fmt.Errorf("status: --date must be YYYY-MM-DD")
-		}
+	day, err := resolveDay(f.configPath, f.date)
+	if err != nil {
+		return err
 	}
 	h, err := openHeadless(f.configPath, f.envFile)
 	if err != nil {
 		return err
 	}
 	defer h.done()
-	if f.date != "" {
-		if _, err := h.call("open_day", timesheet.Request{Day: f.date}); err != nil {
-			return err
-		}
+	if _, err := h.call("open_day", timesheet.Request{Day: day}); err != nil {
+		return err
 	}
 	res, err := h.call("status", timesheet.Request{})
 	if err != nil {
 		return err
 	}
 	_, _ = h.call("close", timesheet.Request{})
-	if f.date == "" {
-		return printJSON(res)
-	}
-	cfg, err := timesheet.LoadConfig(f.configPath)
-	if err != nil {
-		return err
-	}
-	entries, err := timesheet.ReadEntries(cfg.StatePath, f.date)
+	entries, err := timesheet.ReadEntries(h.cfg.StatePath, day)
 	if err != nil {
 		return err
 	}
 	summary := map[string]any{
 		"status":  res,
-		"date":    f.date,
+		"date":    day,
 		"entries": 0,
 	}
 	if entries != nil {
@@ -497,7 +492,7 @@ func runStatus(args []string) error {
 			lines = append(lines, fmt.Sprintf("%s-%s %s", e.Start, e.End, e.Description))
 		}
 		summary["recorded"] = lines
-		summary["entries_file"] = timesheet.EntriesPath(cfg.StatePath, f.date)
+		summary["entries_file"] = timesheet.EntriesPath(h.cfg.StatePath, day)
 	}
 	return printJSON(summary)
 }
