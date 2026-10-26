@@ -87,9 +87,13 @@ func startFeed(t *testing.T) (*httptest.Server, *int64) {
 
 // writeRunEnvFile writes a synthetic env file naming the loopback feed. The
 // test writes this file as a fixture; it never reads an operator credential
-// file and never echoes the value back beyond the fixture itself.
+// file and never echoes the value back beyond the fixture itself. It also pins
+// GCAL_ICS_URL in the process environment, because an inherited value takes
+// precedence over the file and would otherwise point the run at a developer's
+// real feed.
 func writeRunEnvFile(t *testing.T, feedURL string) string {
 	t.Helper()
+	t.Setenv("GCAL_ICS_URL", feedURL)
 	path := filepath.Join(t.TempDir(), "env.local")
 	if err := os.WriteFile(path, []byte("GCAL_ICS_URL="+feedURL+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -180,7 +184,11 @@ func TestRunCollectsExactlyOncePerInvocation(t *testing.T) {
 // TestRunFlagErrors pins run's flag surface to the same error style as
 // collect/draft.
 func TestRunFlagErrors(t *testing.T) {
-	cfg := writeRunConfig(t)
+	pinClock(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	// No enabled sources: the omitted-date case below executes a real run and
+	// must never reach an inherited feed URL or the network.
+	cfg, _ := writeSyntheticConfig(t, "Asia/Ho_Chi_Minh")
 	cases := []struct {
 		name string
 		args []string
@@ -199,10 +207,21 @@ func TestRunFlagErrors(t *testing.T) {
 	if !errors.Is(runRun([]string{"--help"}), flag.ErrHelp) {
 		t.Fatalf("--help should surface flag.ErrHelp, got %v", runRun([]string{"--help"}))
 	}
-	// Issue #179: an omitted --date is valid for the daily driver and resolves
-	// today in the configured timezone.
-	if err := runRun([]string{"--config", cfg}); err != nil {
-		t.Fatalf("run without --date must resolve today, got %v", err)
+	// Issue #179: an omitted --date is accepted. Because the clock is pinned,
+	// the resolved day is deterministic here; the UTC versus Asia/Ho_Chi_Minh
+	// difference is pinned by TestRunWithoutDateResolvesTodayInConfiguredTimezone.
+	out, _, err := captureOutput(t, func() error {
+		return runRun([]string{"--config", cfg})
+	})
+	if err != nil {
+		t.Fatalf("run without --date: %v", err)
+	}
+	var draft timesheet.Draft
+	if err := json.Unmarshal(out, &draft); err != nil {
+		t.Fatalf("run stdout is not the draft JSON: %v", err)
+	}
+	if draft.Date != "2026-10-27" {
+		t.Fatalf("draft date = %q, want the pinned Asia/Ho_Chi_Minh day 2026-10-27", draft.Date)
 	}
 }
 
