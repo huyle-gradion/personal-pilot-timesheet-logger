@@ -1240,17 +1240,22 @@ func (s *Session) durableView(day *Day, source []Interval) (View, error) {
 	return s.viewFromOrigins(day.Date, s.durableOrigins(day, source))
 }
 
-func (s *Session) viewFromOrigins(date string, origins map[string]originDay) (View, error) {
+// renderSegments renders every origin day's intervals onto date and returns
+// them in the view's order. It is the one rendering path: viewFromOrigins wraps
+// it for review, and record's lock-free recompute calls it directly so a
+// previous day's spill appears in the recomputed partition exactly as review
+// rendered it.
+func renderSegments(date string, origins map[string]originDay) ([]Segment, error) {
 	segments := make([]Segment, 0, len(origins))
 	for _, origin := range origins {
 		loc, err := dayLocation(origin.Timezone)
 		if err != nil {
-			return View{}, err
+			return nil, err
 		}
 		for _, iv := range origin.Intervals {
 			segment, ok, err := segmentOn(iv, origin.Date, date, loc)
 			if err != nil {
-				return View{}, err
+				return nil, err
 			}
 			if ok {
 				segments = append(segments, segment)
@@ -1258,6 +1263,14 @@ func (s *Session) viewFromOrigins(date string, origins map[string]originDay) (Vi
 		}
 	}
 	sortSegments(segments)
+	return segments, nil
+}
+
+func (s *Session) viewFromOrigins(date string, origins map[string]originDay) (View, error) {
+	segments, err := renderSegments(date, origins)
+	if err != nil {
+		return View{}, err
+	}
 	total := 0
 	for _, segment := range segments {
 		total += segment.Minutes

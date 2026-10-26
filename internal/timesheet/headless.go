@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1959,23 +1960,22 @@ func foldReviewedCluster(blocks []ReviewedBlock, members []int, startM, endM []i
 // --- record-time source re-attachment -----------------------------------------
 
 // stateEvidenceView is a minimal read-only projection of the durable state
-// file: record parses one day's evidence, its confirmed intervals reduced to
-// the segments BuildDraft partitions, and its timezone, and never anything
-// else.
+// file: record parses the evidence section and every day's timezone and
+// confirmed intervals, so it can render the requested day exactly as review
+// does, and never anything else.
 type stateEvidenceView struct {
 	Evidence map[string]*DayEvidence `json:"evidence"`
 	Days     map[string]struct {
-		Timezone  string `json:"timezone"`
-		Confirmed []struct {
-			Start       string `json:"start"`
-			End         string `json:"end"`
-			Description string `json:"description"`
-		} `json:"confirmed"`
+		Timezone  string     `json:"timezone"`
+		Confirmed []Interval `json:"confirmed"`
 	} `json:"days"`
 }
 
-// readDayForRecord reads one day's durable evidence, confirmed segments and
-// timezone for record-time source re-attachment. It never takes the store's
+// readDayForRecord reads one day's durable evidence, its rendered confirmed
+// segments and its timezone for record-time source re-attachment. The segments
+// come from the same renderSegments review uses over every stored day's
+// confirmed intervals, so a previous day's cross-midnight spill appears here
+// exactly as it appears in the reviewed draft. It never takes the store's
 // single-writer lock and never writes state, so recording still never blocks
 // on, or interferes with, a running serve process (the state file is replaced
 // atomically, so a lock-free read sees one complete version). A missing,
@@ -1993,28 +1993,37 @@ func readDayForRecord(statePath, date string) (*DayEvidence, []Segment, string) 
 	if err := json.Unmarshal(data, &view); err != nil {
 		return nil, nil, ""
 	}
-	day := view.Days[date]
-	var segments []Segment
-	for _, iv := range day.Confirmed {
-		segments = append(segments, Segment{Start: iv.Start, End: iv.End, Description: iv.Description})
+	origins := make(map[string]originDay, len(view.Days))
+	for originDate, day := range view.Days {
+		origins[originDate] = originDay{Date: originDate, Timezone: day.Timezone, Intervals: day.Confirmed}
+	}
+	segments, err := renderSegments(date, origins)
+	if err != nil {
+		return nil, nil, ""
 	}
 	// The day's stored timezone is the authority for anchor conversion, so a
 	// recovery file that dropped the key cannot silently re-attach sources on
 	// a different clock than the draft used.
-	return view.Evidence[date], segments, day.Timezone
+	return view.Evidence[date], segments, view.Days[date].Timezone
 }
+
+// recordDiagnostics is where record writes non-fatal source-attachment notes.
+// It defaults to stderr and is a variable so tests can capture the exact lines;
+// the command's stdout and receipt never carry them.
+var recordDiagnostics io.Writer = os.Stderr
 
 // attachDraftSources gives each recorded block the audit-only sources the draft
 // attached to the block with the same id. Ownership is recomputed by
 // partitionDraft from the same durable inputs BuildDraft saw (the day's
-// evidence and confirmed segments in the recorded day's timezone), never
-// reconstructed from the reviewed file's post-merge shape: the merge is lossy
-// for ownership, so a cluster that absorbed an evidence block would otherwise
-// reorder its sources or rebuild a shrunken evidence span (issue #183 rule 5).
+// evidence and the confirmed segments review rendered), never reconstructed
+// from the reviewed file's post-merge shape: the merge is lossy for ownership,
+// so a cluster that absorbed an evidence block would otherwise reorder its
+// sources or rebuild a shrunken evidence span (issue #183 rule 5).
 //
 // A block id the recompute does not produce keeps whatever the reviewed file
 // carried. The AI-visible reviewed file carries no sources, so a stale or
-// hand-edited block records empty sources rather than a guessed assignment.
+// hand-edited block records empty sources rather than a guessed assignment, and
+// record says so on stderr instead of leaving the mismatch silent.
 func attachDraftSources(ev *DayEvidence, segments []Segment, timezone string, blocks []ReviewedBlock) {
 	seeds, _ := partitionDraft(ev.Topics, ev.Meetings, segments, timezone)
 	byID := make(map[string]DraftBlock, len(seeds))
@@ -2024,6 +2033,11 @@ func attachDraftSources(ev *DayEvidence, segments []Segment, timezone string, bl
 	for i := range blocks {
 		recomputed, ok := byID[blocks[i].BlockID]
 		if !ok {
+			if len(blocks[i].Sources) == 0 {
+				fmt.Fprintf(recordDiagnostics,
+					"record: block %s is not in the recomputed draft; the state no longer matches the draft, so no sources were attached\n",
+					blocks[i].BlockID)
+			}
 			continue
 		}
 		blocks[i].Sources = recomputed.Sources

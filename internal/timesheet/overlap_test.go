@@ -768,3 +768,74 @@ func TestRecordSourcesKeepEvidenceAbsorbedIntoMergedMeeting(t *testing.T) {
 		})
 	}
 }
+
+// TestRecordReportsBlocksOutsideTheRecomputedDraft: a reviewed block the
+// recompute cannot place still records, keeps its own (empty) sources, and says
+// so once on the diagnostic stream. A block the recompute does produce prints
+// nothing and receives its sources.
+func TestRecordReportsBlocksOutsideTheRecomputedDraft(t *testing.T) {
+	topics := []TopicCandidate{{
+		Title:   "Evening evidence",
+		FirstAt: "2026-10-26T20:00:00+07:00", LastAt: "2026-10-26T21:00:00+07:00",
+		Items: []EvidenceItem{{Kind: "commit", Repo: "acme/api", Title: "read notes", Time: "2026-10-26T20:10:00+07:00"}},
+	}}
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	writeStateDay(t, statePath, "2026-10-26", "Asia/Ho_Chi_Minh", DayEvidence{Topics: topics}, nil)
+
+	var logged bytes.Buffer
+	previous := recordDiagnostics
+	recordDiagnostics = &logged
+	t.Cleanup(func() { recordDiagnostics = previous })
+
+	unknown := ReviewedDraft{Date: "2026-10-26", Timezone: "Asia/Ho_Chi_Minh", Blocks: []ReviewedBlock{{
+		DraftBlock:  DraftBlock{BlockID: "work-22:00-23:00", Kind: "work", Start: "22:00", End: "23:00"},
+		Description: "Hand-edited block",
+	}}}
+	if _, err := RecordEntries(statePath, "test", unknown, false, time.Now()); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	want := "record: block work-22:00-23:00 is not in the recomputed draft; " +
+		"the state no longer matches the draft, so no sources were attached\n"
+	if logged.String() != want {
+		t.Fatalf("diagnostic = %q, want %q", logged.String(), want)
+	}
+	f, err := ReadEntries(statePath, "2026-10-26")
+	if err != nil || f == nil || len(f.Entries) != 1 {
+		t.Fatalf("entries = %+v %v, want the block still recorded", f, err)
+	}
+	if len(f.Entries[0].Sources) != 0 {
+		t.Fatalf("recorded sources = %+v, want none", f.Entries[0].Sources)
+	}
+
+	// The same evidence's own draft block resolves, so it prints nothing and
+	// receives the source.
+	draft := BuildDraft(draftReview(nil, nil, topics, nil), "test")
+	if len(draft.Blocks) != 1 {
+		t.Fatalf("draft blocks = %+v, want the evidence block", draft.Blocks)
+	}
+	wantBlock := draft.Blocks[0]
+	logged.Reset()
+	drafted := ReviewedDraft{Date: "2026-10-26", Timezone: "Asia/Ho_Chi_Minh", Blocks: []ReviewedBlock{{
+		DraftBlock:  wantBlock,
+		Description: "Evening notes",
+	}}}
+	if _, err := RecordEntries(statePath, "test", drafted, false, time.Now()); err != nil {
+		t.Fatalf("record the drafted block: %v", err)
+	}
+	if logged.String() != "" {
+		t.Fatalf("diagnostic = %q, want none for a resolving id", logged.String())
+	}
+	f2, err := ReadEntries(statePath, "2026-10-26")
+	if err != nil || f2 == nil {
+		t.Fatalf("entries = %+v %v", f2, err)
+	}
+	for _, entry := range f2.Entries {
+		if entry.BlockID != wantBlock.BlockID {
+			continue
+		}
+		recordedSourcesEqualDraft(t, entry, wantBlock)
+		return
+	}
+	t.Fatalf("entries = %+v, want the drafted block %s", f2.Entries, wantBlock.BlockID)
+}

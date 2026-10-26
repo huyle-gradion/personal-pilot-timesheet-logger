@@ -678,7 +678,8 @@ func writeStateDay(t *testing.T, statePath, date, timezone string, ev DayEvidenc
 		confirmed := make([]map[string]string, 0, len(segments))
 		for _, s := range segments {
 			confirmed = append(confirmed, map[string]string{
-				"start": s.Start, "end": s.End, "description": s.Description,
+				"id": s.IntervalID, "date": date, "start": s.Start, "end": s.End,
+				"description": s.Description,
 			})
 		}
 		day["confirmed"] = confirmed
@@ -698,10 +699,11 @@ func writeStateDay(t *testing.T, statePath, date, timezone string, ev DayEvidenc
 }
 
 // writeStateEvidence writes a minimal state file carrying one day's topics in
-// the existing store schema shape.
+// the existing store schema shape. The day carries the timezone its anchors
+// use, because every stored day has one and record renders every stored day.
 func writeStateEvidence(t *testing.T, statePath, date string, topics []TopicCandidate) {
 	t.Helper()
-	writeStateDay(t, statePath, date, "", DayEvidence{Topics: topics}, nil)
+	writeStateDay(t, statePath, date, "Asia/Ho_Chi_Minh", DayEvidence{Topics: topics}, nil)
 }
 
 // record on a day whose durable evidence has items for a block: the recorded
