@@ -9,7 +9,7 @@ Inputs (resolve once; never commit): `TS_BINARY=<repo>/bin/timesheet`, `TS_CONFI
 
 The day: omit `--date` and the binary resolves today in the configured timezone - never compute the date yourself from the host clock. Pass `--date YYYY-MM-DD` only for a past day. After `run`, the draft's `date` field is the day every later step uses.
 
-1. **[Script] Run** (re-runnable; a failed source never blocks the day): `"$TS_BINARY" run --config "$TS_CONFIG" --env-file "$TS_ENV" --date "$DAY" > "$TMP/draft.json"` - stdout is the entire judgment input.
+1. **[Script] Run** (re-runnable; a failed source never blocks the day): `"$TS_BINARY" run --config "$TS_CONFIG" --env-file "$TS_ENV" > "$TMP/draft.json"` - stdout is the entire judgment input; `DAY` comes from the draft's `date` field (never from the host clock). For a past day add `--date YYYY-MM-DD`.
 
 2. **[AI] Review**: judge ONLY `$TMP/draft.json` (never raw git log/calendar/prior days); write ONLY `$TMP/descriptions.json`: `{"notes": "<string>", "descriptions": {"<block_id>": "<prose>"}}` - one grouped-topic entry per block; no draft fields or `PRs:` list (`record` appends `prs_inline`); `notes` = one JSON string or omit; `--file reviewed.json` = recovery only. A block may carry `outside_work_hours` + `work_hours_reason` (`day_not_in_policy`, `before_window`, `between_windows`, `after_window`, `partial`): informational only - outside main hours is allowed, so never reject, skip, or shift a block for it.
 

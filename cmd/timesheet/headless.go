@@ -331,7 +331,9 @@ func runRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(os.TempDir(), "timesheet", f.date)
+	// The artifacts directory is keyed by the RESOLVED day: with an omitted
+	// --date, f.date is empty and the draft would land in an undated path.
+	dir := filepath.Join(os.TempDir(), "timesheet", day)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("run: the artifacts directory cannot be created")
 	}
