@@ -475,12 +475,10 @@ func parseCatalog(res mcp.CallResult, query string, observed time.Time) (*Catalo
 				cat.CatalogID = catalogID(query, cat.Options, cat.Complete)
 				return cat, nil
 			}
-			first := text
-			if i := strings.IndexByte(first, '\n'); i >= 0 {
-				first = first[:i]
-			}
-			return nil, newError(CodeRemoteUnreadable,
-				"the classification text could not be parsed; first line: "+truncateRunes(sanitizeProviderDetail(first), 120))
+			// The provider text is never echoed: it is arbitrary remote content
+			// and sanitizeProviderDetail does not redact bearer tokens or JSON
+			// fields, so a diagnostic here could leak a credential.
+			return nil, newError(CodeRemoteUnreadable, "the classification text could not be parsed")
 		}
 		if len(structuredOrder) > 0 && parsed == 0 {
 			// The text block is the only source of code/activity type. A
