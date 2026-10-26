@@ -2889,6 +2889,386 @@ Post-merge states: PR #129 MERGED `2026-10-22T03:22:11Z`; ISSUE #128 CLOSED COMP
 Next gate: this record rides the next records pull request together with the owner-local `benchmarks/metrics.csv` +5 rows (2026-10-09..16); the queue stays `#41` (open until a recurrent failure is instrumented) and `#56` (mode 2, the OWNER'S). Production submission remains blocked.
 ```
 
+```text
+2026-10-22 10:56 +0700 / MERGE-55 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (rebase, rewritten SHAs) / records and CSV rows (PR #130, 4ff992b)
+Issue framing: closingIssuesReferences is empty. The body says "Closes nothing" and references #126 and #128, both already CLOSED COMPLETED by the preceding ledger entries.
+
+THE SLICE: two commits record the preceding two merges and five CSV rows, then remove the fixed row-count test. The range changes 3 files, +74/-12, including docs/orchestration/state.md, benchmarks/metrics.csv and internal/benchmark/csv_store_test.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body explicitly relies on the driving session's verification rather than a full independent review chain.
+
+GATES: the PR body claims final-tree formatting, build and diff checks clean, go test -count=1 ./... at 24/24 packages with 0 FAIL, and report rendering of 8 rows. These are author claims, not checks rerun for this ledger.
+
+Merge method and result: rebase rewrote 5c73ba7 to 0d73a72 and e16fa82 to 4ff992b, across 3 files, +74/-12. Git records 0d73a72 as 4ff992b's sole parent, with 894b023 preceding the two-commit range. The pushed head e16fa82 is not an ancestor of main, so the pushed and landed SHAs differ.
+
+Post-merge states: PR #130 MERGED; no issue closed. Further follow-up not recorded.
+```
+
+```text
+2026-10-24 15:33 +0700 / MERGE-56 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (merge commit) / deterministic core publication (PR #138, a421f3f)
+Issue framing: closingIssuesReferences names #132, #133 and #134, all CLOSED COMPLETED. The body also references #131 and #135, still OPEN at this merge.
+
+THE SLICE: one commit publishes the R1-R3 dev.9 baseline. The range changes 46 files, +15961/-13, including internal/rewrite/session.go, internal/rewrite/model.go, internal/rewrite/migration_test.go and 24 orchestration documents.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The body cites timesheet-r1-acceptance.md, timesheet-r2-acceptance.md and timesheet-r3-acceptance.md, without a PR verdict, reviewer login or snapshot SHA.
+
+GATES: the PR body says no tests were rerun for publication and retains prior claims' attribution. It claims six source pins, binary 0.1.0-dev.9 with protocol 1, and whitespace checks. Suite package count not recorded.
+
+Merge method and result: a421f3f has two parents, 4ff992b and 496a6ab. The delta is 46 files, +15961/-13. This merge commit departs from the recorded fast-forward-only rule.
+
+Post-merge states: PR #138 MERGED; #132, #133 and #134 CLOSED COMPLETED. The body's #131 and #135 references remain follow-up context at this merge.
+```
+
+```text
+2026-10-24 15:33 +0700 / MERGE-57 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (merge commit) / approved submission publication (PR #139, f1b33b2)
+Issue framing: closingIssuesReferences names #135, CLOSED COMPLETED. The body also references #131, still OPEN after the range.
+
+THE SLICE: one commit adds approved submission. The range changes 21 files, +6033/-172, including internal/rewrite/submission.go, internal/rewrite/submission_test.go and internal/rewrite/approval.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The body cites timesheet-r4-acceptance.md.
+
+GATES: the PR body claims independent verification of 142 outer-manifest entries, 13 source pins and 9 rollback entries. It qualifies the prior 121-row matrix as prior evidence, not rerun. Suite package count not recorded.
+
+Merge method and result: f1b33b2 has two parents, a421f3f and 4dbe081. The delta is 21 files, +6033/-172. The PR was retargeted to main from #138's branch as its body required. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #139 MERGED; #135 CLOSED COMPLETED. The body retains #131 as a reference.
+```
+
+```text
+2026-10-24 15:33 +0700 / MERGE-58 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (merge commit) / restricted Pi harness (PR #140, 609ff79)
+Issue framing: closingIssuesReferences names #136, CLOSED COMPLETED. The body also references #131, still OPEN after the range.
+
+THE SLICE: one commit adds the restricted Timesheet harness. The range changes 22 files, +6806/-1, including pi/timesheet.ts, pi/package-lock.json, pi/transport.ts and pi/view.ts.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The body names acceptance documents and claims independent review of pinned Pi and compiled Go, without a reviewer login or PR verdict.
+
+GATES: the PR body claims 11 source files and 22 staged blobs matched, 94 hashes and sizes and 38 manifest records checked, and dev.16 with protocol 1 exiting 0. It says no broad suite or host-sensitive Git tests were rerun. Suite package count not recorded.
+
+Merge method and result: 609ff79 has two parents, f1b33b2 and 99a7f23. The delta is 22 files, +6806/-1. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #140 MERGED; #136 CLOSED COMPLETED. The body retains #131 as a reference.
+```
+
+```text
+2026-10-24 15:33 +0700 / MERGE-59 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (merge commit) / Timesheet 0.1.0 release (PR #141, c59896e)
+Issue framing: closingIssuesReferences is empty. The body says "No automatic closure of R6" and references #131 and #137, both still OPEN after the range.
+
+THE SLICE: three commits cut over the CLI, add a deterministic macOS UI runner and publish 0.1.0. The range changes 249 files, +2863/-74910, including docs/orchestration/timesheet-rewrite-r6-inventory.json, scripts/verify-r6-macos.py and README.md, and deletes retired legacy packages.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded.
+
+GATES: the PR body claims Go formatting, build, vet and retained tests pass, strict adapter TypeScript and launcher syntax pass, and release negotiation and pinned-Pi Linux workflow, restart, reload and normal quit pass. No numeric count recorded.
+
+Merge method and result: c59896e has two parents, 609ff79 and 70e962d. The delta is 249 files, +2863/-74910. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #141 MERGED; no issue closed. The body explicitly leaves R6 closure outstanding, with #131 and #137 OPEN.
+```
+
+```text
+2026-10-24 16:28 +0700 / MERGE-60 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (merge commit) / Timesheet naming and 0.1.1 (PR #142, 1945cb9)
+Issue framing: closingIssuesReferences is empty. The body references #137 and #131, both still OPEN after the range.
+
+THE SLICE: one commit standardizes Timesheet naming for 0.1.1. The range changes 93 files, +595/-551, including 52 orchestration documents, 18 internal/timesheet files, pi/transport.ts, pi/package.json and CHANGELOG.md. The state.md change renames text inside existing records, +95/-95.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded.
+
+GATES: the PR body claims Go formatting, vet and tests, strict TypeScript, launcher syntax and the pinned-Pi Linux workflow, restart, reload and normal quit all pass. Commands not recorded; no numeric count recorded.
+
+Merge method and result: 1945cb9 has two parents, c59896e and 66b562d. The delta is 93 files, +595/-551. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #142 MERGED; no issue closed. The body's #137 and #131 references remain OPEN.
+```
+
+```text
+2026-10-25 01:30 +0700 / MERGE-61 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (merge commit) / runner-agnostic headless skill (PR #143, 4029491)
+Issue framing: closingIssuesReferences is empty; further issue framing not recorded.
+
+THE SLICE: ten commits add headless collect, draft, record and status, the runner-agnostic skill and token capture, then fix date mismatch and missing-entry status and record Pi runs. The range changes 17 files, +1735/-13, including internal/timesheet/headless.go, internal/timesheet/headless_test.go, cmd/timesheet/headless.go and scripts/tokens.py.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded.
+
+GATES: the PR body claims formatting and vet clean, go test ./... green including headless tests, a public-surface Linux demo, and synthetic Claude and Pi transcript checks for tokens.py. No numeric count recorded.
+
+Merge method and result: 4029491 has two parents, 1945cb9 and 2fd21db. The delta is 17 files, +1735/-13. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #143 MERGED; no issue closed. Further follow-up not recorded.
+```
+
+```text
+2026-10-25 01:31 +0700 / MERGE-62 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (merge commit) / skill flag guidance (PR #144, b00b023)
+Issue framing: closingIssuesReferences is empty; further issue framing not recorded.
+
+THE SLICE: one commit removes flag-discovery waste from agent runs. The range changes 3 files, +23/-3, in .agents/skills/timesheet/workflow.md, .agents/skills/timesheet/SKILL.md and docs/improvement-log.md.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded.
+
+GATES: gate evidence not recorded in the PR body, which has no test plan or commands; no numeric count recorded. The inherited gate-passed label above is not evidence of a run.
+
+Merge method and result: b00b023 has two parents, 4029491 and 1125a87. The delta is 3 files, +23/-3. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #144 MERGED; no issue closed. Further follow-up not recorded.
+```
+
+```text
+2026-10-25 01:34 +0700 / MERGE-63 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (merge commit) / Mac entry-store consolidation note (PR #145, 8f272bb)
+Issue framing: closingIssuesReferences is empty; further issue framing not recorded.
+
+THE SLICE: one commit records entry-store consolidation onto the Mac. The range changes only docs/improvement-log.md, 1 file, +12/-0.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded.
+
+GATES: gate evidence not recorded in the one-line PR body, which has no test plan; no numeric count recorded. The inherited gate-passed label above is not evidence of a run.
+
+Merge method and result: 8f272bb has two parents, b00b023 and 6d44828. The delta is 1 file, +12/-0. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #145 MERGED; no issue closed. Further follow-up not recorded.
+```
+
+```text
+2026-10-25 11:10 +0700 / MERGE-64 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / compact draft and evidence overflow (PR #150, 6fc7576)
+Issue framing: closingIssuesReferences names #146 and #148, both CLOSED COMPLETED.
+
+THE SLICE: one commit compacts the AI-visible draft and retains per-topic overflow. The range changes 7 files, +1750/-58, including internal/timesheet/overflow_test.go, internal/timesheet/headless_test.go, internal/timesheet/headless.go and .agents/skills/timesheet/SKILL.md.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body claims two independent read-only rounds with fresh agents and F1 and F2 fixed and rechecked.
+
+GATES: the PR body claims build, vet, go test -count=1 ./... and formatting green, 20 new tests, 8 span-overlap orderings, and a 997-byte draft against 6,651 bytes. Suite package count not recorded.
+
+Merge method and result: 6fc7576 has two parents, 8f272bb and 4cbe475. The delta is 7 files, +1750/-58. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #150 MERGED; #146 and #148 CLOSED COMPLETED. Further follow-up not recorded.
+```
+
+```text
+2026-10-25 12:38 +0700 / MERGE-65 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / descriptions-only recording (PR #153, c116089)
+Issue framing: closingIssuesReferences names #152, CLOSED COMPLETED.
+
+THE SLICE: two commits add descriptions-only judgment, then fix prs_inline suffix checking, configuration-first errors and test rows. The range changes 6 files, +629/-34, including internal/timesheet/headless_test.go, cmd/timesheet/headless_test.go and internal/timesheet/headless.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body says "Independent read-only review: ACCEPTED", with F-1 and F-3 fixed, F-2 checked and F-4 requiring no action.
+
+GATES: the PR body claims build, vet, go test -count=1 ./... and formatting clean, 8 new tests, and TestRecordComposedMatchesFileComposedByteForByte as byte-identity proof. Suite package count not recorded.
+
+Merge method and result: c116089 has two parents, 6fc7576 and 9089c57. The delta is 6 files, +629/-34. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #153 MERGED; #152 CLOSED COMPLETED. Further follow-up not recorded.
+```
+
+```text
+2026-10-25 14:40 +0700 / MERGE-66 / snapshot-verified -> review-covered (none recorded) -> gate-passed -> merged (merge commit) / descriptions-only token run (PR #154, 6c5f448)
+Issue framing: closingIssuesReferences is empty; further issue framing not recorded.
+
+THE SLICE: one commit records descriptions-only run 4. The range changes 2 files, +28/-3, in docs/improvement-log.md and benchmarks/tokens.csv.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded.
+
+GATES: gate evidence not recorded because the PR body is empty; no numeric count recorded. The inherited gate-passed label above is not evidence of a run.
+
+Merge method and result: 6c5f448 has two parents, c116089 and de8f85a. The delta is 2 files, +28/-3. The merge commit departs from the fast-forward-only rule and landed 9 seconds before #157.
+
+Post-merge states: PR #154 MERGED; no issue closed. Further follow-up not recorded.
+```
+
+```text
+2026-10-25 14:41 +0700 / MERGE-67 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / consolidated skill and run command (PR #157, 5e2f0f3)
+Issue framing: closingIssuesReferences names #155 and #156, both CLOSED COMPLETED.
+
+THE SLICE: one commit folds the runbook into SKILL.md and adds run. The range changes 8 files, +323/-176, including cmd/timesheet/run_test.go, cmd/timesheet/headless.go, .agents/skills/timesheet/SKILL.md and docs/agents/timesheet-interface.md.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body claims both slices ACCEPTED in independent read-only review, F1 fixed before commit and F2 noted.
+
+GATES: the PR body claims build, vet, go test -count=1 ./... and formatting green, three sequential runs with one fetch each, and SKILL.md at 4,068 of 4,096 bytes. Suite package count not recorded.
+
+Merge method and result: 5e2f0f3 has two parents, 6c5f448 and 668e6cd. The delta is 8 files, +323/-176. The merge commit departs from the fast-forward-only rule and landed 9 seconds after #154.
+
+Post-merge states: PR #157 MERGED; #155 and #156 CLOSED COMPLETED. The author body notes F2 without further disposition in the gathered facts.
+```
+
+```text
+2026-10-25 15:13 +0700 / MERGE-68 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / adapter version drift guard (PR #159, 9c1032b)
+Issue framing: closingIssuesReferences names #158, CLOSED COMPLETED.
+
+THE SLICE: one commit realigns APP_VERSION with the child and adds a drift guard. The range changes 2 files, +41/-1, in internal/timesheet/adapter_pin_test.go and pi/transport.ts.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body claims independent read-only review ACCEPTED.
+
+GATES: the PR body claims the full battery green, mutations reverting or deleting the pin fail the guard, and all three negotiated identities pair. Suite package count not recorded.
+
+Merge method and result: 9c1032b has two parents, 5e2f0f3 and 74bd0d2. The delta is 2 files, +41/-1. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #159 MERGED; #158 CLOSED COMPLETED. Further follow-up not recorded.
+```
+
+```text
+2026-10-25 17:42 +0700 / MERGE-69 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / headless finalization and submission (PR #161, 5cfc9a5)
+Issue framing: closingIssuesReferences names #160, CLOSED COMPLETED.
+
+THE SLICE: five commits add finalization, classification, planning, identity, approval, submission and outcome commands, plus skill guidance and ADR 0008. The range changes 14 files, +4341/-35, including cmd/timesheet/headless.go, cmd/timesheet/submit4_test.go, cmd/timesheet/submit1_test.go and internal/timesheet/headless.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body claims every slice independently ACCEPTED, with pre-commit fixes in SUBMIT-2 and SUBMIT-5. The author's 11:12:53Z comment adds FLOW-GAP-1 at 47b52df for #162, not a verdict.
+
+GATES: the PR body claims 36+ synthetic tests, the full battery green throughout, and SKILL.md at 4,093 of 4,096 bytes. Suite package count not recorded.
+
+Merge method and result: 5cfc9a5 has two parents, 9c1032b and 346fd83. The delta is 14 files, +4341/-35. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #161 MERGED; #160 CLOSED COMPLETED. The author comment records #162's follow-up addition, later shipped by #163.
+```
+
+```text
+2026-10-25 18:20 +0700 / MERGE-70 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / collection identity and day replacement (PR #163, 612dbd0)
+Issue framing: closingIssuesReferences names #162, CLOSED COMPLETED.
+
+THE SLICE: one commit exposes collection_id and makes record --replace supersede a day. The range changes 9 files, +428/-65, including cmd/timesheet/run_test.go, internal/timesheet/headless_test.go, cmd/timesheet/headless.go and internal/timesheet/session.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body claims independent review APPROVED through adversarial scratch checks of replace refusal, stdout purity and read-only additive status.
+
+GATES: the PR body claims replace-refusal safety, stdout byte-identity pinned by a test and additive-only status. Commands not recorded; no numeric count recorded.
+
+Merge method and result: 612dbd0 has two parents, 5cfc9a5 and 47b52df. The delta is 9 files, +428/-65. The merge commit departs from the fast-forward-only rule. The body records 47b52df pushed after #161 merged on reused branch feat/headless-submit-1, requiring this follow-up PR.
+
+Post-merge states: PR #163 MERGED; #162 CLOSED COMPLETED. The stranded commit shipped here according to the PR body.
+```
+
+```text
+2026-10-25 20:02 +0700 / MERGE-71 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / repository-event exhaustion and windowing (PR #164, ec203bc)
+Issue framing: closingIssuesReferences names #149, CLOSED COMPLETED.
+
+THE SLICE: one commit treats repository-event 422 as exhaustion and windows steady-state collection. The range changes 3 files, +625/-64, in internal/timesheet/github_status_test.go, internal/timesheet/github.go and internal/timesheet/model.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body claims independent read-only review PASS after the F1 fix.
+
+GATES: the PR body claims classification, aggregate, ceiling and gate semantics checked against pins and sanitizer probes against credential-bearing bodies. Commands not recorded; no numeric count recorded.
+
+Merge method and result: ec203bc has two parents, 612dbd0 and 7dd028a. The delta is 3 files, +625/-64. The merge commit departs from the fast-forward-only rule.
+
+Post-merge states: PR #164 MERGED; #149 CLOSED COMPLETED. Further follow-up not recorded.
+```
+
+```text
+2026-10-25 20:33 +0700 / MERGE-72 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / compact per-repository PR references (PR #165, c72849c)
+Issue framing: closingIssuesReferences is empty. The body describes the owner's 2026-10-20 staging blocker without an issue number.
+
+THE SLICE: one commit compacts prs_inline rendering per repository. The range changes 2 files, +174/-24, in internal/timesheet/headless_test.go and internal/timesheet/headless.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body claims independent review ACCEPTED for range edges, multiple repositories, determinism and compatibility, and attributes two failed reviewer tests to reviewer bugs.
+
+GATES: the PR body claims a 20-PR worst case shrank from 1,311 to 74 runes, with a 170-rune composed description against the 500 limit. Commands and suite package count not recorded.
+
+Merge method and result: c72849c has two parents, ec203bc and 512d633. The delta is 2 files, +174/-24. The merge commit departs from the fast-forward-only rule. The body records 512d633 pushed after #163 merged on reused branch feat/headless-submit-1 and shipped here as a stranded commit.
+
+Post-merge states: PR #165 MERGED; no issue closed. The body says this fixes the owner's staging blocker.
+```
+
+```text
+2026-10-25 21:58 +0700 / MERGE-73 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / finalized-day classification (PR #166, 5240c6f)
+Issue framing: closingIssuesReferences is empty. The body names no issue.
+
+THE SLICE: one commit allows classification on finalized days with finalization at a new revision. The range changes 3 files, +420/-47, in cmd/timesheet/classify_final_test.go, cmd/timesheet/headless.go and cmd/timesheet/main.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author body claims all seven priorities PASS in independent read-only review.
+
+GATES: the PR body claims 4 new tests including TestClassifyFinalizedDayPlanBecomesReady, SUBMIT-1 through SUBMIT-4 and existing suites pass, and the full battery clean. Suite package count not recorded.
+
+Merge method and result: 5240c6f has two parents, c72849c and 7686440. The delta is 3 files, +420/-47. The merge commit departs from the fast-forward-only rule. The body records a previous attempt stranded on a merged branch and this PR branched from main.
+
+Post-merge states: PR #166 MERGED; no issue closed. The body records recovery of the previous stranded attempt in this PR.
+```
+
+```text
+2026-10-25 22:55 +0700 / MERGE-74 / snapshot-verified -> review-covered (none, author comment says the gate did not run) -> gate-passed -> merged (merge commit) / four-hour staging policy (PR #168, 96e30c9)
+Issue framing: closingIssuesReferences names #167, CLOSED COMPLETED.
+
+THE SLICE: one commit splits long blocks at staging and adds stage --revise, a plan guard and receipt observability. The range changes 10 files, +567/-60, including cmd/timesheet/resplit_test.go, cmd/timesheet/headless.go, internal/timesheet/headless.go and internal/timesheet/submission.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author's 15:53:36Z comment says "The independent-eyes gate has NOT run" after four dispatch failures at the provider's model-concurrency limit and discloses non-independent self-review. Reviewer snapshot SHA not recorded.
+
+GATES: the PR body's checked test plan claims build, vet, formatting and all suites clean, chunk arithmetic, --revise, plan-guard and sanitizer cases. No numeric count recorded. Its checked independent-review line contradicts the author's explicit comment that the gate did not run.
+
+Merge method and result: 96e30c9 has two parents, 5240c6f and d7e0de3. The delta is 10 files, +567/-60. The merge commit departs from the fast-forward-only rule and landed without independent review, as disclosed on the PR.
+
+Post-merge states: PR #168 MERGED; #167 CLOSED COMPLETED. The comment leaves owner review, a reviewer retry or merge on owner authority as options, not a completed independent verdict.
+```
+
+```text
+2026-10-25 23:22 +0700 / MERGE-75 / snapshot-verified -> review-covered (none, author comment says the gate did not run) -> gate-passed -> merged (merge commit) / gap-aware staging (PR #170, 94c84d7)
+Issue framing: closingIssuesReferences names #169, CLOSED COMPLETED.
+
+THE SLICE: one commit resolves overlapping ledger entries at the staging bridge. The range changes 4 files, +275/-7, including cmd/timesheet/gapsplit_test.go, internal/timesheet/headless.go and cmd/timesheet/headless.go.
+
+WITNESS AND LANES: PR author huyle-gradion; no reviewer recorded. The author's 17:24:46Z and superseding 17:25:03Z comments say "The independent-eyes gate has NOT run for this slice" after five failed dispatches. Reviewer snapshot SHA not recorded.
+
+GATES: the PR body's checked test plan claims build, vet, formatting and all suites clean. It claims live 2026-10-21 validation through submit with 4 confirmed entries and zero unresolved, and six gap-free intervals of at most 240 minutes totaling 644 minutes. Suite package count not recorded.
+
+Merge method and result: 94c84d7 has two parents, 96e30c9 and a2c1cc5. The delta is 4 files, +275/-7. The merge commit departs from the fast-forward-only rule and landed without independent review according to the author comments, posted about an hour after merge.
+
+Post-merge states: PR #170 MERGED; #169 CLOSED COMPLETED. The second author comment explicitly supersedes the first with the same gate disclosure.
+```
+
+```text
+2026-10-26 10:57 +0700 / MERGE-76 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (fast-forward) / overnight staging bridge (PR #177, 0d3ad4e)
+Issue framing: closingIssuesReferences names #173, CLOSED COMPLETED.
+
+THE SLICE: one commit preserves overnight ledger entries through the four-state bridge, revise removals and detail claims. The range changes 8 files, +200/-14, including cmd/timesheet/gapsplit_test.go, cmd/timesheet/headless.go, internal/timesheet/headless.go and internal/timesheet/submission.go.
+
+WITNESS AND LANES: PR author huyle-gradion. The author body names @fixer as implementer and claims a separate read-only reviewer session and focused re-review both ACCEPTED, with @oracle unavailable; no reviewer recorded.
+
+GATES: the PR body claims four regressions fail on 94c84d7 and pass on the branch through scratch and mutation checks. It lists formatting, vet, build, go test ./... -count=1 and diff checks as clean. Suite package count not recorded.
+
+Merge method and result: 0d3ad4e has sole parent 94c84d7 and equals the pushed head, consistent with fast-forward and no merge commit. The delta is 8 files, +200/-14. Method deviation not recorded.
+
+Post-merge states: PR #177 MERGED; #173 CLOSED COMPLETED. The body names #176 for two residual overnight behaviours; #176 remains OPEN after the range.
+```
+
+```text
+2026-10-26 10:57 +0700 / MERGE-77 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (fast-forward) / merged-PR and conversation evidence (PR #178, a92f0f9)
+Issue framing: closingIssuesReferences names #175, CLOSED COMPLETED.
+
+THE SLICE: one commit adds merged-PR and PR conversation comments as evidence. The main delta changes 8 files, +1086/-85, including internal/timesheet/github_pow_test.go, internal/timesheet/github.go, internal/timesheet/model.go, docs/agents/timesheet-interface.md and CHANGELOG.md.
+
+WITNESS AND LANES: PR author huyle-gradion. The author body names @fixer as implementer and claims independent frozen-snapshot review by a separate read-only session, with @oracle unavailable; no reviewer recorded.
+
+GATES: the PR body's checked test plan lists 9 cases and claims formatting, vet, build, go test ./... -count=1 and diff checks clean. Suite package count not recorded.
+
+Merge method and result: a92f0f9 has sole parent 0d3ad4e and equals the pushed head, consistent with fast-forward and no merge commit. The main delta is 8 files, +1086/-85. The PR API lists 14 files because its branch also carried the already-merged overnight commit, with 6 extra paths from #173.
+
+Post-merge states: PR #178 MERGED; #175 CLOSED COMPLETED. Further follow-up not recorded.
+```
+
+```text
+2026-10-26 11:50 +0700 / MERGE-78 / snapshot-verified -> review-covered (none, author body claim only) -> gate-passed -> merged (merge commit) / work hours and provider timezones (PR #182, 7662649)
+Issue framing: closingIssuesReferences names #174 and #181, both CLOSED COMPLETED.
+
+THE SLICE: one commit adds work-hours annotation and timezone-correct provider anchors. The range changes 13 files, +929/-32, including internal/timesheet/work_hours_test.go, internal/timesheet/headless.go, internal/timesheet/config_test.go, pi/transport.ts and CHANGELOG.md.
+
+WITNESS AND LANES: PR author huyle-gradion. The author body names @fixer as implementer and claims two independent read-only frozen-snapshot reviews required meeting-clock changes, followed by a fix and re-review, with @oracle unavailable; no reviewer recorded.
+
+GATES: the PR body's checked test plan lists 8 cases, including the 07:00Z Asia/Ho_Chi_Minh case and byte-identical nil-policy marshalling. It claims formatting, vet, build, go test ./... -count=1 and diff checks clean. Suite package count not recorded.
+
+Merge method and result: 7662649 has two parents, a92f0f9 and 9262229. The delta is 13 files, +929/-32. The merge commit departs from the fast-forward-only rule and landed 53 minutes after #178.
+
+Post-merge states: PR #182 MERGED; #174 and #181 CLOSED COMPLETED. Further follow-up not recorded.
+```
+
+## Merge process audit, 2026-10-26
+
+This audit records the 24 merged PRs in 894b023..7662649 from Git history and the collected GitHub API facts. The record headers retain the ledger's snapshot-verified and gate-passed vocabulary as requested format, not as new attestations. No application gate was run for this ledger. Gate paragraphs attribute local-run claims to their PR bodies. Merge times are UTC+7 conversions of API mergedAt, not branch commit times.
+
+Git parent history records 21 of 24 merges as two-parent merge commits, for PRs #138, #139, #140, #141, #142, #143, #144, #145, #150, #153, #154, #157, #159, #161, #163, #164, #165, #166, #168, #170 and #182. The earlier rule at state.md line 77 says "the fast-forward-only rule resumes for every later merge, and a merge commit is not authorised for any of them". That rule grants 1ec8a3c a one-time exception, explicitly "not a precedent". Neither the state.md naming changes nor control-policy.md changed that rule in this range.
+
+Git history records one rebase merge with rewritten SHAs, #130. It replaces pushed commits 5c73ba7 and e16fa82 with 0d73a72 and 4ff992b. The pushed head is not an ancestor of main. The final commit's parent is 0d73a72, as shown by git log, rather than 894b023 as the collected facts' per-merge parent line says. The latter is the base of the two-commit range. The other two merges, #177 and #178, preserve their pushed heads with one parent each, consistent with fast-forward. Parent and SHA evidence cannot distinguish a local fast-forward from GitHub rebase on an already-current branch without rewritten SHAs.
+
+The collected API responses record 0 of 24 PRs with a review object, 0 reviews and 0 review comments. Twelve bodies carry author-written review claims, for #150, #153, #157, #159, #161, #163, #164, #165, #166, #177, #178 and #182. Their ACCEPTED, APPROVED, PASS and independent-review assertions are author self-assessment, not recorded independent review. No reviewer login, reviewer session or accepted snapshot SHA accompanies those assertions. PR #140 also describes independent review without a PR verdict. PR #138 points to acceptance documents, and #130 explicitly relies on driving-session verification. Those references do not create a PR review object.
+
+Author comments on #168 and #170 explicitly state that the independent gate did NOT run, after four and five failed reviewer dispatches respectively. PR #168's checked independent-review line contradicts its own author comment. PR #170's disclosure comments postdate merge by about an hour. These comments are not independent verdicts.
+
+The collected API facts record 0 of 24 PRs with a CI check run and empty statusCheckRollup throughout. The sampled heads 9262229 and 346fd83 also have zero check-runs and commit statuses. Git records no .github/workflows directory and no .github changes in the range. Every gate claim above is a local-run claim in an author-written PR body, not a CI result. The bodies of #144, #145 and #154 provide no gate evidence, and #154's body is empty.
+
+The collected closingIssuesReferences are empty for 9 PRs, #130, #141, #142, #143, #144, #145, #154, #165 and #166. PRs #130 and #141 explicitly declare no automatic closure. All 20 closing references elsewhere in the range are CLOSED COMPLETED. The PR bodies record three stranded-commit incidents, with 47b52df shipped by #163 after #161 merged, 512d633 shipped by #165 after #163 merged, and #166 recovering a previous attempt on a merged branch. One branch name, feat/headless-submit-1, is reused by #161, #163 and #165. All 25 first-parent commits in the range belong to these 24 PRs, with no direct commit to main.
+
+The parent evidence can be regenerated with git log --first-parent --format='%h %p %s' 894b023..7662649. PR state, bodies, closing references, reviews and comments can be read with gh pr view <number> --json state,body,closingIssuesReferences,reviews,comments. GitHub review comments and checks require their separate API endpoints. This audit uses the collected 2026-10-26 responses for the range, with fresh spot checks of #130, #168 and #182, not a new full API sweep.
+
+The outstanding-records backlog through #182 closes with these 24 entries; the records for two further merges, #184 and #183, will be appended to this same records pull request before it is opened, under the existing next-records-PR batching rule.
+
 ## Documentation review
 
 On 2026-10-10 an independent documentation reviewer identified seven gaps. Corrected actor labels for orchestrator-only commits, explicit session vault authority, shared-workflow coverage, provisional remote limit/timezone assumptions, mapping ownership, review snapshot/independence fields, and significant-outcome daily logging. Corrections affect documentation only; S1 source review remains pending. Independent re-review of these documentation corrections has not been run.
