@@ -1,6 +1,6 @@
-# Timesheet interface (`0.2.0-dev.4`)
+# Timesheet interface (`0.2.0-dev.5`)
 
-Application version: `0.2.0-dev.4` (unreleased development stamp; the
+Application version: `0.2.0-dev.5` (unreleased development stamp; the
 public release line remains `0.1.1` until this ships).
 Protocol schema: `1`. State schema: `3`.
 
@@ -77,6 +77,14 @@ layer of the timesheet skill (`.agents/skills/timesheet/`). They construct
 the same session `serve` uses and drive its request dispatcher in-process;
 there is no second protocol and no new request grammar.
 
+Draft blocks and the staged intervals derived from them share one merge rule
+(issue #183): work and evidence blocks that overlap become one block over the
+union span with every contributing POW named, a meeting absorbs the work and
+evidence it overlaps, and blocks that merely touch stay separate. The stage
+derivation applies the same merge, so a staged interval covers the union span
+and each other contributor is reported as merged into the head rather than
+dropped.
+
 `collect`, `draft`, `run`, `record` and `status` treat an omitted `--date` as
 today in the configured `timezone`, resolved by the binary rather than the host
 clock; an explicit `--date` always wins. The resolved date appears as `date` in
@@ -89,12 +97,9 @@ the draft, in the record receipt, and in the status summary.
   source references and per-source completeness. The partitioning rule is
   fixed: eligible calendar meetings become blocks in start order; confirmed
   intervals become work blocks; evidence topics attach to the first block
-  their time span overlaps; remaining topics form one evidence block; blocks
-  that strictly overlap merge into one block over the union span, so a meeting
-  keeps the POWs that overlapped it and concurrent POWs are named together
-  (blocks that merely touch stay separate); a day with no time anchors still
-  yields one whole-day block. When `work_hours` is configured, blocks are
-  additionally annotated
+  their time span overlaps; remaining topics form one evidence block; a day
+  with no time anchors still yields one whole-day block. When `work_hours` is
+  configured, blocks are additionally annotated
   (see [Work-hours annotation](#work-hours-annotation-optional-non-blocking)).
   This draft is the skill's entire model input.
 - `run` composes collect and draft in one process: the same single bounded

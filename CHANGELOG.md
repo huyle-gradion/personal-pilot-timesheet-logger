@@ -2,7 +2,23 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
-## Unreleased (0.2.0-dev.4)
+## Unreleased (0.2.0-dev.5)
+
+- Merge concurrent POWs instead of splitting or dropping them (issue #183):
+  work and evidence blocks whose same-day spans strictly overlap render as one
+  block over the union span, carrying every contributor's topic candidates, PRs
+  and sources so each POW is named, and a meeting absorbs the work and evidence
+  it overlaps. Touching blocks stay separate and a gap is never
+  bridged. `stage` derives the same merge, so one interval covers the union
+  span (chunked to the four-hour policy) and every other contributor is
+  reported as merged into the head rather than dropped; `record` re-derives
+  sources over the same merged blocks, and a day without overlap renders
+  byte-identically. The shortest-first split and the meeting's silent
+  suppression of an overlapping work block are gone.
+- Development stamp `0.2.0-dev.5`; release stamping, adapter version and
+  publication remain owner-gated.
+
+## 0.2.0-dev.4
 
 - Make `log today's work` one command (issue #179): `collect`, `draft`, `run`,
   `record` and `status` accept an omitted `--date`, which the binary resolves to
