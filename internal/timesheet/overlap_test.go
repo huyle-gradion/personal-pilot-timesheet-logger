@@ -3,6 +3,8 @@ package timesheet
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -277,9 +279,9 @@ func TestRecordEntriesMergesOverlappingBlocks(t *testing.T) {
 		t.Fatalf("read entries: %+v %v", f, err)
 	}
 	got := f.Entries[0]
-	if got.BlockID != "work-09:00-11:00" || got.Kind != "work" || got.Start != want.Start || got.End != want.End {
-		t.Fatalf("recorded block = %s %s %s-%s, want the head id over the draft's union span %s-%s",
-			got.BlockID, got.Kind, got.Start, got.End, want.Start, want.End)
+	if got.BlockID != want.BlockID || got.Kind != "work" || got.Start != want.Start || got.End != want.End {
+		t.Fatalf("recorded block = %s %s %s-%s, want the draft's id %s over its union span %s-%s",
+			got.BlockID, got.Kind, got.Start, got.End, want.BlockID, want.Start, want.End)
 	}
 	if !strings.Contains(got.Description, "Bridge PRs") || !strings.Contains(got.Description, "Ops deploy") {
 		t.Fatalf("recorded description = %q, want both contributors", got.Description)
@@ -311,5 +313,289 @@ func TestRecordEntriesMergesOverlappingBlocks(t *testing.T) {
 	f2, err := ReadEntries(statePath, "2026-10-26")
 	if err != nil || f2 == nil || len(f2.Entries) != 1 {
 		t.Fatalf("after re-record: %+v %v, want one entry", f2, err)
+	}
+}
+
+// --- issue #183 fix round: F-1, F-2, F-3, F-4 --------------------------------
+
+// absorbedEvidenceReview is the F-1 shape: one meeting and three evidence
+// topics whose topic anchors sit outside the meeting's span while their item
+// anchors sit inside it, so the draft's evidence seed overlaps the meeting and
+// is absorbed into it.
+func absorbedEvidenceReview() Review {
+	untimed := []EvidenceItem{}
+	for i := 0; i < 7; i++ {
+		untimed = append(untimed, item("commit", fmt.Sprintf("note %d", i), fmt.Sprintf("09:%02d", 45+i)))
+	}
+	return draftReview(
+		[]ProposedMeeting{{Ref: "m1", Start: "2026-10-26T09:00:00+07:00", End: "2026-10-26T10:00:00+07:00", Title: "Standup"}},
+		nil,
+		[]TopicCandidate{
+			topic("Endpoint research", "08:00", "08:30", item("commit", "read docs", "09:40")),
+			topic("Later review", "11:00", "11:30", item("pull_request", "review deck", "10:10")),
+			{Title: "Untimed notes", Items: untimed},
+		},
+		nil,
+	)
+}
+
+// draftAsReviewed turns the draft the skill hands the judgment step into the
+// reviewed file record receives: the merged blocks, with a description per
+// block.
+func draftAsReviewed(t *testing.T, d Draft) ReviewedDraft {
+	t.Helper()
+	out := ReviewedDraft{Date: d.Date, Timezone: d.Timezone}
+	for _, b := range d.Blocks {
+		out.Blocks = append(out.Blocks, ReviewedBlock{DraftBlock: b, Description: b.Title})
+	}
+	return out
+}
+
+// recordedSourcesEqualDraft is the F-1 invariant: for the same evidence the
+// recorded entry carries exactly the draft block's sources, in order, with the
+// same truncation flag.
+func recordedSourcesEqualDraft(t *testing.T, got EntryRecord, want DraftBlock) {
+	t.Helper()
+	if len(got.Sources) != len(want.Sources) {
+		t.Fatalf("recorded sources = %d, draft = %d: %+v", len(got.Sources), len(want.Sources), got.Sources)
+	}
+	for i := range want.Sources {
+		if got.Sources[i] != want.Sources[i] {
+			t.Fatalf("recorded source[%d] = %+v, draft = %+v", i, got.Sources[i], want.Sources[i])
+		}
+	}
+	if got.SourcesTruncated != want.SourcesTruncated {
+		t.Fatalf("recorded sources_truncated = %v, draft = %v", got.SourcesTruncated, want.SourcesTruncated)
+	}
+}
+
+// TestRecordSourcesMatchDraftWhenEvidenceAbsorbedIntoMeeting: a cluster that
+// absorbed an evidence block keeps the sources the draft attached to it, for
+// both reviewed-file shapes record accepts — the older pre-merge blocks and
+// the already merged draft (review finding F-1).
+func TestRecordSourcesMatchDraftWhenEvidenceAbsorbedIntoMeeting(t *testing.T) {
+	review := absorbedEvidenceReview()
+	draft := BuildDraft(review, "test")
+	if len(draft.Blocks) != 1 {
+		t.Fatalf("draft blocks = %+v, want the meeting only", draft.Blocks)
+	}
+	want := draft.Blocks[0]
+	if want.Kind != "meeting" || len(want.Sources) != draftSourcesPerBlock || !want.SourcesTruncated {
+		t.Fatalf("draft block = %s sources=%d truncated=%v, want a meeting with %d truncated sources",
+			want.Kind, len(want.Sources), want.SourcesTruncated, draftSourcesPerBlock)
+	}
+
+	shapes := []struct {
+		name string
+		file ReviewedDraft
+	}{
+		{"pre-merge blocks", ReviewedDraft{Date: "2026-10-26", Timezone: "Asia/Ho_Chi_Minh", Blocks: []ReviewedBlock{
+			{DraftBlock: DraftBlock{BlockID: "meeting-09:00-10:00", Kind: "meeting", Start: "09:00", End: "10:00"}, Description: "Standup"},
+			{DraftBlock: DraftBlock{BlockID: "evidence-09:40-10:10", Kind: "evidence", Start: "09:40", End: "10:10",
+				TopicCandidates: []string{"Endpoint research", "Later review", "Untimed notes"}}, Description: "Evidence"},
+		}}},
+		{"merged draft", draftAsReviewed(t, draft)},
+	}
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			dir := t.TempDir()
+			statePath := filepath.Join(dir, "state.json")
+			writeStateEvidence(t, statePath, "2026-10-26", review.Evidence.Topics)
+			if _, err := RecordEntries(statePath, "test", shape.file, false, time.Now()); err != nil {
+				t.Fatalf("record: %v", err)
+			}
+			f, err := ReadEntries(statePath, "2026-10-26")
+			if err != nil || f == nil || len(f.Entries) != 1 {
+				t.Fatalf("read entries: %+v %v", f, err)
+			}
+			recordedSourcesEqualDraft(t, f.Entries[0], want)
+		})
+	}
+}
+
+// TestBuildDraftMeetingTitleKeepsDescriptionOnlyWork: a meeting that absorbs a
+// work block described only by its confirmed description still names that POW
+// in the title, because rule 2 forbids dropping it silently (finding F-2).
+func TestBuildDraftMeetingTitleKeepsDescriptionOnlyWork(t *testing.T) {
+	review := draftReview(
+		[]ProposedMeeting{{Ref: "m1", Start: "2026-10-26T09:00:00+07:00", End: "2026-10-26T10:00:00+07:00", Title: "Standup"}},
+		[]Segment{segment("Repair billing outage", "09:30", "10:30")},
+		nil, nil,
+	)
+	d := BuildDraft(review, "test")
+	if len(d.Blocks) != 1 {
+		t.Fatalf("blocks = %+v, want the meeting only", d.Blocks)
+	}
+	if got := d.Blocks[0].Title; got != "Standup + Repair billing outage" {
+		t.Fatalf("title = %q, want the meeting and the absorbed POW named", got)
+	}
+}
+
+// TestBuildDraftMeetingTitleLeavesTopicBackedWorkToItsTopics: a work block
+// that carries topic candidates is named through them, so the meeting title
+// stays clean and does not duplicate its prose (finding F-2).
+func TestBuildDraftMeetingTitleLeavesTopicBackedWorkToItsTopics(t *testing.T) {
+	review := draftReview(
+		[]ProposedMeeting{{Ref: "m1", Start: "2026-10-26T09:00:00+07:00", End: "2026-10-26T10:00:00+07:00", Title: "Standup"}},
+		[]Segment{segment("Joined standup", "09:30", "10:30")},
+		[]TopicCandidate{topic("Pipeline fix", "10:00", "10:20", item("pull_request", "green build", "10:10"))},
+		nil,
+	)
+	d := BuildDraft(review, "test")
+	if len(d.Blocks) != 1 {
+		t.Fatalf("blocks = %+v, want the meeting only", d.Blocks)
+	}
+	b := d.Blocks[0]
+	if b.Title != "Standup" {
+		t.Fatalf("title = %q, want the clean meeting title", b.Title)
+	}
+	if len(b.TopicCandidates) != 1 || b.TopicCandidates[0] != "Pipeline fix" {
+		t.Fatalf("topic candidates = %+v, want the work block's topic", b.TopicCandidates)
+	}
+}
+
+// TestBuildDraftNonMeetingClusterNamesTitlelessContributor: a work block and an
+// evidence block with topics merge, and the title names the evidence
+// contributor by its first topic candidate in evidence order (finding F-3).
+func TestBuildDraftNonMeetingClusterNamesTitlelessContributor(t *testing.T) {
+	review := draftReview(nil,
+		[]Segment{segment("Project A work", "09:00", "10:00")},
+		[]TopicCandidate{
+			topic("Project B work", "08:00", "08:30", item("commit", "b1", "09:30")),
+			topic("Project B followup", "11:00", "11:30", item("commit", "b2", "10:20")),
+		},
+		nil,
+	)
+	d := BuildDraft(review, "test")
+	if len(d.Blocks) != 1 {
+		t.Fatalf("blocks = %+v, want one merged block", d.Blocks)
+	}
+	b := d.Blocks[0]
+	if b.Title != "Project A work + Project B work" {
+		t.Fatalf("title = %q, want one name per contributor", b.Title)
+	}
+	if strings.Contains(b.Title, "Project B followup") {
+		t.Fatalf("title = %q, want one name per contributor, not every topic", b.Title)
+	}
+}
+
+// TestFoldDraftClusterNamesEachTitlelessContributor: in a cluster where every
+// contributor is titleless, each is named by its own first topic candidate in
+// evidence order.
+func TestFoldDraftClusterNamesEachTitlelessContributor(t *testing.T) {
+	topics := []TopicCandidate{{Title: "Alpha"}, {Title: "Beta"}}
+	seeds := []draftSeed{
+		{blk: DraftBlock{Kind: "evidence", Start: "09:00", End: "09:30", TopicCandidates: []string{"Alpha"}},
+			startM: 540, endM: 570, hasM: true, topics: []int{0}},
+		{blk: DraftBlock{Kind: "evidence", Start: "09:20", End: "10:00", TopicCandidates: []string{"Beta"}},
+			startM: 560, endM: 600, hasM: true, topics: []int{1}},
+	}
+	out := foldDraftCluster(seeds, []int{0, 1}, topics, time.UTC)
+	if out.blk.Title != "Alpha + Beta" {
+		t.Fatalf("title = %q, want each titleless contributor named once", out.blk.Title)
+	}
+}
+
+// TestRecordAndDraftUseOneMergedBlockID: a multi-member cluster's id is the
+// union-derived kind-start-end on both paths, so recording the draft after a
+// recovery merge replaces the same entry instead of duplicating it (finding
+// F-4).
+func TestRecordAndDraftUseOneMergedBlockID(t *testing.T) {
+	review := draftReview(nil,
+		[]Segment{segment("Bridge PRs", "09:00", "11:00"), segment("Ops deploy", "10:00", "12:00")},
+		nil, nil,
+	)
+	draft := BuildDraft(review, "test")
+	if len(draft.Blocks) != 1 || draft.Blocks[0].BlockID != "work-09:00-12:00" {
+		t.Fatalf("draft = %+v, want work-09:00-12:00 over the union span", draft.Blocks)
+	}
+	preMerge := ReviewedDraft{Date: "2026-10-26", Blocks: []ReviewedBlock{
+		{DraftBlock: DraftBlock{BlockID: "work-09:00-11:00", Kind: "work", Start: "09:00", End: "11:00"}, Description: "Bridge PRs"},
+		{DraftBlock: DraftBlock{BlockID: "work-10:00-12:00", Kind: "work", Start: "10:00", End: "12:00"}, Description: "Ops deploy"},
+	}}
+
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	if _, err := RecordEntries(statePath, "test", preMerge, false, time.Now()); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	f, _ := ReadEntries(statePath, "2026-10-26")
+	if f == nil || len(f.Entries) != 1 || f.Entries[0].BlockID != draft.Blocks[0].BlockID {
+		t.Fatalf("recorded = %+v, want the draft's id %s", f, draft.Blocks[0].BlockID)
+	}
+	// Recording the drafted block afterwards is a replace of the same entry.
+	if _, err := RecordEntries(statePath, "test", draftAsReviewed(t, draft), false, time.Now()); err != nil {
+		t.Fatalf("re-record draft: %v", err)
+	}
+	f2, _ := ReadEntries(statePath, "2026-10-26")
+	if f2 == nil || len(f2.Entries) != 1 || f2.Entries[0].BlockID != draft.Blocks[0].BlockID {
+		t.Fatalf("after recording the draft = %+v, want one entry under %s", f2, draft.Blocks[0].BlockID)
+	}
+	// Re-recording the same pre-merge content in merge mode changes nothing.
+	if _, err := RecordEntries(statePath, "test", preMerge, false, time.Now()); err != nil {
+		t.Fatalf("re-record same content: %v", err)
+	}
+	f3, _ := ReadEntries(statePath, "2026-10-26")
+	if f3 == nil || len(f3.Entries) != 1 || f3.Entries[0].BlockID != draft.Blocks[0].BlockID ||
+		f3.Entries[0].Start != "09:00" || f3.Entries[0].End != "12:00" {
+		t.Fatalf("after re-recording = %+v, want one unchanged union entry", f3)
+	}
+}
+
+// TestRecordReplaceReportsObsoleteMergedContributors: replace mode still
+// reports the entries a merge makes obsolete, even though the merged block's
+// id changed to the union-derived one (finding F-4).
+func TestRecordReplaceReportsObsoleteMergedContributors(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	if err := os.MkdirAll(filepath.Dir(EntriesPath(statePath, "2026-10-26")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing := EntriesFile{Date: "2026-10-26", AppVersion: "test", Entries: []EntryRecord{
+		{BlockID: "work-09:00-11:00", Date: "2026-10-26", Start: "09:00", End: "11:00", Description: "Bridge PRs", Kind: "work"},
+		{BlockID: "work-10:00-12:00", Date: "2026-10-26", Start: "10:00", End: "12:00", Description: "Ops deploy", Kind: "work"},
+	}}
+	data, err := json.Marshal(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(EntriesPath(statePath, "2026-10-26"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reviewed := ReviewedDraft{Date: "2026-10-26", Blocks: []ReviewedBlock{
+		{DraftBlock: DraftBlock{BlockID: "work-09:00-11:00", Kind: "work", Start: "09:00", End: "11:00"}, Description: "Bridge PRs"},
+		{DraftBlock: DraftBlock{BlockID: "work-10:00-12:00", Kind: "work", Start: "10:00", End: "12:00"}, Description: "Ops deploy"},
+	}}
+	receipt, err := RecordEntries(statePath, "test", reviewed, true, time.Now())
+	if err != nil {
+		t.Fatalf("record --replace: %v", err)
+	}
+	if receipt.Removed != 2 {
+		t.Fatalf("removed = %d, want both obsolete contributors reported", receipt.Removed)
+	}
+	f, _ := ReadEntries(statePath, "2026-10-26")
+	if f == nil || len(f.Entries) != 1 || f.Entries[0].BlockID != "work-09:00-12:00" {
+		t.Fatalf("entries = %+v, want one entry under the union-derived id", f)
+	}
+}
+
+// TestMergeOverlappingBlocksResolvesUnionIDCollisions: a union-derived id that
+// collides with an existing singleton id takes the next free suffix, in
+// ascending id order, while the singleton keeps its own id. The draft, record
+// and stage projection all use the same resolver.
+func TestMergeOverlappingBlocksResolvesUnionIDCollisions(t *testing.T) {
+	got := MergeOverlappingBlocks([]ReviewedBlock{
+		{DraftBlock: DraftBlock{BlockID: "work-09:00-11:00", Kind: "work", Start: "09:00", End: "11:00"}, Description: "A"},
+		{DraftBlock: DraftBlock{BlockID: "work-10:00-12:00", Kind: "work", Start: "10:00", End: "12:00"}, Description: "B"},
+		{DraftBlock: DraftBlock{BlockID: "work-09:00-12:00", Kind: "work"}, Description: "C"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("blocks = %+v, want the merged cluster and the singleton", got)
+	}
+	if got[0].BlockID != "work-09:00-12:00-2" {
+		t.Fatalf("merged id = %q, want the union id suffixed past the existing singleton", got[0].BlockID)
+	}
+	if got[1].BlockID != "work-09:00-12:00" {
+		t.Fatalf("singleton id = %q, want it untouched", got[1].BlockID)
 	}
 }

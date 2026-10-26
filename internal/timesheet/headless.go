@@ -100,6 +100,9 @@ type draftSeed struct {
 	startM int
 	endM   int
 	hasM   bool
+	// merged marks a folded cluster of two or more seeds: its id is the
+	// union-derived kind-start-end rather than a member's id (issue #183).
+	merged bool
 	// overflow carries each topic candidate's durable overflow counts,
 	// aligned with blk.TopicCandidates, so compactTopicsRender can attach
 	// combined summaries to the grouped lines after #148's grouping runs.
@@ -276,14 +279,15 @@ func BuildDraft(review Review, appVersion string) Draft {
 		return blocks[i].blk.Kind < blocks[j].blk.Kind
 	})
 
-	used := map[string]int{}
+	ids := make([]string, len(blocks))
+	fixed := make([]bool, len(blocks))
 	for i := range blocks {
-		id := blocks[i].blk.Kind + "-" + blocks[i].blk.Start + "-" + blocks[i].blk.End
-		if n := used[id]; n > 0 {
-			id += "-" + strconv.Itoa(n+1)
-		}
-		used[id]++
-		blocks[i].blk.BlockID = id
+		ids[i] = blocks[i].blk.Kind + "-" + blocks[i].blk.Start + "-" + blocks[i].blk.End
+		fixed[i] = !blocks[i].merged
+	}
+	ids = resolveBlockIDs(ids, fixed)
+	for i := range blocks {
+		blocks[i].blk.BlockID = ids[i]
 		sortPRs(blocks[i].blk.PRs)
 		blocks[i].blk.TopicCandidates = compactTopicsRender(blocks[i].blk.TopicCandidates, blocks[i].overflow)
 		blocks[i].blk.PRsInline = prsInline(blocks[i].blk.PRs)
@@ -295,11 +299,13 @@ func BuildDraft(review Review, appVersion string) Draft {
 // mergeDraftSeeds folds each connected component of strictly overlapping
 // seeds into one block over the union span. A cluster holding a meeting
 // renders a meeting, because a meeting absorbs the POWs inside it rather than
-// the other way round: the meeting's title stays and the absorbed POWs are
-// named through their folded topic candidates. Every other cluster keeps the
-// head's kind, joins each contributor's title, and replays the contributors'
-// topics in evidence order, which is the order record-time re-attachment
-// folds them in.
+// the other way round: the meeting's title stays, the absorbed POWs are named
+// through their folded topic candidates, and a contributor with no topic
+// candidate keeps its own wording beside the meeting title. Every other
+// cluster keeps the head's kind, joins each contributor's title (naming a
+// titleless one by its first topic candidate), and replays the contributors'
+// topics in evidence order, which is the order record-time re-attachment folds
+// them in.
 func mergeDraftSeeds(seeds []draftSeed, topics []TopicCandidate, dayLoc *time.Location) []draftSeed {
 	var spans []powSpan
 	var at []int
@@ -338,7 +344,10 @@ func mergeDraftSeeds(seeds []draftSeed, topics []TopicCandidate, dayLoc *time.Lo
 // foldDraftCluster renders one cluster. A single-member cluster is returned
 // untouched so a day with no overlap keeps its exact previous shape. A
 // multi-member cluster takes the head's start (the earliest in the cluster),
-// the latest end, and the union's clock strings.
+// the latest end, and the union's clock strings. The title keeps one name per
+// contributor: a meeting's own title plus the wording of absorbed work that
+// has no topic candidate, or the joined titles where a titleless contributor
+// is named by its first topic candidate.
 func foldDraftCluster(seeds []draftSeed, members []int, topics []TopicCandidate, dayLoc *time.Location) draftSeed {
 	head := seeds[members[0]]
 	if len(members) == 1 {
@@ -353,8 +362,16 @@ func foldDraftCluster(seeds []draftSeed, members []int, topics []TopicCandidate,
 		startM: head.startM,
 		endM:   head.endM,
 		hasM:   head.hasM,
+		merged: true,
 	}
-	var titles []string
+	hasMeeting := false
+	for _, i := range members {
+		if seeds[i].blk.Kind == "meeting" {
+			hasMeeting = true
+			break
+		}
+	}
+	var titles, absorbedTitles []string
 	meetingTitle := ""
 	for _, i := range members {
 		s := seeds[i]
@@ -371,11 +388,17 @@ func foldDraftCluster(seeds []draftSeed, members []int, topics []TopicCandidate,
 			}
 			continue
 		}
-		titles = append(titles, s.blk.Title)
+		// A meeting names the POWs it absorbed through their topic candidates.
+		// A contributor with none would otherwise vanish from the title, so its
+		// own wording is kept beside the meeting title (rule 2).
+		if hasMeeting && len(s.blk.TopicCandidates) == 0 {
+			absorbedTitles = append(absorbedTitles, s.blk.Title)
+		}
+		titles = append(titles, seedTitle(s, topics))
 	}
 	out.blk.End = clockString(out.endM)
 	if out.blk.Kind == "meeting" {
-		out.blk.Title = meetingTitle
+		out.blk.Title = joinText(append([]string{meetingTitle}, absorbedTitles...)...)
 	} else {
 		out.blk.Title = joinText(titles...)
 	}
@@ -391,6 +414,26 @@ func foldDraftCluster(seeds []draftSeed, members []int, topics []TopicCandidate,
 		out.blk = mergeTopicItems(out.blk, t)
 	}
 	return out
+}
+
+// seedTitle names one cluster contributor. Its own title wins; a titleless
+// contributor is named by its first topic candidate in evidence order, so a
+// merged block's title carries one name per POW instead of dropping the ones
+// that only exist as evidence (issue #183 rule 1).
+func seedTitle(s draftSeed, topics []TopicCandidate) string {
+	if title := strings.TrimSpace(s.blk.Title); title != "" {
+		return title
+	}
+	first := -1
+	for _, ti := range s.topics {
+		if ti >= 0 && ti < len(topics) && (first < 0 || ti < first) {
+			first = ti
+		}
+	}
+	if first < 0 {
+		return ""
+	}
+	return topics[first].Title
 }
 
 // Work-hours annotation reasons. These tokens are contractual: they appear in
@@ -1202,9 +1245,13 @@ func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, replace
 	// A reviewed file may still carry the overlapping blocks an older draft
 	// rendered. Merge first so the recorded entries are the blocks the current
 	// draft shows (issue #183 rule 5); a draft that already merged them is
-	// unchanged. seen is rebuilt because replace mode reports the entries a
-	// merge makes obsolete as removed.
-	reviewed.Blocks = MergeOverlappingBlocks(reviewed.Blocks)
+	// unchanged. The pre-merge list and its cluster mapping are kept because
+	// source re-attachment reproduces the draft's topic ownership over them.
+	// seen is rebuilt because replace mode reports the entries a merge makes
+	// obsolete as removed.
+	preMerge := reviewed.Blocks
+	var clusterOf []int
+	reviewed.Blocks, clusterOf = mergeReviewedBlocks(preMerge)
 	seen = make(map[string]bool, len(reviewed.Blocks))
 	for _, b := range reviewed.Blocks {
 		seen[b.BlockID] = true
@@ -1221,7 +1268,7 @@ func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, replace
 		if timezone == "" {
 			timezone = storedZone
 		}
-		reattachSources(ev, reviewed.Blocks, timezone)
+		reattachSources(ev, preMerge, reviewed.Blocks, clusterOf, timezone)
 	}
 
 	path := EntriesPath(statePath, reviewed.Date)
@@ -1375,10 +1422,19 @@ func SplitEntrySpans(start, end string) [][2]string {
 
 // EntryCluster is one stage-time union of recorded entries that strictly
 // overlap: the contributors in cluster order (head first), the union span as
-// same-day clock strings, and the joined description the staged intervals
-// carry. The head is the contributor the stage map and the receipt name.
+// same-day clock strings, the kind the union renders, and the joined
+// description the staged intervals carry.
+//
+// BlockID is the id the stage map, the stage receipt and the classification
+// content binding name. A single-entry cluster keeps that entry's own id; a
+// cluster of two or more takes the union-derived kind-start-end, the same id
+// the draft and record assign, so the merged content keeps one identity on
+// every path (issue #183). The head is the contributor the receipt's skip
+// reasons name.
 type EntryCluster struct {
 	BlockIDs    []string
+	BlockID     string
+	Kind        string
 	Start, End  string
 	Description string
 }
@@ -1400,20 +1456,23 @@ type EntryCluster struct {
 // per cluster span.
 func EffectiveEntrySpans(entries []EntryRecord) []EntryCluster {
 	var spans []powSpan
+	var skipped []string
 	byID := map[string]EntryRecord{}
 	for _, e := range entries {
 		sm, okS := draftClock(e.Start)
 		em, okE := draftClock(e.End)
 		if !okS || !okE || em <= sm {
+			skipped = append(skipped, e.BlockID)
 			continue
 		}
 		byID[e.BlockID] = e
-		spans = append(spans, powSpan{id: e.BlockID, startM: sm, endM: em})
+		spans = append(spans, powSpan{id: e.BlockID, kind: e.Kind, startM: sm, endM: em})
 	}
 	var out []EntryCluster
 	for _, cluster := range mergeSpans(spans) {
 		head := spans[cluster[0]]
 		end := head.endM
+		kind := head.kind
 		c := EntryCluster{Start: clockString(head.startM), End: clockString(head.endM)}
 		texts := make([]string, 0, len(cluster))
 		for _, i := range cluster {
@@ -1422,11 +1481,37 @@ func EffectiveEntrySpans(entries []EntryRecord) []EntryCluster {
 			if s.endM > end {
 				end = s.endM
 			}
+			if s.kind == "meeting" {
+				kind = "meeting"
+			}
 			texts = append(texts, byID[s.id].Description)
 		}
+		c.Kind = kind
 		c.End = clockString(end)
 		c.Description = joinText(texts...)
 		out = append(out, c)
+	}
+	// Cluster ids are resolved against the ids of the entries the projection
+	// excludes, because the caller stages an overnight span under its entry id
+	// and the two may never claim one key.
+	ids := make([]string, 0, len(out)+len(skipped))
+	fixed := make([]bool, 0, len(out)+len(skipped))
+	for i := range out {
+		if len(out[i].BlockIDs) == 1 {
+			ids = append(ids, out[i].BlockIDs[0])
+			fixed = append(fixed, true)
+			continue
+		}
+		ids = append(ids, out[i].Kind+"-"+out[i].Start+"-"+out[i].End)
+		fixed = append(fixed, false)
+	}
+	for _, id := range skipped {
+		ids = append(ids, id)
+		fixed = append(fixed, true)
+	}
+	ids = resolveBlockIDs(ids, fixed)
+	for i := range out {
+		out[i].BlockID = ids[i]
 	}
 	return out
 }
@@ -1550,13 +1635,14 @@ type ClassificationChoiceEntry struct {
 	ContentDigest    string `json:"content_digest"`
 }
 
-// BlockContentDigest is the deterministic content binding of one recorded
-// block: the SHA-256 hex of the newline-joined date, block_id, start, end and
-// description, with one trailing newline. These are exactly the fields a
-// staged interval's text is derived from, so any change that would alter the
-// block's staged interval (time, id or description) changes the digest, and
-// any re-derivation whose blocks differ from those the selections were chosen
-// against is refused instead of replayed.
+// BlockContentDigest is the deterministic content binding of one staged
+// interval's effective block: the SHA-256 hex of the newline-joined date,
+// block_id, start, end and description, with one trailing newline. These are
+// exactly the fields the staged interval's text is derived from, and for a
+// merged cluster they are the union span and joined description, so any change
+// to any contributor changes the digest. Any re-derivation whose blocks differ
+// from those the selections were chosen against is refused instead of
+// replayed.
 func BlockContentDigest(date string, e EntryRecord) string {
 	return sha256Hex([]byte(strings.Join([]string{
 		date, e.BlockID, e.Start, e.End, e.Description,
@@ -1729,14 +1815,29 @@ func ParseResolutionDecision(data []byte) (ResolutionDecisionFile, error) {
 // Touching blocks stay separate, chained overlaps join one cluster, and a day
 // without overlap comes back unchanged, which makes a second call a no-op.
 //
-// The merged block keeps the head's block_id (earliest start, then earliest
-// end, then lowest id), renders a meeting when the cluster holds one and the
-// head's kind otherwise, and folds every contributor's title and description
-// through joinText, its topics and PRs (deduped and sorted) and its sources
-// under the same per-block cap the topic fold uses. Blocks whose times are
-// empty, unparsable or not increasing are not candidates and keep their own
-// fields.
+// A multi-member cluster takes the union-derived id (kind, union start, union
+// end), the same one the draft assigns, so recording the draft after a
+// recovery merge replaces that entry instead of writing a second one under the
+// head's old id. Singleton blocks keep their own id. A cluster renders a
+// meeting when it holds one and the head's kind otherwise, and folds every
+// contributor's title and description through joinText, its topics and PRs
+// (deduped and sorted) and its sources under the same per-block cap the topic
+// fold uses. Blocks whose times are empty, unparsable or not increasing are
+// not candidates and keep their own fields.
 func MergeOverlappingBlocks(blocks []ReviewedBlock) []ReviewedBlock {
+	merged, _ := mergeReviewedBlocks(blocks)
+	return merged
+}
+
+// mergeReviewedBlocks folds the day's reviewed blocks and also reports, for
+// every input index, the output block it folded into. Record's source
+// re-attachment needs that mapping to keep the draft's topic ownership across
+// the merge instead of re-deriving it over the merged spans.
+func mergeReviewedBlocks(blocks []ReviewedBlock) ([]ReviewedBlock, []int) {
+	clusterOf := make([]int, len(blocks))
+	for i := range clusterOf {
+		clusterOf[i] = -1
+	}
 	startM := make([]int, len(blocks))
 	endM := make([]int, len(blocks))
 	var spans []powSpan
@@ -1754,9 +1855,13 @@ func MergeOverlappingBlocks(blocks []ReviewedBlock) []ReviewedBlock {
 		at = append(at, i)
 	}
 	if len(spans) == 0 {
-		return blocks
+		for i := range blocks {
+			clusterOf[i] = i
+		}
+		return blocks, clusterOf
 	}
 	out := make([]ReviewedBlock, 0, len(blocks))
+	var multi []bool
 	inCluster := make([]bool, len(blocks))
 	for _, cluster := range mergeSpans(spans) {
 		members := make([]int, len(cluster))
@@ -1764,14 +1869,33 @@ func MergeOverlappingBlocks(blocks []ReviewedBlock) []ReviewedBlock {
 			members[k] = at[si]
 			inCluster[at[si]] = true
 		}
+		for _, i := range members {
+			clusterOf[i] = len(out)
+		}
 		out = append(out, foldReviewedCluster(blocks, members, startM, endM))
+		multi = append(multi, len(members) > 1)
 	}
 	for i := range blocks {
 		if !inCluster[i] {
+			clusterOf[i] = len(out)
 			out = append(out, blocks[i])
+			multi = append(multi, false)
 		}
 	}
-	return out
+	ids := make([]string, len(out))
+	fixed := make([]bool, len(out))
+	for i := range out {
+		if !multi[i] {
+			ids[i], fixed[i] = out[i].BlockID, true
+			continue
+		}
+		ids[i] = out[i].Kind + "-" + out[i].Start + "-" + out[i].End
+	}
+	ids = resolveBlockIDs(ids, fixed)
+	for i := range out {
+		out[i].BlockID = ids[i]
+	}
+	return out, clusterOf
 }
 
 // foldReviewedCluster renders one reviewed cluster. A single-member cluster is
@@ -1792,7 +1916,14 @@ func foldReviewedCluster(blocks []ReviewedBlock, members []int, startM, endM []i
 		Notes: head.Notes,
 	}
 	end := endM[members[0]]
-	var titles, descs []string
+	hasMeeting := false
+	for _, i := range members {
+		if blocks[i].Kind == "meeting" {
+			hasMeeting = true
+			break
+		}
+	}
+	var titles, absorbedTitles, descs []string
 	meetingTitle := ""
 	for _, i := range members {
 		b := blocks[i]
@@ -1805,7 +1936,14 @@ func foldReviewedCluster(blocks []ReviewedBlock, members []int, startM, endM []i
 				meetingTitle = b.Title
 			}
 		} else {
-			titles = append(titles, b.Title)
+			if hasMeeting && len(b.TopicCandidates) == 0 {
+				absorbedTitles = append(absorbedTitles, b.Title)
+			}
+			title := b.Title
+			if strings.TrimSpace(title) == "" && len(b.TopicCandidates) > 0 {
+				title = b.TopicCandidates[0]
+			}
+			titles = append(titles, title)
 		}
 		descs = append(descs, b.Description)
 		out.TopicCandidates = append(out.TopicCandidates, b.TopicCandidates...)
@@ -1825,7 +1963,7 @@ func foldReviewedCluster(blocks []ReviewedBlock, members []int, startM, endM []i
 	}
 	out.End = clockString(end)
 	if out.Kind == "meeting" {
-		out.Title = meetingTitle
+		out.Title = joinText(append([]string{meetingTitle}, absorbedTitles...)...)
 	} else {
 		out.Title = joinText(titles...)
 	}
@@ -1871,22 +2009,23 @@ func readDayEvidenceForRecord(statePath, date string) (*DayEvidence, string) {
 	return view.Evidence[date], view.Days[date].Timezone
 }
 
-// reattachSources re-derives each reviewed block's audit-only source
-// references from the day's durable evidence, using the exact same
-// topic→block mapping (draftTopicTarget) and mergeTopicItems folding (with
-// the same draftSourcesPerBlock cap and sources_truncated flag) that
-// BuildDraft applies, so a recorded entry carries exactly the sources the
-// draft attached to that block: meeting and work blocks take the topics whose
-// [first,last] span overlaps them in the shared fixed order, and every
-// unallocated topic folds into the evidence block. The state's evidence is
-// authoritative: anything the reviewed file echoed is replaced, keeping
-// recorded sources identical whether or not the reviewed file carried them.
-// A whole-day block never carries sources.
+// reattachSources re-derives each merged block's audit-only source references
+// from the day's durable evidence. Ownership is computed exactly as BuildDraft
+// computes it over its PRE-merge seeds: the first candidate whose span
+// overlaps the topic's [first,last] (draftTopicTarget), else the evidence
+// block; each topic then folds, in ascending evidence index with
+// mergeTopicItems (same draftSourcesPerBlock cap and sources_truncated flag),
+// into the merged cluster its owner folded into. A cluster that absorbed an
+// evidence block therefore keeps the sources the draft attached to them, even
+// when no evidence member survives the merge.
 //
-// The blocks arrive already merged by MergeOverlappingBlocks, so the mapping
-// runs over the same spans BuildDraft rendered. Clustering here a second time
-// could only re-derive what the caller already folded, so it does not.
-func reattachSources(ev *DayEvidence, blocks []ReviewedBlock, timezone string) {
+// When the reviewed file is already the merged draft, the evidence block is
+// gone. Its span is rebuilt from the unallocated topics' item anchors exactly
+// as BuildDraft builds it, and the cluster it merged into is the candidate
+// overlapping that span, so both reviewed-file shapes reproduce the draft's
+// ownership. The state's evidence is authoritative: anything the reviewed file
+// echoed is replaced. A whole-day block never carries sources.
+func reattachSources(ev *DayEvidence, reviewed, merged []ReviewedBlock, clusterOf []int, timezone string) {
 	// Topic anchors are absolute provider instants; they must be resolved in
 	// the recorded day's timezone exactly as BuildDraft does, or the recorded
 	// entry would attach sources to a different block than the draft showed.
@@ -1895,11 +2034,11 @@ func reattachSources(ev *DayEvidence, blocks []ReviewedBlock, timezone string) {
 	dayLoc := DayLocationOrNil(timezone)
 	var cands []draftSpan
 	evidenceIdx := -1
-	for i := range blocks {
-		switch blocks[i].Kind {
+	for i := range reviewed {
+		switch reviewed[i].Kind {
 		case "meeting", "work":
-			startM, okS := draftClock(blocks[i].Start)
-			endM, okE := draftClock(blocks[i].End)
+			startM, okS := draftClock(reviewed[i].Start)
+			endM, okE := draftClock(reviewed[i].End)
 			if okS && okE && endM > startM {
 				cands = append(cands, draftSpan{index: i, startM: startM, endM: endM})
 			}
@@ -1910,24 +2049,69 @@ func reattachSources(ev *DayEvidence, blocks []ReviewedBlock, timezone string) {
 	if len(cands) == 0 && evidenceIdx < 0 {
 		return
 	}
-	folds := make([]DraftBlock, len(blocks))
-	for _, t := range ev.Topics {
+	folds := make([]DraftBlock, len(merged))
+	assign := func(owner, ti int) {
+		out := -1
+		if owner >= 0 && owner < len(clusterOf) {
+			out = clusterOf[owner]
+		}
+		if out >= 0 && out < len(folds) {
+			folds[out] = mergeTopicItems(folds[out], ev.Topics[ti])
+		}
+	}
+	var unallocated []int
+	for ti := range ev.Topics {
+		t := ev.Topics[ti]
 		firstM, okF := anchorClock(t.FirstAt, dayLoc)
 		lastM, okL := anchorClock(t.LastAt, dayLoc)
-		assigned := -1
 		if okF && okL {
-			assigned = draftTopicTarget(cands, firstM, lastM)
+			if i := draftTopicTarget(cands, firstM, lastM); i >= 0 {
+				assign(i, ti)
+				continue
+			}
 		}
-		if assigned < 0 {
-			assigned = evidenceIdx
-		}
-		if assigned < 0 {
-			continue
-		}
-		folds[assigned] = mergeTopicItems(folds[assigned], t)
+		unallocated = append(unallocated, ti)
 	}
-	for i := range blocks {
-		blocks[i].Sources = folds[i].Sources
-		blocks[i].SourcesTruncated = folds[i].SourcesTruncated
+	if owner := evidenceIdx; owner >= 0 {
+		for _, ti := range unallocated {
+			assign(owner, ti)
+		}
+	} else if owner := absorbedEvidenceBlock(ev.Topics, unallocated, cands, dayLoc); owner >= 0 {
+		for _, ti := range unallocated {
+			assign(owner, ti)
+		}
 	}
+	for i := range merged {
+		merged[i].Sources = folds[i].Sources
+		merged[i].SourcesTruncated = folds[i].SourcesTruncated
+	}
+}
+
+// absorbedEvidenceBlock resolves the evidence block BuildDraft would have
+// built from the unallocated topics when the merged reviewed file no longer
+// carries it: its span is the union of those topics' item anchors, exactly as
+// BuildDraft computes it, and the block that absorbed it is the first
+// candidate overlapping that span in the shared mapping order. A span that
+// could not merge (no usable anchors, or zero duration) returns -1: the draft
+// would have kept it as a separate evidence block, which record never invents.
+func absorbedEvidenceBlock(topics []TopicCandidate, unallocated []int, cands []draftSpan, loc *time.Location) int {
+	minM, maxM := -1, -1
+	for _, ti := range unallocated {
+		for _, item := range topics[ti].Items {
+			m, ok := anchorClock(item.Time, loc)
+			if !ok {
+				continue
+			}
+			if minM < 0 || m < minM {
+				minM = m
+			}
+			if m > maxM {
+				maxM = m
+			}
+		}
+	}
+	if minM < 0 || maxM <= minM {
+		return -1
+	}
+	return draftTopicTarget(cands, minM, maxM)
 }

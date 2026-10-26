@@ -80,10 +80,16 @@ there is no second protocol and no new request grammar.
 Draft blocks and the staged intervals derived from them share one merge rule
 (issue #183): work and evidence blocks that overlap become one block over the
 union span with every contributing POW named, a meeting absorbs the work and
-evidence it overlaps, and blocks that merely touch stay separate. The stage
-derivation applies the same merge, so a staged interval covers the union span
-and each other contributor is reported as merged into the head rather than
-dropped.
+evidence it overlaps, and blocks that merely touch stay separate. A merged
+block's id is the union-derived `kind-start-end`, the same one `draft`,
+`record` and `stage` use, so recording a draft replaces the entry a recovery
+merge already wrote instead of duplicating it; a single block keeps its own
+id. A meeting's title keeps the wording of absorbed work that has no topic
+candidate, and another cluster names a titleless contributor by its first
+topic candidate, so no POW disappears from the title. The stage derivation
+applies the same merge, so a staged interval covers the union span and each
+other contributor is reported as merged into its union block rather than dropped; classification selections are bound to the union span and joined
+description, so changing any contributor fails the replay closed.
 
 `collect`, `draft`, `run`, `record` and `status` treat an omitted `--date` as
 today in the configured `timezone`, resolved by the binary rather than the host

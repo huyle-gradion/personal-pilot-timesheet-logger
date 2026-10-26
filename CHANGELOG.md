@@ -8,12 +8,21 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
   work and evidence blocks whose same-day spans strictly overlap render as one
   block over the union span, carrying every contributor's topic candidates, PRs
   and sources so each POW is named, and a meeting absorbs the work and evidence
-  it overlaps. Touching blocks stay separate and a gap is never
+  it overlaps. A merged block's id is the union-derived `kind-start-end` in the
+  draft, `record` and `stage` alike, so recording the draft after a recovery
+  merge replaces that entry instead of writing a duplicate; collisions take a
+  `-2`, `-3` suffix in id order and singleton blocks keep their own id. A
+  meeting keeps the wording of absorbed work that has no topic candidate, and
+  another cluster names a titleless contributor by its first topic candidate.
+  Touching blocks stay separate and a gap is never
   bridged. `stage` derives the same merge, so one interval covers the union
   span (chunked to the four-hour policy) and every other contributor is
-  reported as merged into the head rather than dropped; `record` re-derives
-  sources over the same merged blocks, and a day without overlap renders
-  byte-identically. The shortest-first split and the meeting's silent
+  reported as merged into its union block rather than dropped; `record`
+  re-derives sources over the draft's pre-merge topic ownership, keeping the sources of a
+  cluster that absorbed an evidence block, and a day without overlap
+  renders byte-identically. Classification selections on a merged interval are
+  bound to the union span and joined description, so changing any contributor
+  fails the replay closed. The shortest-first split and the meeting's silent
   suppression of an overlapping work block are gone.
 - Development stamp `0.2.0-dev.5`; release stamping, adapter version and
   publication remain owner-gated.

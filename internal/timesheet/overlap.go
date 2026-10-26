@@ -2,6 +2,7 @@ package timesheet
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -54,6 +55,48 @@ func mergeSpans(spans []powSpan) [][]int {
 		ends = append(ends, spans[i].endM)
 	}
 	return clusters
+}
+
+// resolveBlockIDs disambiguates duplicate tentative block ids. Fixed ids
+// (singleton blocks) are reserved unchanged; the rest are assigned in
+// ascending id order, the first keeping the plain id and each later one taking
+// the next free "-2", "-3" suffix. The draft's id assignment, record's cluster
+// merge and the stage projection all use it, so the same merged content yields
+// the same id on every path.
+func resolveBlockIDs(ids []string, fixed []bool) []string {
+	out := append([]string(nil), ids...)
+	used := make(map[string]bool, len(ids))
+	for i := range ids {
+		if fixed[i] && !used[ids[i]] {
+			used[ids[i]] = true
+			continue
+		}
+		fixed[i] = false
+	}
+	order := make([]int, 0, len(ids))
+	for i := range ids {
+		if !fixed[i] {
+			order = append(order, i)
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool { return ids[order[a]] < ids[order[b]] })
+	for _, i := range order {
+		id := ids[i]
+		if !used[id] {
+			used[id] = true
+			out[i] = id
+			continue
+		}
+		for n := 2; ; n++ {
+			candidate := id + "-" + strconv.Itoa(n)
+			if !used[candidate] {
+				used[candidate] = true
+				out[i] = candidate
+				break
+			}
+		}
+	}
+	return out
 }
 
 // joinText folds contributor texts into one deterministic line: the head's

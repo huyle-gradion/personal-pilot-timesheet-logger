@@ -790,7 +790,8 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 	}
 
 	// One staging unit per interval derivation: a single recorded entry (an
-	// overnight span) or one overlap cluster under its head.
+	// overnight span) or one overlap cluster under its effective id (the entry's
+	// own id for a single entry, the union-derived id for a cluster).
 	type stageUnit struct {
 		id    string
 		text  string
@@ -842,18 +843,17 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 	}
 	// Head block_id order keeps the receipt in the documented order for a day
 	// that has no merge at all.
-	sort.Slice(clusters, func(i, j int) bool { return clusters[i].BlockIDs[0] < clusters[j].BlockIDs[0] })
+	sort.Slice(clusters, func(i, j int) bool { return clusters[i].BlockID < clusters[j].BlockID })
 	for _, c := range clusters {
-		head := c.BlockIDs[0]
 		units = append(units, stageUnit{
-			id:    head,
+			id:    c.BlockID,
 			text:  c.Description,
 			spans: timesheet.SplitEntrySpans(c.Start, c.End),
 		})
 		for _, merged := range c.BlockIDs[1:] {
 			receipt.Skipped = append(receipt.Skipped, StageSkip{
 				BlockID: merged,
-				Reason:  fmt.Sprintf("merged into block %s: its minutes are covered by the union span", head),
+				Reason:  fmt.Sprintf("merged into block %s: its minutes are covered by the union span", c.BlockID),
 			})
 		}
 	}
@@ -995,16 +995,13 @@ func openFinalizeDay(h *headlessSession, name, date string) (timesheet.DaySummar
 
 // noteStageSkips mirrors stage's skip list on stderr for confirm and save, so
 // the honesty of the never-invented-times rule survives into the commands that
-// consume the derived staging.
+// consume the derived staging. Each block's own receipt reason is printed: a
+// merged contributor is not anchorless, and the caller does not assert a cause
+// it would have to guess.
 func noteStageSkips(name string, receipt *StageReceipt) {
-	if len(receipt.Skipped) == 0 {
-		return
-	}
-	ids := make([]string, 0, len(receipt.Skipped))
 	for _, s := range receipt.Skipped {
-		ids = append(ids, s.BlockID)
+		fmt.Fprintf(os.Stderr, "%s: skipped block %s: %s\n", name, s.BlockID, s.Reason)
 	}
-	fmt.Fprintf(os.Stderr, "%s: skipped entries without time anchors: %s\n", name, strings.Join(ids, ", "))
 }
 
 // runStage converts the day's recorded entries file into staged intervals.
@@ -1523,10 +1520,13 @@ func applySelections(h *headlessSession, date string, revision int, selections m
 }
 
 // stagedBlocks binds each staged interval id from the day's stage map to the
-// recorded entry it was derived from. Both classify (to content-bind its
-// selections at write time) and the confirm/save replay (to re-verify the
-// binding) use it; applyStage has just rewritten the stage map in both
-// paths, so the binding reflects the derivation this process actually staged.
+// effective merged content it was derived from: the stage projection's union
+// span and joined description for a cluster, not the head entry alone. Both
+// classify (to content-bind its selections at write time) and the confirm/save
+// replay (to re-verify the binding) use it; applyStage has just rewritten the
+// stage map in both paths, so the binding reflects the derivation this process
+// actually staged. Because the digest covers the whole merged content, changing
+// any contributor of a merged interval fails the replay closed.
 func stagedBlocks(cfg *timesheet.Config, date string) (map[string]timesheet.EntryRecord, error) {
 	entries, err := timesheet.ReadEntries(cfg.StatePath, date)
 	if err != nil {
@@ -1536,15 +1536,26 @@ func stagedBlocks(cfg *timesheet.Config, date string) (map[string]timesheet.Entr
 	if err != nil {
 		return nil, err
 	}
-	byBlock := map[string]timesheet.EntryRecord{}
+	effective := map[string]timesheet.EntryRecord{}
 	if entries != nil {
+		for _, c := range timesheet.EffectiveEntrySpans(entries.Entries) {
+			effective[c.BlockID] = timesheet.EntryRecord{
+				BlockID: c.BlockID, Date: date, Start: c.Start, End: c.End,
+				Kind: c.Kind, Description: c.Description,
+			}
+		}
+		// Entries the projection excludes (an overnight span the caller passes
+		// through unsplit, an unparsable or zero-duration entry) keep their own
+		// record under their own id.
 		for _, e := range entries.Entries {
-			byBlock[e.BlockID] = e
+			if _, ok := effective[e.BlockID]; !ok {
+				effective[e.BlockID] = e
+			}
 		}
 	}
 	byInterval := map[string]timesheet.EntryRecord{}
-	for blockID, ivIDs := range stageMap {
-		if e, ok := byBlock[blockID]; ok {
+	for unitID, ivIDs := range stageMap {
+		if e, ok := effective[unitID]; ok {
 			for _, ivID := range ivIDs {
 				byInterval[ivID] = e
 			}
