@@ -42,19 +42,26 @@ func TestParseCatalogZeroMatchPhrasings(t *testing.T) {
 }
 
 // TestParseCatalogUnknownTextStillFailsClosed: a genuinely unparseable text
-// block keeps the fail-closed error, and it now names the first line (bounded,
-// sanitized) instead of swallowing the cause.
+// block keeps the fail-closed error, and the provider text is never echoed.
+// The diagnostic is a fixed string because provider content is arbitrary: a
+// bearer token, an uppercase URL or a JSON field would survive the sanitizer
+// and land in an error an agent then quotes.
 func TestParseCatalogUnknownTextStillFailsClosed(t *testing.T) {
-	_, err := parseCatalog(mcp.CallResult{Content: "total garbage from the provider\nsecond line"}, "q", time.Now().UTC())
-	if err == nil || !strings.Contains(err.Error(), "the classification text could not be parsed") {
-		t.Fatalf("err = %v, want the parse error", err)
-	}
-	if !strings.Contains(err.Error(), "total garbage") {
-		t.Fatalf("err = %v, want the first line in the diagnostic", err)
-	}
-	// Sanitized: a URL/credential-bearing first line is stripped.
-	_, err = parseCatalog(mcp.CallResult{Content: "https://x.invalid?token=secret only"}, "q", time.Now().UTC())
-	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "https") {
-		t.Fatalf("err = %v, want URLs/credentials stripped from the diagnostic", err)
+	for _, text := range []string{
+		"total garbage from the provider\nsecond line",
+		"https://x.invalid?token=secret only",
+		"Authorization: Bearer SYNTHETIC_NOT_A_REAL_CREDENTIAL",
+		`{"error":{"token":"SYNTHETIC_NOT_A_REAL_CREDENTIAL"}}`,
+		"HTTPS://X.INVALID/secret",
+	} {
+		_, err := parseCatalog(mcp.CallResult{Content: text}, "q", time.Now().UTC())
+		if err == nil || !strings.Contains(err.Error(), "the classification text could not be parsed") {
+			t.Fatalf("text %q: err = %v, want the parse error", text, err)
+		}
+		for _, leak := range []string{"garbage", "secret", "SYNTHETIC_NOT_A_REAL_CREDENTIAL", "https", "HTTPS", "Authorization"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Fatalf("text %q: err = %v, must not echo provider content (%q)", text, err, leak)
+			}
+		}
 	}
 }
