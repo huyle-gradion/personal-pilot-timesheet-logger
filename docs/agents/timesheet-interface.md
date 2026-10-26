@@ -39,7 +39,7 @@ timesheet serve --config <path> --env-file <path>
 timesheet collect --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 timesheet draft --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 timesheet run --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
-timesheet record --config <path> --date <YYYY-MM-DD> --file <reviewed.json>
+timesheet record --config <path> [--date <YYYY-MM-DD>] --file <reviewed.json>
 timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 ```
 
@@ -77,9 +77,10 @@ layer of the timesheet skill (`.agents/skills/timesheet/`). They construct
 the same session `serve` uses and drive its request dispatcher in-process;
 there is no second protocol and no new request grammar.
 
-`collect`, `draft` and `run` treat an omitted `--date` as today in the
-configured `timezone`, resolved by the binary rather than the host clock; an
-explicit `--date` always wins. The resolved date appears as `date` in the draft.
+`collect`, `draft`, `run`, `record` and `status` treat an omitted `--date` as
+today in the configured `timezone`, resolved by the binary rather than the host
+clock; an explicit `--date` always wins. The resolved date appears as `date` in
+the draft, in the record receipt, and in the status summary.
 
 - `collect` performs exactly one bounded collection attempt for the day and
   prints its result (per-source status, topic and meeting counts).
@@ -104,11 +105,13 @@ explicit `--date` always wins. The resolved date appears as `date` in the draft.
 - `record` validates the reviewed draft (every block keeps its `block_id`
   and carries a non-empty `description`; a block with PRs must keep the
   inline `PRs:` list) and merges it into `<state dir>/entries/<date>.json`
-  atomically. Recording is idempotent per block: an existing block is
+  atomically. The reviewed draft's `date` must equal the resolved day; a
+  mismatch fails with an error naming that day. Recording is idempotent per block: an existing block is
   updated in place and never duplicated, so a retried run still counts as
   one day.
-- `status` prints the store status and, with `--date`, the day's recorded
-  entries.
+- `status` prints the store status and the day's recorded entries. The day is
+  `--date` when given, otherwise today in the configured timezone; either way
+  the summary names the resolved date.
 
 None of the headless subcommands acknowledges sources, confirms work, saves
 store revisions, approves or submits anything. Remote submission remains on

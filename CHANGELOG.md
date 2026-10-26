@@ -4,11 +4,14 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
 
 ## Unreleased (0.2.0-dev.4)
 
-- Make `log today's work` one command (issue #179): `collect`, `draft` and `run`
-  accept an omitted `--date`, which the binary resolves to today in the
-  configured timezone instead of trusting the host clock, and Pi gets
-  `.pi/prompts/timesheet.md` so `/timesheet log today work` reaches the skill
-  with no Node adapter in the path. An explicit `--date` still wins.
+- Make `log today's work` one command (issue #179): `collect`, `draft`, `run`,
+  `record` and `status` accept an omitted `--date`, which the binary resolves to
+  today in the configured timezone instead of trusting the host clock, and Pi
+  gets `.pi/prompts/timesheet.md` so `/timesheet log today work` reaches the
+  skill with no Node adapter in the path. `run` writes its artifacts under the
+  resolved day, `record` checks the reviewed draft against that day, and
+  `status` opens it and prints the day summary. An explicit `--date` still
+  wins.
 
 - Annotate the one-day draft from an optional `work_hours` policy (issue #174):
   `days` use exactly `mon`…`sun` and one to four non-overlapping same-day

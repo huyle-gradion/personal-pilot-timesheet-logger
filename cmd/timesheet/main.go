@@ -19,7 +19,7 @@ Usage:
   timesheet collect --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet draft --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet run --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
-  timesheet record --config <path> --date <YYYY-MM-DD> (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>) [--replace]
+  timesheet record --config <path> [--date <YYYY-MM-DD>] (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>) [--replace]
   timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet stage --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>] [--revise]
   timesheet classifications --config <path> [--env-file <path>] --query <text>
@@ -51,14 +51,16 @@ merges the reviewed result into the per-day entries file
 (idempotent per time block) — composing it from --draft plus the
 descriptions-only --descriptions file, or taking the full reviewed --file
 (recovery path) — or, with --replace, treats the reviewed result as the day's
-COMPLETE content: all blocks for --date are replaced with the reviewed blocks
+COMPLETE content: all blocks for the resolved day are replaced with the reviewed blocks
 (block ids from the reviewed input; blocks absent from it are removed from
 the entries file). Use --replace only after re-collecting a day, when the new
 generation supersedes the old; without it the merge behavior is unchanged —
-and status reports store state plus recorded entries; with --date it also
-carries the day's per-source latest collection attempt (status and
-collection_id) for the acknowledge/decide steps. They hold the same
-fixed-path, no-shell, credential-safe contract as
+and status reports store state plus the day's recorded entries and per-source
+latest collection attempt (status and collection_id) for the
+acknowledge/decide steps. All five treat an omitted
+--date as today in the configured timezone, resolved by the binary, and an
+explicit --date always wins; status opens that day either way. They hold the
+same fixed-path, no-shell, credential-safe contract as
 serve and perform no approval or submission.
 
 The stage/acknowledge/decide/confirm/save subcommands finalize one recorded
