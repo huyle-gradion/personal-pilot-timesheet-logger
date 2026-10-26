@@ -3,7 +3,10 @@ package timesheet
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // noOverlapReview is a single-POW day: two meetings, their separate confirmed
@@ -235,5 +238,78 @@ func TestBuildDraftEvidenceInsideMeetingsMergesToOneBlock(t *testing.T) {
 	}
 	if len(b.TopicCandidates) != 4 {
 		t.Fatalf("topic candidates = %+v, want every contributor's topics", b.TopicCandidates)
+	}
+}
+
+// TestRecordEntriesMergesOverlappingBlocks is issue #183 rule 5: a reviewed
+// file that still carries the two overlapping work blocks an older draft
+// rendered records one merged entry whose span, topics and re-attached sources
+// are the ones the current draft shows for the same evidence.
+func TestRecordEntriesMergesOverlappingBlocks(t *testing.T) {
+	review := draftReview(nil,
+		[]Segment{segment("Bridge PRs", "09:00", "11:00"), segment("Ops deploy", "10:00", "12:00")},
+		[]TopicCandidate{
+			topic("API bridge", "09:10", "09:20", item("commit", "bridge handler", "09:15")),
+			topic("Ops deploy", "11:00", "11:30", item("pull_request", "deploy runbook", "11:15")),
+		},
+		nil,
+	)
+	draft := BuildDraft(review, "test")
+	if len(draft.Blocks) != 1 {
+		t.Fatalf("draft blocks = %+v, want one merged block", draft.Blocks)
+	}
+	want := draft.Blocks[0]
+
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	writeStateEvidence(t, statePath, "2026-10-26", review.Evidence.Topics)
+	stale := ReviewedDraft{Date: "2026-10-26", Timezone: "Asia/Ho_Chi_Minh", Blocks: []ReviewedBlock{
+		{DraftBlock: DraftBlock{BlockID: "work-09:00-11:00", Kind: "work", Start: "09:00", End: "11:00",
+			TopicCandidates: []string{"API bridge"}}, Description: "Bridge PRs"},
+		{DraftBlock: DraftBlock{BlockID: "work-10:00-12:00", Kind: "work", Start: "10:00", End: "12:00",
+			TopicCandidates: []string{"Ops deploy"}}, Description: "Ops deploy"},
+	}}
+	if _, err := RecordEntries(statePath, "test", stale, false, time.Now()); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	f, err := ReadEntries(statePath, "2026-10-26")
+	if err != nil || f == nil || len(f.Entries) != 1 {
+		t.Fatalf("read entries: %+v %v", f, err)
+	}
+	got := f.Entries[0]
+	if got.BlockID != "work-09:00-11:00" || got.Kind != "work" || got.Start != want.Start || got.End != want.End {
+		t.Fatalf("recorded block = %s %s %s-%s, want the head id over the draft's union span %s-%s",
+			got.BlockID, got.Kind, got.Start, got.End, want.Start, want.End)
+	}
+	if !strings.Contains(got.Description, "Bridge PRs") || !strings.Contains(got.Description, "Ops deploy") {
+		t.Fatalf("recorded description = %q, want both contributors", got.Description)
+	}
+	if len(got.TopicCandidates) != len(want.TopicCandidates) {
+		t.Fatalf("recorded topics = %+v, want the draft's %+v", got.TopicCandidates, want.TopicCandidates)
+	}
+	for i := range want.TopicCandidates {
+		if got.TopicCandidates[i] != want.TopicCandidates[i] {
+			t.Fatalf("recorded topics = %+v, want the draft's %+v", got.TopicCandidates, want.TopicCandidates)
+		}
+	}
+	if len(got.Sources) != len(want.Sources) {
+		t.Fatalf("recorded sources = %+v, want the draft's %+v", got.Sources, want.Sources)
+	}
+	for i := range want.Sources {
+		if got.Sources[i] != want.Sources[i] {
+			t.Fatalf("recorded sources = %+v, want the draft's %+v", got.Sources, want.Sources)
+		}
+	}
+	// Merging is idempotent: recording the already merged file again keeps one
+	// entry, so a retried run never duplicates the day.
+	merged := ReviewedDraft{Date: "2026-10-26", Timezone: "Asia/Ho_Chi_Minh", Blocks: []ReviewedBlock{
+		{DraftBlock: DraftBlock{BlockID: got.BlockID, Kind: got.Kind, Start: got.Start, End: got.End}, Description: got.Description},
+	}}
+	if _, err := RecordEntries(statePath, "test", merged, false, time.Now()); err != nil {
+		t.Fatalf("re-record: %v", err)
+	}
+	f2, err := ReadEntries(statePath, "2026-10-26")
+	if err != nil || f2 == nil || len(f2.Entries) != 1 {
+		t.Fatalf("after re-record: %+v %v, want one entry", f2, err)
 	}
 }

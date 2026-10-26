@@ -1197,6 +1197,17 @@ func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, replace
 		}
 	}
 
+	// A reviewed file may still carry the overlapping blocks an older draft
+	// rendered. Merge first so the recorded entries are the blocks the current
+	// draft shows (issue #183 rule 5); a draft that already merged them is
+	// unchanged. seen is rebuilt because replace mode reports the entries a
+	// merge makes obsolete as removed.
+	reviewed.Blocks = MergeOverlappingBlocks(reviewed.Blocks)
+	seen = make(map[string]bool, len(reviewed.Blocks))
+	for _, b := range reviewed.Blocks {
+		seen[b.BlockID] = true
+	}
+
 	// Re-attach the audit-only source references from the day's durable
 	// evidence. The AI-visible draft no longer carries sources, so the
 	// reviewed file cannot echo them; the recorded entry must still keep the
@@ -1708,6 +1719,120 @@ func ParseResolutionDecision(data []byte) (ResolutionDecisionFile, error) {
 	}, nil
 }
 
+// --- record-time block merge --------------------------------------------------
+
+// MergeOverlappingBlocks folds every connected component of strictly
+// overlapping reviewed blocks into one block over the union span, so a
+// reviewed file records the blocks the draft shows (issue #183 rule 5).
+// Touching blocks stay separate, chained overlaps join one cluster, and a day
+// without overlap comes back unchanged, which makes a second call a no-op.
+//
+// The merged block keeps the head's block_id (earliest start, then earliest
+// end, then lowest id), renders a meeting when the cluster holds one and the
+// head's kind otherwise, and folds every contributor's title and description
+// through joinText, its topics and PRs (deduped and sorted) and its sources
+// under the same per-block cap the topic fold uses. Blocks whose times are
+// empty, unparsable or not increasing are not candidates and keep their own
+// fields.
+func MergeOverlappingBlocks(blocks []ReviewedBlock) []ReviewedBlock {
+	startM := make([]int, len(blocks))
+	endM := make([]int, len(blocks))
+	var spans []powSpan
+	var at []int
+	for i := range blocks {
+		sm, okS := draftClock(blocks[i].Start)
+		em, okE := draftClock(blocks[i].End)
+		if !okS || !okE || em <= sm {
+			continue
+		}
+		startM[i], endM[i] = sm, em
+		spans = append(spans, powSpan{
+			id: blocks[i].BlockID, kind: blocks[i].Kind, startM: sm, endM: em,
+		})
+		at = append(at, i)
+	}
+	if len(spans) == 0 {
+		return blocks
+	}
+	out := make([]ReviewedBlock, 0, len(blocks))
+	inCluster := make([]bool, len(blocks))
+	for _, cluster := range mergeSpans(spans) {
+		members := make([]int, len(cluster))
+		for k, si := range cluster {
+			members[k] = at[si]
+			inCluster[at[si]] = true
+		}
+		out = append(out, foldReviewedCluster(blocks, members, startM, endM))
+	}
+	for i := range blocks {
+		if !inCluster[i] {
+			out = append(out, blocks[i])
+		}
+	}
+	return out
+}
+
+// foldReviewedCluster renders one reviewed cluster. A single-member cluster is
+// returned untouched, so a reviewed file with no overlap records byte for byte
+// what it carried.
+func foldReviewedCluster(blocks []ReviewedBlock, members []int, startM, endM []int) ReviewedBlock {
+	head := blocks[members[0]]
+	if len(members) == 1 {
+		return head
+	}
+	out := ReviewedBlock{
+		DraftBlock: DraftBlock{
+			BlockID:      head.BlockID,
+			Kind:         head.Kind,
+			Start:        clockString(startM[members[0]]),
+			Completeness: head.Completeness,
+		},
+		Notes: head.Notes,
+	}
+	end := endM[members[0]]
+	var titles, descs []string
+	meetingTitle := ""
+	for _, i := range members {
+		b := blocks[i]
+		if endM[i] > end {
+			end = endM[i]
+		}
+		if b.Kind == "meeting" {
+			out.Kind = "meeting"
+			if meetingTitle == "" {
+				meetingTitle = b.Title
+			}
+		} else {
+			titles = append(titles, b.Title)
+		}
+		descs = append(descs, b.Description)
+		out.TopicCandidates = append(out.TopicCandidates, b.TopicCandidates...)
+		for _, pr := range b.PRs {
+			if !containsString(out.PRs, pr) {
+				out.PRs = append(out.PRs, pr)
+			}
+		}
+		for _, src := range b.Sources {
+			if len(out.Sources) < draftSourcesPerBlock {
+				out.Sources = append(out.Sources, src)
+			} else {
+				out.SourcesTruncated = true
+			}
+		}
+		out.SourcesTruncated = out.SourcesTruncated || b.SourcesTruncated
+	}
+	out.End = clockString(end)
+	if out.Kind == "meeting" {
+		out.Title = meetingTitle
+	} else {
+		out.Title = joinText(titles...)
+	}
+	out.Description = joinText(descs...)
+	sortPRs(out.PRs)
+	out.PRsInline = prsInline(out.PRs)
+	return out
+}
+
 // --- record-time source re-attachment -----------------------------------------
 
 // stateEvidenceView is a minimal read-only projection of the durable state
@@ -1755,6 +1880,10 @@ func readDayEvidenceForRecord(statePath, date string) (*DayEvidence, string) {
 // authoritative: anything the reviewed file echoed is replaced, keeping
 // recorded sources identical whether or not the reviewed file carried them.
 // A whole-day block never carries sources.
+//
+// The blocks arrive already merged by MergeOverlappingBlocks, so the mapping
+// runs over the same spans BuildDraft rendered. Clustering here a second time
+// could only re-derive what the caller already folded, so it does not.
 func reattachSources(ev *DayEvidence, blocks []ReviewedBlock, timezone string) {
 	// Topic anchors are absolute provider instants; they must be resolved in
 	// the recorded day's timezone exactly as BuildDraft does, or the recorded
