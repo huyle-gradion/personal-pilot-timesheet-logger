@@ -88,10 +88,13 @@ the draft, in the record receipt, and in the status summary.
   draft: time blocks with topic candidates, inline PR identities, bounded
   source references and per-source completeness. The partitioning rule is
   fixed: eligible calendar meetings become blocks in start order; confirmed
-  intervals outside every meeting become work blocks; evidence topics attach
-  to the first block their time span overlaps; remaining topics form one
-  evidence block; a day with no time anchors still yields one whole-day
-  block. When `work_hours` is configured, blocks are additionally annotated
+  intervals become work blocks; evidence topics attach to the first block
+  their time span overlaps; remaining topics form one evidence block; blocks
+  that strictly overlap merge into one block over the union span, so a meeting
+  keeps the POWs that overlapped it and concurrent POWs are named together
+  (blocks that merely touch stay separate); a day with no time anchors still
+  yields one whole-day block. When `work_hours` is configured, blocks are
+  additionally annotated
   (see [Work-hours annotation](#work-hours-annotation-optional-non-blocking)).
   This draft is the skill's entire model input.
 - `run` composes collect and draft in one process: the same single bounded

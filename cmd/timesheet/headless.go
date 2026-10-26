@@ -693,14 +693,17 @@ func chunkRef(i, n int) (int, int) {
 
 // StageSkip is one recorded entry stage did not convert, with the reason.
 // Entries without time anchors are listed honestly and never given invented
-// times.
+// times; a contributor whose span was merged into an overlapping cluster is
+// listed naming the head, so a merge never silently drops a block.
 type StageSkip struct {
 	BlockID string `json:"block_id"`
 	Reason  string `json:"reason"`
 }
 
-// StageReceipt is stage's stdout receipt. Every list is in block_id order, so
-// the output is deterministic.
+// StageReceipt is stage's stdout receipt. Every list is deterministic: staged,
+// updated, unchanged and removed follow head block_id order, and skipped lists
+// the day's unusable entries in block_id order, then the merged-away
+// contributors.
 type StageReceipt struct {
 	Date            string          `json:"date"`
 	EntriesFile     string          `json:"entries_file"`

@@ -6,9 +6,10 @@ import (
 )
 
 // powSpan is the projection every overlap consumer reduces a block or entry
-// to: a stable identity, its kind and its same-day minute span. The merge
-// reasons only about the span; id and kind are the deterministic tiebreak and
-// the rendered kind.
+// to: its stable id, its kind and its same-day minute span. The merge reasons
+// only about the span and breaks ties by id, so a meeting is an ordinary
+// cluster member; kind is what tells a reader that, and each consumer derives
+// the merged kind from its own members.
 type powSpan struct {
 	id           string
 	kind         string

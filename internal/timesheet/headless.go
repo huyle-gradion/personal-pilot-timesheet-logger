@@ -29,8 +29,10 @@ type DraftSourceItem struct {
 }
 
 // DraftBlock is one time block of the day: a calendar meeting, a confirmed
-// work interval outside every meeting, the span of unallocated evidence, or —
-// when the day has no time anchors at all — one whole-day block.
+// work interval, the span of unallocated evidence, or — when the day has no
+// time anchors at all — one whole-day block. Blocks that strictly overlap
+// merge into one block over the union span, so two concurrent POWs are named
+// together and a meeting carries the POWs that overlapped it (issue #183).
 //
 // The draft is the AI-visible representation only. Audit-only fields stay out
 // of it: Sources and SourcesTruncated are kept in the Go struct for the record
