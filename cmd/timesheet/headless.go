@@ -767,12 +767,13 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 	sort.Strings(ids)
 
 	// The Gradion remote forbids overlapping entries, so the bridge resolves
-	// the day's spans before deriving intervals: specific (shorter) blocks
-	// claim their time first and broader spans split around them (a meeting
-	// inside an evidence span splits that evidence span; the ledger keeps the
-	// human's overlapping truth untouched). Each remaining span is then
-	// chunked to the four-hour policy below.
-	effective := timesheet.EffectiveEntrySpans(entries.Entries)
+	// the day's spans before deriving intervals: entries that strictly overlap
+	// become one cluster over the union span (issue #183), its intervals carry
+	// the joined description, and every merged-away contributor is reported
+	// instead of staged. The entries ledger keeps the human's overlapping
+	// truth untouched. Each union span is then chunked to the four-hour policy
+	// below.
+	clusters := timesheet.EffectiveEntrySpans(entries.Entries)
 
 	receipt := &StageReceipt{
 		Date:        date,
@@ -784,8 +785,15 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 		Removed:     []StageBlockRef{},
 		Skipped:     []StageSkip{},
 	}
-	next := map[string][]string{}
-	desired := map[string]bool{}
+
+	// One staging unit per interval derivation: a single recorded entry (an
+	// overnight span) or one overlap cluster under its head.
+	type stageUnit struct {
+		id    string
+		text  string
+		spans [][2]string
+	}
+	var units []stageUnit
 	for _, id := range ids {
 		e := byID[id]
 		if e.Start == "" || e.End == "" {
@@ -807,7 +815,6 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 			})
 			continue
 		}
-		var spans [][2]string
 		if endMin == startMin {
 			// Zero-duration entry, not an overnight span: the interval op
 			// rejects start == end ("interval duration must be positive"), so
@@ -820,24 +827,39 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 			continue
 		}
 		if endMin < startMin {
-			// Overnight span: the gap-aware resolver above only reasons about
+			// Overnight span: the cluster projection only reasons about
 			// same-day minutes and excludes an end before its start, so this
-			// block is absent from `effective`. Pass the recorded span through
-			// unsplit — the pre-GAP-SPLIT-1 derivation — and let the interval
-			// op resolve the end onto the next day (issue #173).
-			spans = [][2]string{{e.Start, e.End}}
-		} else {
-			for _, part := range effective[id] {
-				spans = append(spans, timesheet.SplitEntrySpans(part[0], part[1])...)
-			}
-			if len(spans) == 0 {
-				receipt.Skipped = append(receipt.Skipped, StageSkip{
-					BlockID: id,
-					Reason:  "entry's time is fully claimed by more specific entries; its minutes are already staged under them",
-				})
-				continue
-			}
+			// block is absent from the clusters. Pass the recorded span
+			// through unsplit — the pre-GAP-SPLIT-1 derivation — and let the
+			// interval op resolve the end onto the next day (issue #173).
+			units = append(units, stageUnit{
+				id: id, text: e.Description, spans: [][2]string{{e.Start, e.End}},
+			})
 		}
+	}
+	// Head block_id order keeps the receipt in the documented order for a day
+	// that has no merge at all.
+	sort.Slice(clusters, func(i, j int) bool { return clusters[i].BlockIDs[0] < clusters[j].BlockIDs[0] })
+	for _, c := range clusters {
+		head := c.BlockIDs[0]
+		units = append(units, stageUnit{
+			id:    head,
+			text:  c.Description,
+			spans: timesheet.SplitEntrySpans(c.Start, c.End),
+		})
+		for _, merged := range c.BlockIDs[1:] {
+			receipt.Skipped = append(receipt.Skipped, StageSkip{
+				BlockID: merged,
+				Reason:  fmt.Sprintf("merged into block %s: its minutes are covered by the union span", head),
+			})
+		}
+	}
+
+	next := map[string][]string{}
+	desired := map[string]bool{}
+	for _, u := range units {
+		id := u.id
+		spans := u.spans
 		desired[id] = true
 		mapped := stageMap[id]
 		// Same-process restage path: the mapped chunks all exist in this
@@ -856,11 +878,11 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 				for i, span := range spans {
 					ch, cs := chunkRef(i, len(spans))
 					seg := segmentByID[mapped[i]]
-					if seg.Start == span[0] && seg.End == span[1] && seg.Project == project && seg.Description == e.Description {
+					if seg.Start == span[0] && seg.End == span[1] && seg.Project == project && seg.Description == u.text {
 						receipt.Unchanged = append(receipt.Unchanged, StageBlockRef{BlockID: id, IntervalID: mapped[i], Chunk: ch, Chunks: cs})
 						continue
 					}
-					text := fmt.Sprintf("%s %s-%s %s %s", date, span[0], span[1], project, e.Description)
+					text := fmt.Sprintf("%s %s-%s %s %s", date, span[0], span[1], project, u.text)
 					if _, err := h.call("edit_interval", timesheet.Request{
 						Day: date, Revision: &revision, IntervalID: mapped[i], Text: text,
 					}); err != nil {
@@ -886,7 +908,7 @@ func applyStage(h *headlessSession, cfg *timesheet.Config, name, date, project s
 		}
 		added := make([]string, 0, len(spans))
 		for i, span := range spans {
-			text := fmt.Sprintf("%s %s-%s %s %s", date, span[0], span[1], project, e.Description)
+			text := fmt.Sprintf("%s %s-%s %s %s", date, span[0], span[1], project, u.text)
 			res, err := h.call("add_interval", timesheet.Request{Day: date, Revision: &revision, Text: text})
 			if err != nil {
 				return nil, err

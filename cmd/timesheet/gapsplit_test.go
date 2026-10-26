@@ -1,79 +1,127 @@
 package main
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
 )
 
-func spansOf(t *testing.T, m map[string][][2]string, id string) [][2]string {
+// clusterByHead indexes one day's stage clusters by the head block id the
+// stage map and the receipt name.
+func clusterByHead(t *testing.T, clusters []timesheet.EntryCluster) map[string]timesheet.EntryCluster {
 	t.Helper()
-	got, ok := m[id]
+	out := map[string]timesheet.EntryCluster{}
+	for _, c := range clusters {
+		if len(c.BlockIDs) == 0 {
+			t.Fatalf("cluster has no block ids: %+v", clusters)
+		}
+		out[c.BlockIDs[0]] = c
+	}
+	return out
+}
+
+func clusterOf(t *testing.T, m map[string]timesheet.EntryCluster, head string) timesheet.EntryCluster {
+	t.Helper()
+	got, ok := m[head]
 	if !ok {
-		t.Fatalf("no effective spans for %s in %v", id, m)
+		t.Fatalf("no cluster headed by %s in %+v", head, m)
 	}
 	return got
 }
 
-func assertSpans(t *testing.T, id string, got, want [][2]string) {
+// assertCluster pins one cluster's union span, its contributors in cluster
+// order (head first) and the joined description its intervals carry.
+func assertCluster(t *testing.T, head string, got timesheet.EntryCluster, start, end string, ids []string, desc string) {
 	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("%s spans = %v, want %v", id, got, want)
+	if got.Start != start || got.End != end {
+		t.Fatalf("%s span = %s-%s, want %s-%s", head, got.Start, got.End, start, end)
 	}
-	for i := range got {
-		if got[i] != want[i] {
-			t.Fatalf("%s spans[%d] = %v, want %v", id, i, got[i], want[i])
+	if len(got.BlockIDs) != len(ids) {
+		t.Fatalf("%s contributors = %v, want %v", head, got.BlockIDs, ids)
+	}
+	for i := range ids {
+		if got.BlockIDs[i] != ids[i] {
+			t.Fatalf("%s contributors = %v, want %v", head, got.BlockIDs, ids)
 		}
+	}
+	if got.Description != desc {
+		t.Fatalf("%s description = %q, want %q", head, got.Description, desc)
 	}
 }
 
 // TestEffectiveEntrySpansMeetingInsideEvidence is the live 2026-10-21 shape:
-// workflow training 06:40-07:15 inside evidence 02:16-10:15. The specific
-// meeting claims its span; the broad evidence span splits around it. No minute
-// is lost or double-claimed.
+// workflow training 06:40-07:15 inside evidence 02:16-10:15. The two entries
+// strictly overlap, so they are one cluster over the union span and the staged
+// interval names both instead of staging the same minutes twice.
 func TestEffectiveEntrySpansMeetingInsideEvidence(t *testing.T) {
-	m := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
-		{BlockID: "evidence-02:16-10:15", Start: "02:16", End: "10:15"},
-		{BlockID: "meeting-06:40-07:15", Start: "06:40", End: "07:15"},
+	clusters := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
+		{BlockID: "evidence-02:16-10:15", Start: "02:16", End: "10:15", Description: "Broad evidence"},
+		{BlockID: "meeting-06:40-07:15", Start: "06:40", End: "07:15", Description: "Workflow training"},
 	})
-	assertSpans(t, "meeting", spansOf(t, m, "meeting-06:40-07:15"), [][2]string{{"06:40", "07:15"}})
-	assertSpans(t, "evidence", spansOf(t, m, "evidence-02:16-10:15"),
-		[][2]string{{"02:16", "06:40"}, {"07:15", "10:15"}})
+	m := clusterByHead(t, clusters)
+	if len(m) != 1 {
+		t.Fatalf("clusters = %+v, want one", clusters)
+	}
+	assertCluster(t, "evidence-02:16-10:15", clusterOf(t, m, "evidence-02:16-10:15"), "02:16", "10:15",
+		[]string{"evidence-02:16-10:15", "meeting-06:40-07:15"}, "Broad evidence + Workflow training")
 }
 
-// TestEffectiveEntrySpansPartialOverlap: equal-duration overlapping blocks —
-// the earlier start claims first; the later block keeps only its unclaimed
-// tail. Deterministic.
+// TestEffectiveEntrySpansPartialOverlap: two entries that partly overlap merge
+// to the union span, and both descriptions are kept in one text.
 func TestEffectiveEntrySpansPartialOverlap(t *testing.T) {
-	m := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
-		{BlockID: "b-late", Start: "10:00", End: "12:00"},
-		{BlockID: "a-early", Start: "09:00", End: "11:00"},
+	clusters := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
+		{BlockID: "b-late", Start: "10:00", End: "12:00", Description: "Ops deploy"},
+		{BlockID: "a-early", Start: "09:00", End: "11:00", Description: "Bridge PRs"},
 	})
-	assertSpans(t, "a-early", spansOf(t, m, "a-early"), [][2]string{{"09:00", "11:00"}})
-	assertSpans(t, "b-late", spansOf(t, m, "b-late"), [][2]string{{"11:00", "12:00"}})
+	m := clusterByHead(t, clusters)
+	if len(m) != 1 {
+		t.Fatalf("clusters = %+v, want one", clusters)
+	}
+	assertCluster(t, "a-early", clusterOf(t, m, "a-early"), "09:00", "12:00",
+		[]string{"a-early", "b-late"}, "Bridge PRs + Ops deploy")
 }
 
-// TestEffectiveEntrySpansFullyCoveredDuplicate: a duplicate of a more specific
-// block yields no spans (the caller skips it honestly).
-func TestEffectiveEntrySpansFullyCoveredDuplicate(t *testing.T) {
-	m := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
-		{BlockID: "dup-a", Start: "06:40", End: "07:15"},
-		{BlockID: "dup-b", Start: "06:40", End: "07:15"},
+// TestEffectiveEntrySpansDuplicateMerges: a duplicate span is an overlap, so
+// the two entries are one cluster under the lowest block id. The merged-away
+// id is reported by the caller, never silently dropped.
+func TestEffectiveEntrySpansDuplicateMerges(t *testing.T) {
+	clusters := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
+		{BlockID: "dup-b", Start: "06:40", End: "07:15", Description: "Same work"},
+		{BlockID: "dup-a", Start: "06:40", End: "07:15", Description: "Same work"},
 	})
-	if _, ok := m["dup-b"]; ok {
-		t.Fatalf("duplicate block received spans: %v", m["dup-b"])
+	m := clusterByHead(t, clusters)
+	if len(m) != 1 {
+		t.Fatalf("clusters = %+v, want one", clusters)
 	}
-	if len(m["dup-a"]) != 1 {
-		t.Fatalf("first duplicate spans = %v, want exactly one", m["dup-a"])
-	}
+	assertCluster(t, "dup-a", clusterOf(t, m, "dup-a"), "06:40", "07:15",
+		[]string{"dup-a", "dup-b"}, "Same work")
 }
 
-// TestStageDay21ShapeEndToEnd: the live 2026-10-21 ledger shape — evidence
-// 02:16-13:00 with two meetings inside — stages, confirms and saves with
-// gap-free, non-overlapping, policy-compliant intervals where the previous
-// build refused the whole day with `overlap`. Every durable interval ≤ 240
-// minutes; the total equals the full ledger span (nothing lost or doubled).
+// TestEffectiveEntrySpansExcludesUnusableEntries: zero-duration and overnight
+// entries are not cluster candidates. The caller owns their own skip reasons
+// (zero duration) or passes the overnight span through unsplit, so neither may
+// leak into a cluster.
+func TestEffectiveEntrySpansExcludesUnusableEntries(t *testing.T) {
+	clusters := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
+		{BlockID: "zero-1", Start: "09:00", End: "09:00", Description: "No duration"},
+		{BlockID: "night-1", Start: "23:00", End: "01:00", Description: "Overnight watch"},
+		{BlockID: "good-1", Start: "10:00", End: "11:00", Description: "Clean block"},
+	})
+	m := clusterByHead(t, clusters)
+	if len(m) != 1 {
+		t.Fatalf("clusters = %+v, want only the clean block", clusters)
+	}
+	assertCluster(t, "good-1", clusterOf(t, m, "good-1"), "10:00", "11:00",
+		[]string{"good-1"}, "Clean block")
+}
+
+// TestStageDay21ShapeEndToEnd is the live 2026-10-21 ledger shape rewritten
+// to the merged reading: evidence 02:16-13:00 and the two meetings inside it
+// are one connected cluster (issue #183 rule 6), so the day stages as ONE
+// interval set over the union span, chunked to the four-hour policy, and
+// confirm plus save keep the day gap-free and non-overlapping.
 func TestStageDay21ShapeEndToEnd(t *testing.T) {
 	cfg := writeTestConfig(t)
 	seedEntries(t, cfg, testDate, []timesheet.ReviewedBlock{
@@ -82,8 +130,8 @@ func TestStageDay21ShapeEndToEnd(t *testing.T) {
 		timedBlock("meeting-09:00-09:30", "09:00", "09:30", "Standup"),
 	})
 	receipt := runStageCapture(t, []string{"--config", cfg, "--date", testDate})
-	if receipt.StagedIntervals != 6 {
-		t.Fatalf("staged_intervals = %d, want 6 (evidence parts 02:16-06:40 → 240+24, 07:15-09:00, 09:30-13:00, plus 2 meetings)", receipt.StagedIntervals)
+	if receipt.StagedIntervals != 3 {
+		t.Fatalf("staged_intervals = %d, want 3 (one union span 02:16-13:00 chunked 240+240+164)", receipt.StagedIntervals)
 	}
 	if err := runConfirm([]string{"--config", cfg, "--date", testDate}); err != nil {
 		t.Fatalf("confirm: %v", err)
@@ -92,22 +140,15 @@ func TestStageDay21ShapeEndToEnd(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 	day := readDurableDay(t, cfg, testDate)
-	want := map[string]bool{
-		"02:16-06:16": true, // 240 (four-hour chunk of 02:16-06:40)
-		"06:16-06:40": true, // 24 (remainder)
-		"06:40-07:15": true, // 35 (meeting, whole)
-		"07:15-09:00": true, // 105 (gap between the meetings)
-		"09:00-09:30": true, // 30 (meeting, whole)
-		"09:30-13:00": true, // 210 (final gap, under the policy)
-	}
-	if len(day.Confirmed) != len(want) {
+	if len(day.Confirmed) != 3 {
 		spans := make([]string, 0, len(day.Confirmed))
 		for _, iv := range day.Confirmed {
 			spans = append(spans, iv.Start+"-"+iv.End)
 		}
-		t.Fatalf("confirmed spans = %v, want exactly %v", spans, want)
+		t.Fatalf("confirmed spans = %v, want the three chunks of 02:16-13:00", spans)
 	}
-	// Gap-free, non-overlapping, policy-compliant, total preserved.
+	// Chunk-ceiling, non-overlap and contiguity: the confirmed minutes must
+	// cover the union span exactly, with nothing lost, doubled or bridged.
 	type bound struct{ start, end, minutes int }
 	clock := func(s string) int {
 		m, ok := 0, false
@@ -129,6 +170,11 @@ func TestStageDay21ShapeEndToEnd(t *testing.T) {
 		if mins <= 0 || mins > 240 {
 			t.Fatalf("interval %s-%s = %d minutes, want (0, 240]", iv.Start, iv.End, mins)
 		}
+		for _, name := range []string{"Broad evidence block", "Workflow training", "Standup"} {
+			if !strings.Contains(iv.Description, name) {
+				t.Fatalf("interval %s-%s description = %q, want every contributor named", iv.Start, iv.End, iv.Description)
+			}
+		}
 		bounds = append(bounds, bound{s, e, mins})
 		total += mins
 	}
@@ -139,20 +185,48 @@ func TestStageDay21ShapeEndToEnd(t *testing.T) {
 			}
 		}
 	}
-	if total != 644 {
-		t.Fatalf("total confirmed minutes = %d, want 644 (the full ledger span 02:16-13:00, nothing lost or doubled)", total)
+	sort.Slice(bounds, func(i, j int) bool { return bounds[i].start < bounds[j].start })
+	if bounds[0].start != clock("02:16") || bounds[len(bounds)-1].end != clock("13:00") {
+		t.Fatalf("confirmed set = %+v, want it bounded by the union span 02:16-13:00", bounds)
 	}
+	for i := 1; i < len(bounds); i++ {
+		if bounds[i].start != bounds[i-1].end {
+			t.Fatalf("confirmed set = %+v, want contiguous chunks across the union span", bounds)
+		}
+	}
+	if total != clock("13:00")-clock("02:16") {
+		t.Fatalf("total confirmed minutes = %d, want the union span's %d", total, clock("13:00")-clock("02:16"))
+	}
+}
+
+// TestEffectiveEntrySpansTouchingUnchanged: end == start merely touches, so
+// the two entries keep their own clusters (nothing is bridged).
+func TestEffectiveEntrySpansTouchingUnchanged(t *testing.T) {
+	clusters := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
+		{BlockID: "a", Start: "09:00", End: "10:00", Description: "First"},
+		{BlockID: "b", Start: "10:00", End: "11:00", Description: "Second"},
+	})
+	m := clusterByHead(t, clusters)
+	if len(m) != 2 {
+		t.Fatalf("clusters = %+v, want two", clusters)
+	}
+	assertCluster(t, "a", clusterOf(t, m, "a"), "09:00", "10:00", []string{"a"}, "First")
+	assertCluster(t, "b", clusterOf(t, m, "b"), "10:00", "11:00", []string{"b"}, "Second")
 }
 
 // TestEffectiveEntrySpansDisjointUnchanged: entries that do not overlap keep
 // their single spans (the bridge adds nothing on clean days).
 func TestEffectiveEntrySpansDisjointUnchanged(t *testing.T) {
-	m := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
-		{BlockID: "a", Start: "09:00", End: "10:00"},
-		{BlockID: "b", Start: "11:00", End: "11:15"},
+	clusters := timesheet.EffectiveEntrySpans([]timesheet.EntryRecord{
+		{BlockID: "a", Start: "09:00", End: "10:00", Description: "First"},
+		{BlockID: "b", Start: "11:00", End: "11:15", Description: "Second"},
 	})
-	assertSpans(t, "a", spansOf(t, m, "a"), [][2]string{{"09:00", "10:00"}})
-	assertSpans(t, "b", spansOf(t, m, "b"), [][2]string{{"11:00", "11:15"}})
+	m := clusterByHead(t, clusters)
+	if len(m) != 2 {
+		t.Fatalf("clusters = %+v, want two", clusters)
+	}
+	assertCluster(t, "a", clusterOf(t, m, "a"), "09:00", "10:00", []string{"a"}, "First")
+	assertCluster(t, "b", clusterOf(t, m, "b"), "11:00", "11:15", []string{"b"}, "Second")
 }
 
 // TestStageUnparsableTimesSkipReason: an entry whose anchors are not times the
