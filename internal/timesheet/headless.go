@@ -55,6 +55,11 @@ type DraftBlock struct {
 	Sources          []DraftSourceItem `json:"-"`
 	SourcesTruncated bool              `json:"-"`
 	Completeness     map[string]string `json:"completeness,omitempty"`
+	// OutsideWorkHours and WorkHoursReason are presentation-only annotations
+	// added by AnnotateWorkHours from the optional work_hours policy. They
+	// never reject, warn, or change a block's span or duration.
+	OutsideWorkHours bool   `json:"outside_work_hours,omitempty"`
+	WorkHoursReason  string `json:"work_hours_reason,omitempty"`
 }
 
 // Draft is the entire input of the skill's judgment step. It carries one day
@@ -70,6 +75,11 @@ type Draft struct {
 	DayNote    string       `json:"day_note,omitempty"`
 	Flags      []string     `json:"flags,omitempty"`
 	Blocks     []DraftBlock `json:"blocks"`
+	// WorkHours echoes the policy that produced the block annotations, so a
+	// reader can check an outside_work_hours claim against the policy itself
+	// instead of trusting the reason token alone. It is omitted entirely when
+	// no policy is configured, keeping that draft byte-identical.
+	WorkHours *WorkHoursConfig `json:"work_hours,omitempty"`
 }
 
 const draftSourcesPerBlock = 8
@@ -107,6 +117,16 @@ func BuildDraft(review Review, appVersion string) Draft {
 		d.Flags = append(d.Flags, "no_confirmed_intervals")
 	}
 
+	// Meeting proposals carry absolute RFC3339 instants in the provider's
+	// offset (often UTC). The draft's block times must read as local wall
+	// clock on the recorded day, so every meeting instant is converted into the
+	// day's recorded timezone before it becomes a block. Without this, a
+	// 14:00 Asia/Ho_Chi_Minh meeting stored as 07:00Z rendered as a 07:00 block
+	// and any outside-work-hours annotation was computed from the wrong clock
+	// (issue #174 review finding 1; #181 records the pre-existing display
+	// defect this closes).
+	dayLoc := DayLocationOrNil(review.Timezone)
+
 	type block struct {
 		blk    DraftBlock
 		startM int
@@ -124,8 +144,8 @@ func BuildDraft(review Review, appVersion string) Draft {
 		if m.Decision == "no" || m.Status == "cancelled" || m.AllDay {
 			continue
 		}
-		startM, okS := draftClock(m.Start)
-		endM, okE := draftClock(m.End)
+		startM, okS := anchorClock(m.Start, dayLoc)
+		endM, okE := anchorClock(m.End, dayLoc)
 		if !okS || !okE || endM <= startM {
 			continue
 		}
@@ -179,15 +199,15 @@ func BuildDraft(review Review, appVersion string) Draft {
 	}
 	var unallocated []TopicCandidate
 	for _, t := range topics {
-		firstM, okF := draftClock(t.FirstAt)
-		lastM, okL := draftClock(t.LastAt)
+		firstM, okF := anchorClock(t.FirstAt, dayLoc)
+		lastM, okL := anchorClock(t.LastAt, dayLoc)
 		if okF && okL {
 			if i := draftTopicTarget(targets, firstM, lastM); i >= 0 {
 				// Bare titles only: #148's grouping and cap run on titles
 				// exactly as pinned; overflow summaries attach afterwards,
 				// per rendered line (issue #146).
 				blocks[i].blk.TopicCandidates = append(blocks[i].blk.TopicCandidates, t.Title)
-				blocks[i].overflow = append(blocks[i].overflow, topicOverflowOf(t))
+				blocks[i].overflow = append(blocks[i].overflow, topicOverflowOf(t, dayLoc))
 				blocks[i].blk = mergeTopicItems(blocks[i].blk, t)
 				continue
 			}
@@ -200,10 +220,10 @@ func BuildDraft(review Review, appVersion string) Draft {
 		minM, maxM := -1, -1
 		for _, t := range unallocated {
 			eb.blk.TopicCandidates = append(eb.blk.TopicCandidates, t.Title)
-			eb.overflow = append(eb.overflow, topicOverflowOf(t))
+			eb.overflow = append(eb.overflow, topicOverflowOf(t, dayLoc))
 			eb.blk = mergeTopicItems(eb.blk, t)
 			for _, item := range t.Items {
-				if m, ok := draftClock(item.Time); ok {
+				if m, ok := anchorClock(item.Time, dayLoc); ok {
 					if minM == -1 || m < minM {
 						minM = m
 					}
@@ -255,6 +275,121 @@ func BuildDraft(review Review, appVersion string) Draft {
 		d.Blocks = append(d.Blocks, blocks[i].blk)
 	}
 	return d
+}
+
+// Work-hours annotation reasons. These tokens are contractual: they appear in
+// the draft JSON and are the only values WorkHoursReason ever carries.
+const (
+	workReasonDayNotInPolicy = "day_not_in_policy"
+	workReasonBeforeWindow   = "before_window"
+	workReasonBetweenWindows = "between_windows"
+	workReasonAfterWindow    = "after_window"
+	workReasonPartial        = "partial"
+)
+
+type workWindowMinutes struct {
+	start int
+	end   int
+}
+
+// AnnotateWorkHours marks each draft block that is fully or partly outside the
+// optional main-work-time policy. It is presentation only: nothing is
+// rejected, warned, or removed, and no span or duration changes. A nil draft or
+// nil policy is a no-op, as is a draft whose day cannot be read or a block with
+// no usable same-day start/end (for example the whole-day fallback block).
+//
+// A block entirely inside one window is left untouched. A block that starts
+// before the day's first window, sits in a gap between windows, or extends past
+// the last window is marked with the matching reason; a block that overlaps a
+// window boundary (partly inside, partly outside) is marked partial. A day not
+// named by the policy marks every usable block day_not_in_policy.
+func AnnotateWorkHours(d *Draft, policy *WorkHoursConfig, loc *time.Location) {
+	if d == nil || policy == nil {
+		return
+	}
+	if loc == nil {
+		// No recorded-day timezone means no honest classification: a
+		// substitute zone would guess at the weekday and the window clock.
+		return
+	}
+	day, err := time.ParseInLocation("2006-01-02", d.Date, loc)
+	if err != nil {
+		return
+	}
+	// Echo the policy only once it is actually applied, so every reason token
+	// below is checkable against the policy that produced it.
+	d.WorkHours = policy
+	allowed := make(map[string]bool, len(policy.Days))
+	for _, name := range policy.Days {
+		allowed[name] = true
+	}
+	inPolicy := allowed[weekdayToken(day.Weekday())]
+
+	windows := make([]workWindowMinutes, 0, len(policy.Windows))
+	for _, win := range policy.Windows {
+		start, errStart := parseClock(win.Start)
+		end, errEnd := parseClock(win.End)
+		if errStart != nil || errEnd != nil || start >= end {
+			// A policy reaching this function is validated config; an invalid
+			// window is skipped rather than guessed at.
+			continue
+		}
+		windows = append(windows, workWindowMinutes{start: start, end: end})
+	}
+	if inPolicy && len(windows) == 0 {
+		return
+	}
+	sort.Slice(windows, func(i, j int) bool { return windows[i].start < windows[j].start })
+
+	for i := range d.Blocks {
+		b := &d.Blocks[i]
+		start, errStart := parseClock(b.Start)
+		end, errEnd := parseClock(b.End)
+		if errStart != nil || errEnd != nil || end <= start {
+			continue
+		}
+		b.OutsideWorkHours = false
+		b.WorkHoursReason = ""
+		if !inPolicy {
+			b.OutsideWorkHours = true
+			b.WorkHoursReason = workReasonDayNotInPolicy
+			continue
+		}
+		reason := workHoursReasonFor(start, end, windows)
+		if reason == "" {
+			continue
+		}
+		b.OutsideWorkHours = true
+		b.WorkHoursReason = reason
+	}
+}
+
+// workHoursReasonFor classifies one [start,end) block against sorted, disjoint
+// windows. It returns "" when the block is entirely inside one window.
+func workHoursReasonFor(start, end int, windows []workWindowMinutes) string {
+	for _, w := range windows {
+		if start >= w.start && end <= w.end {
+			return ""
+		}
+	}
+	for _, w := range windows {
+		if start < w.end && end > w.start {
+			return workReasonPartial
+		}
+	}
+	if end <= windows[0].start {
+		return workReasonBeforeWindow
+	}
+	if start >= windows[len(windows)-1].end {
+		return workReasonAfterWindow
+	}
+	return workReasonBetweenWindows
+}
+
+// weekdayToken renders Go's weekday as the exact three-letter token the
+// work_hours policy uses.
+func weekdayToken(w time.Weekday) string {
+	return [...]string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}[w]
 }
 
 // draftSpan is one topic-attachment candidate: a block index and its
@@ -325,7 +460,7 @@ type topicOverflow struct {
 // topicOverflowOf collects one topic's overflow counts. It returns nil for a
 // topic with nothing beyond the retained Items cap, so non-truncated topics
 // contribute nothing to any rendered line.
-func topicOverflowOf(t TopicCandidate) *topicOverflow {
+func topicOverflowOf(t TopicCandidate, loc *time.Location) *topicOverflow {
 	if len(t.OverflowItems) == 0 && t.DroppedItems == 0 {
 		return nil
 	}
@@ -337,7 +472,7 @@ func topicOverflowOf(t TopicCandidate) *topicOverflow {
 		}
 		o.kinds[k]++
 		o.kept++
-		if m, ok := draftClock(item.Time); ok {
+		if m, ok := anchorClock(item.Time, loc); ok {
 			if o.minM < 0 || m < o.minM {
 				o.minM = m
 			}
@@ -410,7 +545,7 @@ func (o *topicOverflow) suffix() string {
 // draftOverflowSummary renders one topic's own overflow summary: the same
 // deterministic suffix a verbatim (non-grouped) rendered line carries.
 func draftOverflowSummary(t TopicCandidate) string {
-	return topicOverflowOf(t).suffix()
+	return topicOverflowOf(t, nil).suffix()
 }
 
 // prLabel renders "pr:owner/name:12" as "#12 owner/name".
@@ -674,8 +809,41 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
+// DayLocationOrNil resolves a recorded day's IANA timezone for anchor
+// conversion. An empty or unloadable zone yields nil, which means "take the
+// anchor at its own offset": empty time.LoadLocation("") would otherwise
+// silently mean UTC and shift every anchor, so it is rejected here.
+func DayLocationOrNil(timezone string) *time.Location {
+	if strings.TrimSpace(timezone) == "" {
+		return nil
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return nil
+	}
+	return loc
+}
+
+// anchorClock resolves one absolute provider anchor into minutes since local
+// midnight on the recorded day. An RFC3339 instant is converted into loc first,
+// because a provider stamp in its own offset (usually UTC) is not a local wall
+// clock; a bare "HH:MM" is already local and is taken as written. A nil loc
+// leaves the stamp on its own offset, which is reachable only when the recorded
+// day's timezone is empty or cannot be loaded.
+func anchorClock(s string, loc *time.Location) (int, bool) {
+	s = strings.TrimSpace(s)
+	if loc != nil && len(s) >= 16 && (s[10] == 'T' || s[10] == ' ') {
+		if t, err := time.Parse(time.RFC3339, strings.Replace(s, " ", "T", 1)); err == nil {
+			local := t.In(loc)
+			return local.Hour()*60 + local.Minute(), true
+		}
+	}
+	return draftClock(s)
+}
+
 // draftClock accepts the two time shapes the review carries — "HH:MM" for
-// intervals and RFC 3339 for provider timestamps — and returns local minutes.
+// intervals and RFC 3339 for provider timestamps — and returns minutes on the
+// stamp's own clock. Anchor conversion belongs to anchorClock.
 func draftClock(s string) (int, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -906,8 +1074,12 @@ func RecordEntries(statePath, appVersion string, reviewed ReviewedDraft, replace
 	// full source references the pre-change draft carried (orchestrator-
 	// authorized DRAFT-COMPACT-1 amendment). This only fills entry fields —
 	// no validation rule, schema, or draft shape changes.
-	if ev := readDayEvidenceForRecord(statePath, reviewed.Date); ev != nil {
-		reattachSources(ev, reviewed.Blocks)
+	if ev, storedZone := readDayEvidenceForRecord(statePath, reviewed.Date); ev != nil {
+		timezone := strings.TrimSpace(reviewed.Timezone)
+		if timezone == "" {
+			timezone = storedZone
+		}
+		reattachSources(ev, reviewed.Blocks, timezone)
 	}
 
 	path := EntriesPath(statePath, reviewed.Date)
@@ -1449,6 +1621,9 @@ func ParseResolutionDecision(data []byte) (ResolutionDecisionFile, error) {
 // file: record parses only the evidence section and never anything else.
 type stateEvidenceView struct {
 	Evidence map[string]*DayEvidence `json:"evidence"`
+	Days     map[string]struct {
+		Timezone string `json:"timezone"`
+	} `json:"days"`
 }
 
 // readDayEvidenceForRecord reads one day's durable evidence from the state
@@ -1458,19 +1633,22 @@ type stateEvidenceView struct {
 // atomically, so a lock-free read sees one complete version). A missing,
 // unreadable, or invalid state file yields nil: re-attachment is audit
 // parity, never a record precondition, and the day still records.
-func readDayEvidenceForRecord(statePath, date string) *DayEvidence {
+func readDayEvidenceForRecord(statePath, date string) (*DayEvidence, string) {
 	if statePath == "" || date == "" {
-		return nil
+		return nil, ""
 	}
 	data, err := os.ReadFile(statePath)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	var view stateEvidenceView
 	if err := json.Unmarshal(data, &view); err != nil {
-		return nil
+		return nil, ""
 	}
-	return view.Evidence[date]
+	// The day's stored timezone is the authority for anchor conversion, so a
+	// recovery file that dropped the key cannot silently re-attach sources on
+	// a different clock than the draft used.
+	return view.Evidence[date], view.Days[date].Timezone
 }
 
 // reattachSources re-derives each reviewed block's audit-only source
@@ -1484,7 +1662,13 @@ func readDayEvidenceForRecord(statePath, date string) *DayEvidence {
 // authoritative: anything the reviewed file echoed is replaced, keeping
 // recorded sources identical whether or not the reviewed file carried them.
 // A whole-day block never carries sources.
-func reattachSources(ev *DayEvidence, blocks []ReviewedBlock) {
+func reattachSources(ev *DayEvidence, blocks []ReviewedBlock, timezone string) {
+	// Topic anchors are absolute provider instants; they must be resolved in
+	// the recorded day's timezone exactly as BuildDraft does, or the recorded
+	// entry would attach sources to a different block than the draft showed.
+	// A timezone that cannot be loaded keeps the anchors' own offset, which is
+	// the pre-fix behaviour and only reachable for an unloadable day.
+	dayLoc := DayLocationOrNil(timezone)
 	var cands []draftSpan
 	evidenceIdx := -1
 	for i := range blocks {
@@ -1504,8 +1688,8 @@ func reattachSources(ev *DayEvidence, blocks []ReviewedBlock) {
 	}
 	folds := make([]DraftBlock, len(blocks))
 	for _, t := range ev.Topics {
-		firstM, okF := draftClock(t.FirstAt)
-		lastM, okL := draftClock(t.LastAt)
+		firstM, okF := anchorClock(t.FirstAt, dayLoc)
+		lastM, okL := anchorClock(t.LastAt, dayLoc)
 		assigned := -1
 		if okF && okL {
 			assigned = draftTopicTarget(cands, firstM, lastM)

@@ -29,7 +29,7 @@ import (
 // is intentional: they have no semantics for native approvals, write intents or
 // execution history.
 const (
-	AppVersion        = "0.2.0-dev.2"
+	AppVersion        = "0.2.0-dev.3"
 	ProtocolSchema    = 1
 	stateSchema       = 3
 	legacyStateSchema = 1
@@ -140,6 +140,28 @@ type Config struct {
 	// Gradion is the disabled-by-default read-only remote boundary. It carries
 	// a launcher-provisioned endpoint and a credential variable NAME only.
 	Gradion *GradionConfig `json:"gradion,omitempty"`
+	// WorkHours is the optional main-work-time policy used only to annotate
+	// the one-day draft. It never rejects, warns, or changes a recorded block.
+	// The four-hour per-entry bound is the remote's fixed policy, not a
+	// work_hours setting; unknown keys inside this block fail closed.
+	WorkHours *WorkHoursConfig `json:"work_hours,omitempty"`
+}
+
+// WorkHoursConfig names the weekdays and same-day windows of main work time.
+// It is presentation-only policy: outside hours are allowed, with no ceiling.
+// Days use exactly the lowercase three-letter tokens mon..sun; windows use
+// 24-hour HH:MM and must not overlap. Configuration is validated offline so a
+// draft annotation never has to guess.
+type WorkHoursConfig struct {
+	Days    []string     `json:"days"`
+	Windows []WorkWindow `json:"windows"`
+}
+
+// WorkWindow is one inclusive-start, exclusive-end main work window. Start is
+// before End on the same recorded day; a window never crosses midnight.
+type WorkWindow struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
 }
 
 // MigrationConfig provisions explicit legacy migration. It is disabled unless
@@ -380,6 +402,13 @@ func nextDate(s string) string {
 func parseClock(s string) (int, error) {
 	if len(s) != 5 || s[2] != ':' {
 		return 0, newError(CodeInvalidInterval, "time must use 24-hour HH:MM form")
+	}
+	// Atoi accepts leading signs, so "+1:00" and "09:+5" would otherwise parse.
+	// The grammar is digits only; nothing is normalised.
+	for _, i := range []int{0, 1, 3, 4} {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, newError(CodeInvalidInterval, "time must use 24-hour HH:MM form")
+		}
 	}
 	h, err1 := strconv.Atoi(s[0:2])
 	m, err2 := strconv.Atoi(s[3:5])

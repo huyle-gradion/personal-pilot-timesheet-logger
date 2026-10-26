@@ -1256,3 +1256,50 @@ func TestRecordEntriesReplaceSupersedesGeneration(t *testing.T) {
 		t.Fatalf("merge total = %+v, want 3 entries", f3)
 	}
 }
+
+// TestRecordEntriesUsesStoredDayTimezoneWhenFileOmitsIt: a reviewed file may be
+// recovered without its timezone key. The day's stored timezone is the
+// authority, so topic anchors must still resolve on the local clock and attach
+// to the same block the draft attached them to (review finding on #174).
+func TestRecordEntriesUsesStoredDayTimezoneWhenFileOmitsIt(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	body := map[string]any{
+		"schema": 2,
+		"days": map[string]any{
+			"2026-10-20": map[string]any{"timezone": "Asia/Ho_Chi_Minh"},
+		},
+		"evidence": map[string]any{
+			"2026-10-20": map[string]any{"topics": []TopicCandidate{{
+				Title:   "Pull request #7 (acme/api)",
+				FirstAt: "2026-10-20T07:20:00Z", LastAt: "2026-10-20T07:40:00Z",
+				Items: []EvidenceItem{{
+					Kind: "authored_pull_request", Repo: "acme/api", Title: "PR 7", Time: "2026-10-20T07:20:00Z",
+				}},
+			}}},
+		},
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// No Timezone on the reviewed file: 07:20Z is 14:20 local, inside the block.
+	reviewed := ReviewedDraft{Date: "2026-10-20", Blocks: []ReviewedBlock{{
+		DraftBlock:  DraftBlock{BlockID: "meeting-14:00-15:00", Kind: "meeting", Start: "14:00", End: "15:00"},
+		Description: "Standup",
+	}}}
+	if _, err := RecordEntries(statePath, "test", reviewed, false, time.Now()); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	f, err := ReadEntries(statePath, "2026-10-20")
+	if err != nil || f == nil || len(f.Entries) != 1 {
+		t.Fatalf("entries = %+v %v", f, err)
+	}
+	if got := len(f.Entries[0].Sources); got != 1 {
+		t.Fatalf("sources = %d (%+v), want the 07:20Z topic resolved to 14:20 local and attached", got, f.Entries[0].Sources)
+	}
+}

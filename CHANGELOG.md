@@ -2,8 +2,26 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
-## Unreleased (0.2.0-dev.2)
+## Unreleased (0.2.0-dev.3)
 
+- Annotate the one-day draft from an optional `work_hours` policy (issue #174):
+  `days` use exactly `mon`…`sun` and one to four non-overlapping same-day
+  `HH:MM` windows such as 09:00-12:00 and 13:00-18:00, validated offline so an
+  invalid day, window, bound, or overlap fails `config_invalid` naming the
+  value (an unknown key inside the block still fails the strict decoder).
+  `draft`/`run` then set `outside_work_hours` with `work_hours_reason`
+  (`day_not_in_policy`, `before_window`, `between_windows`, `after_window`, or
+  `partial`); a block inside one window is untouched, nothing is rejected or
+  resized, and a configuration without `work_hours` renders byte-identically.
+  The draft also echoes the applied policy so each reason is checkable. The
+  four-hour per-entry bound stays the remote's fixed policy, not configuration.
+- Resolve every absolute provider anchor in the recorded day's timezone
+  (issue #181, found while adding the annotation): meeting anchors and
+  evidence-topic anchors/items stored as `07:00Z` on an `Asia/Ho_Chi_Minh` day
+  now read `14:00`, so the block a reviewer reads, the topic-to-block
+  attachment, the outside-work-hours claim and the entry `record` writes all
+  agree with the day. No state, protocol or duration change; a re-recorded day
+  corrects previously written times.
 - Collect the merge-PR and comment-in-PR proof-of-work shapes (issue #175):
   a new `merged_pull_requests` search family attributes a merge only when
   `merged_by.login` names the configured user and `merged_at` falls inside the
@@ -35,7 +53,7 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
   idempotently per time block with full source references kept for checking.
 - Add `scripts/tokens.py`: idempotent per-(date, runtime, session) token
   capture from Claude Code or Pi transcripts into `benchmarks/tokens.csv`.
-- Development stamp `0.2.0-dev.2`; release stamping, adapter version and
+- Development stamp `0.2.0-dev.3`; release stamping, adapter version and
   publication remain owner-gated. Existing state, entries and credential paths
   are untouched.
 
