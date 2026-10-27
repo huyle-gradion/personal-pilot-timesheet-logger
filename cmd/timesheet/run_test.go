@@ -186,6 +186,10 @@ func TestRunCollectsExactlyOncePerInvocation(t *testing.T) {
 func TestRunFlagErrors(t *testing.T) {
 	pinClock(t)
 	t.Setenv("TMPDIR", t.TempDir())
+	// The missing-config case resolves the $HOME default, so pin HOME to an
+	// empty directory: the default config never exists there and the test
+	// stays hermetic no matter what the invoking machine has installed.
+	t.Setenv("HOME", t.TempDir())
 	// No enabled sources: the omitted-date case below executes a real run and
 	// must never reach an inherited feed URL or the network.
 	cfg, _ := writeSyntheticConfig(t, "Asia/Ho_Chi_Minh")
@@ -194,7 +198,7 @@ func TestRunFlagErrors(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "missing config", args: []string{"--date", "2026-10-20"}, want: "run requires --config"},
+		{name: "missing config", args: []string{"--date", "2026-10-20"}, want: "no configuration at"},
 		{name: "bad date format", args: []string{"--config", cfg, "--date", "20-10-2026"}, want: "run: --date must be YYYY-MM-DD"},
 		{name: "positional args", args: []string{"--config", cfg, "--date", "2026-10-20", "extra"}, want: "run does not accept positional arguments"},
 	}

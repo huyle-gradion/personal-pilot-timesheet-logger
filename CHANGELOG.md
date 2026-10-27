@@ -4,6 +4,14 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
 
 ## Unreleased (0.2.0-dev.5)
 
+- Fixed-path flag defaults: every command except `serve` now runs without
+  `--config` and `--env-file`. `--config` defaults to
+  `$HOME/.timesheet/config.json` (a missing default fails naming the file and
+  the fix) and `--env-file` to `$HOME/.timesheet/.env.local` when that file
+  exists (no file values otherwise, as with an omitted flag before). Explicit
+  flags always win verbatim, so the Pi launcher, tests and alternate setups are
+  unchanged — `serve` still requires both flags, and an explicit `--env-file`
+  that cannot be read still fails. The skill's commands shrink accordingly.
 - Merge concurrent POWs instead of splitting or dropping them (issue #183):
   work and evidence blocks whose same-day spans strictly overlap render as one
   block over the union span, carrying every contributor's topic candidates, PRs

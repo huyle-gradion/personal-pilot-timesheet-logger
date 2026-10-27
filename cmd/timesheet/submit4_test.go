@@ -631,6 +631,9 @@ func TestResolveWriteAdoptAndNotApplied(t *testing.T) {
 
 // TestSubmit4FlagErrors: the new commands' flag surface.
 func TestSubmit4FlagErrors(t *testing.T) {
+	// The missing-config cases resolve the $HOME default; pin it to an empty
+	// directory so the default config never exists and the test is hermetic.
+	t.Setenv("HOME", t.TempDir())
 	cfg := writeTestConfig(t)
 	decision := writeDecisionFor(t, cfg, `{"write_ref": "wr", "observation_id": "obs", "decision": "not_applied"}`)
 	cases := []struct {
@@ -643,11 +646,11 @@ func TestSubmit4FlagErrors(t *testing.T) {
 		{"approve bad date", runApprove, []string{"--config", cfg, "--date", "2026-13-01"}, "must be YYYY-MM-DD"},
 		{"approve positional", runApprove, []string{"--config", cfg, "--date", testDate, "extra"}, "positional"},
 		{"submit missing approval", runSubmit, []string{"--config", cfg, "--date", testDate}, "submit requires --approval-id"},
-		{"submit missing config", runSubmit, []string{"--date", testDate, "--approval-id", "apr-1"}, "submit requires --config"},
+		{"submit missing config", runSubmit, []string{"--date", testDate, "--approval-id", "apr-1"}, "no configuration at"},
 		{"submit bad date", runSubmit, []string{"--config", cfg, "--date", "nope", "--approval-id", "apr-1"}, "must be YYYY-MM-DD"},
 		{"status missing date", runSubmitStatus, []string{"--config", cfg}, "submit-status requires --date"},
 		{"resolve-write missing file", runResolveWrite, []string{"--config", cfg}, "resolve-write requires --file"},
-		{"resolve-write missing config", runResolveWrite, []string{"--file", decision}, "resolve-write requires --config"},
+		{"resolve-write missing config", runResolveWrite, []string{"--file", decision}, "no configuration at"},
 		{"resolve-write positional", runResolveWrite, []string{"--config", cfg, "--file", decision, "x"}, "positional"},
 	}
 	for _, tc := range cases {

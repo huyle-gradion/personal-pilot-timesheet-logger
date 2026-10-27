@@ -487,6 +487,9 @@ func TestPlanRefusedWithoutSavedWork(t *testing.T) {
 
 // TestSubmit3FlagErrors: the new commands' flag surface.
 func TestSubmit3FlagErrors(t *testing.T) {
+	// The missing-config case resolves the $HOME default; pin it to an empty
+	// directory so the default config never exists and the test is hermetic.
+	t.Setenv("HOME", t.TempDir())
 	cfg := writeTestConfig(t)
 	cases := []struct {
 		name string
@@ -497,7 +500,7 @@ func TestSubmit3FlagErrors(t *testing.T) {
 		{"plan missing date", runPlan, []string{"--config", cfg}, "plan requires --date"},
 		{"plan bad date", runPlan, []string{"--config", cfg, "--date", "2026-13-01"}, "must be YYYY-MM-DD"},
 		{"plan positional", runPlan, []string{"--config", cfg, "--date", testDate, "extra"}, "positional"},
-		{"reconcile missing config", runReconcile, []string{"--date", testDate}, "reconcile requires --config"},
+		{"reconcile missing config", runReconcile, []string{"--date", testDate}, "no configuration at"},
 		{"reconcile missing date", runReconcile, []string{"--config", cfg}, "reconcile requires --date"},
 		{"resolve missing file", runResolve, []string{"--config", cfg, "--date", testDate}, "resolve requires --file"},
 		{"resolve missing date", runResolve, []string{"--config", cfg, "--file", "d.json"}, "resolve requires --date"},
