@@ -536,6 +536,9 @@ func TestFinalizeBlockedByStoreLock(t *testing.T) {
 }
 
 func TestFinalizeFlagErrors(t *testing.T) {
+	// The missing-config cases resolve the $HOME default; pin it to an empty
+	// directory so the default config never exists and the test is hermetic.
+	t.Setenv("HOME", t.TempDir())
 	cfg := writeTestConfig(t)
 	cases := []struct {
 		name string
@@ -543,11 +546,11 @@ func TestFinalizeFlagErrors(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"stage missing config", runStage, []string{"--date", testDate}, "stage requires --config"},
+		{"stage missing config", runStage, []string{"--date", testDate}, "no configuration at"},
 		{"stage bad date", runStage, []string{"--config", cfg, "--date", "2026-13-01"}, "must be YYYY-MM-DD"},
 		{"stage positional", runStage, []string{"--config", cfg, "--date", testDate, "extra"}, "positional"},
 		{"confirm missing date", runConfirm, []string{"--config", cfg}, "confirm requires --date"},
-		{"save missing config", runSave, []string{"--date", testDate}, "save requires --config"},
+		{"save missing config", runSave, []string{"--date", testDate}, "no configuration at"},
 		{"acknowledge bad source", runAcknowledge, []string{"--config", cfg, "--date", testDate, "--source", "slack", "--collection-id", "c"}, "--source must be github or calendar"},
 		{"acknowledge missing collection", runAcknowledge, []string{"--config", cfg, "--date", testDate, "--source", "github"}, "--collection-id"},
 		{"decide bad decision", runDecide, []string{"--config", cfg, "--date", testDate, "--meeting-id", "m", "--decision", "maybe", "--collection-id", "c"}, "--decision must be attended or skipped"},

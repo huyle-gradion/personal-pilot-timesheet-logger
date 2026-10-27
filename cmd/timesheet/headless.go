@@ -80,8 +80,8 @@ func parseHeadlessFlags(name string, args []string) (*headlessFlags, error) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &headlessFlags{}
-	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
-	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.date, "date", "", dateFlagUsage(name))
 	if err := flags.Parse(args); err != nil {
 		return nil, err
@@ -89,9 +89,11 @@ func parseHeadlessFlags(name string, args []string) (*headlessFlags, error) {
 	if flags.NArg() != 0 {
 		return nil, fmt.Errorf("%s does not accept positional arguments", name)
 	}
-	if f.configPath == "" {
-		return nil, fmt.Errorf("%s requires --config", name)
+	configPath, envFile, err := resolveStoreFlags(name, f.configPath, f.envFile)
+	if err != nil {
+		return nil, err
 	}
+	f.configPath, f.envFile = configPath, envFile
 	if err := validateDate(name, f.date, dateSupplied(flags)); err != nil {
 		return nil, err
 	}
@@ -122,8 +124,8 @@ func parseRecordFlags(args []string) (*recordFlags, error) {
 	flags := flag.NewFlagSet("record", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &recordFlags{}
-	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
-	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.date, "date", "", dateFlagUsage("record"))
 	flags.StringVar(&f.file, "file", "", "reviewed draft JSON path (recovery input mode)")
 	flags.StringVar(&f.draft, "draft", "", "draft JSON path from `timesheet draft` (descriptions-only input mode, with --descriptions)")
@@ -135,9 +137,11 @@ func parseRecordFlags(args []string) (*recordFlags, error) {
 	if flags.NArg() != 0 {
 		return nil, fmt.Errorf("record does not accept positional arguments")
 	}
-	if f.configPath == "" {
-		return nil, fmt.Errorf("record requires --config")
+	configPath, envFile, err := resolveStoreFlags("record", f.configPath, f.envFile)
+	if err != nil {
+		return nil, err
 	}
+	f.configPath, f.envFile = configPath, envFile
 	if err := validateDate("record", f.date, dateSupplied(flags)); err != nil {
 		return nil, err
 	}
@@ -542,8 +546,8 @@ func parseFinalizeFlags(name string, args []string) (*finalizeFlags, error) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &finalizeFlags{}
-	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
-	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.date, "date", "", dateFlagUsage(name))
 	flags.StringVar(&f.project, "project", "", "project id for staged intervals (required when configuration defines multiple projects)")
 	flags.BoolVar(&f.revise, "revise", false, "stage only: replace a finalized day's confirmed intervals with a fresh derivation from the entries ledger and re-finalize at a new revision")
@@ -553,9 +557,11 @@ func parseFinalizeFlags(name string, args []string) (*finalizeFlags, error) {
 	if flags.NArg() != 0 {
 		return nil, fmt.Errorf("%s does not accept positional arguments", name)
 	}
-	if f.configPath == "" {
-		return nil, fmt.Errorf("%s requires --config", name)
+	configPath, envFile, err := resolveStoreFlags(name, f.configPath, f.envFile)
+	if err != nil {
+		return nil, err
 	}
+	f.configPath, f.envFile = configPath, envFile
 	if err := validateDate(name, f.date, dateSupplied(flags)); err != nil {
 		return nil, err
 	}
@@ -593,8 +599,8 @@ func parseAcknowledgeFlags(args []string) (*acknowledgeFlags, error) {
 	flags := flag.NewFlagSet("acknowledge", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &acknowledgeFlags{}
-	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
-	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
 	flags.StringVar(&f.source, "source", "", "collected source being reviewed: github or calendar (required)")
 	flags.StringVar(&f.collectionID, "collection-id", "", "collection_id copied verbatim from the prior collect receipt (required)")
@@ -604,9 +610,11 @@ func parseAcknowledgeFlags(args []string) (*acknowledgeFlags, error) {
 	if flags.NArg() != 0 {
 		return nil, fmt.Errorf("acknowledge does not accept positional arguments")
 	}
-	if f.configPath == "" {
-		return nil, fmt.Errorf("acknowledge requires --config")
+	configPath, envFile, err := resolveStoreFlags("acknowledge", f.configPath, f.envFile)
+	if err != nil {
+		return nil, err
 	}
+	f.configPath, f.envFile = configPath, envFile
 	if f.date == "" {
 		return nil, fmt.Errorf("acknowledge requires --date")
 	}
@@ -638,8 +646,8 @@ func parseDecideFlags(args []string) (*decideFlags, error) {
 	flags := flag.NewFlagSet("decide", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &decideFlags{}
-	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
-	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
 	flags.StringVar(&f.meetingID, "meeting-id", "", "meeting ref copied verbatim from the reviewed draft or collect receipt (required)")
 	flags.StringVar(&f.decision, "decision", "", "attendance decision: attended or skipped (required)")
@@ -650,9 +658,11 @@ func parseDecideFlags(args []string) (*decideFlags, error) {
 	if flags.NArg() != 0 {
 		return nil, fmt.Errorf("decide does not accept positional arguments")
 	}
-	if f.configPath == "" {
-		return nil, fmt.Errorf("decide requires --config")
+	configPath, envFile, err := resolveStoreFlags("decide", f.configPath, f.envFile)
+	if err != nil {
+		return nil, err
 	}
+	f.configPath, f.envFile = configPath, envFile
 	if f.date == "" {
 		return nil, fmt.Errorf("decide requires --date")
 	}
@@ -1202,8 +1212,8 @@ func runDecide(args []string) error {
 func runClassifications(args []string) error {
 	flags := flag.NewFlagSet("classifications", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	configPath := flags.String("config", "", "fixed configuration path (required)")
-	envFile := flags.String("env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	configFlag := flags.String("config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	envFlag := flags.String("env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	query := flags.String("query", "", "search text for the bounded classification read (required)")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -1211,13 +1221,14 @@ func runClassifications(args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("classifications does not accept positional arguments")
 	}
-	if *configPath == "" {
-		return fmt.Errorf("classifications requires --config")
+	configPath, envFile, err := resolveStoreFlags("classifications", *configFlag, *envFlag)
+	if err != nil {
+		return err
 	}
 	if strings.TrimSpace(*query) == "" {
 		return fmt.Errorf("classifications requires --query")
 	}
-	h, err := openHeadless(*configPath, *envFile)
+	h, err := openHeadless(configPath, envFile)
 	if err != nil {
 		return err
 	}
@@ -1458,8 +1469,8 @@ func parseClassifyFlags(args []string) (*finalizeFlags, error) {
 	flags := flag.NewFlagSet("classify", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &finalizeFlags{}
-	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
-	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
 	flags.StringVar(&f.project, "project", "", "project id for staged intervals (required when configuration defines multiple projects)")
 	flags.StringVar(&f.file, "file", "", "choices JSON path: {\"selections\": {\"<interval_id>\": {\"catalog_id\": \"...\", \"classification_id\": \"...\"}}} (required)")
@@ -1469,9 +1480,11 @@ func parseClassifyFlags(args []string) (*finalizeFlags, error) {
 	if flags.NArg() != 0 {
 		return nil, fmt.Errorf("classify does not accept positional arguments")
 	}
-	if f.configPath == "" {
-		return nil, fmt.Errorf("classify requires --config")
+	configPath, envFile, err := resolveStoreFlags("classify", f.configPath, f.envFile)
+	if err != nil {
+		return nil, err
 	}
+	f.configPath, f.envFile = configPath, envFile
 	if f.date == "" {
 		return nil, fmt.Errorf("classify requires --date")
 	}
@@ -1764,8 +1777,8 @@ func parseResolveFlags(args []string) (*resolveFlags, error) {
 	flags := flag.NewFlagSet("resolve", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &resolveFlags{}
-	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
-	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
 	flags.StringVar(&f.file, "file", "", "decision JSON path: {\"revision\": <n>, \"observation_id\": \"...\", \"decision\": \"adopt|accept_observed|foreign\", \"remote_id\": \"...\", \"local_id\": \"...\"} (required; local_id omitted for foreign)")
 	if err := flags.Parse(args); err != nil {
@@ -1774,9 +1787,11 @@ func parseResolveFlags(args []string) (*resolveFlags, error) {
 	if flags.NArg() != 0 {
 		return nil, fmt.Errorf("resolve does not accept positional arguments")
 	}
-	if f.configPath == "" {
-		return nil, fmt.Errorf("resolve requires --config")
+	configPath, envFile, err := resolveStoreFlags("resolve", f.configPath, f.envFile)
+	if err != nil {
+		return nil, err
 	}
+	f.configPath, f.envFile = configPath, envFile
 	if f.date == "" {
 		return nil, fmt.Errorf("resolve requires --date")
 	}
@@ -1993,8 +2008,8 @@ func parseSubmitFlags(args []string) (*submitFlags, error) {
 	flags := flag.NewFlagSet("submit", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &submitFlags{}
-	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
-	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
 	flags.StringVar(&f.approvalID, "approval-id", "", "approval_id copied verbatim from the approve receipt (required)")
 	if err := flags.Parse(args); err != nil {
@@ -2003,9 +2018,11 @@ func parseSubmitFlags(args []string) (*submitFlags, error) {
 	if flags.NArg() != 0 {
 		return nil, fmt.Errorf("submit does not accept positional arguments")
 	}
-	if f.configPath == "" {
-		return nil, fmt.Errorf("submit requires --config")
+	configPath, envFile, err := resolveStoreFlags("submit", f.configPath, f.envFile)
+	if err != nil {
+		return nil, err
 	}
+	f.configPath, f.envFile = configPath, envFile
 	if f.date == "" {
 		return nil, fmt.Errorf("submit requires --date")
 	}
@@ -2090,8 +2107,8 @@ func parseResolveWriteFlags(args []string) (*resolveFlags, error) {
 	flags := flag.NewFlagSet("resolve-write", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &resolveFlags{}
-	flags.StringVar(&f.configPath, "config", "", "fixed configuration path (required)")
-	flags.StringVar(&f.envFile, "env-file", "", "fixed environment-file path (optional; no file values when omitted)")
+	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
+	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.file, "file", "", "decision JSON path: {\"write_ref\": \"...\", \"observation_id\": \"...\", \"decision\": \"adopt|not_applied\", \"remote_id\": \"...\"} (required; remote_id required for adopt) (required)")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
@@ -2099,9 +2116,11 @@ func parseResolveWriteFlags(args []string) (*resolveFlags, error) {
 	if flags.NArg() != 0 {
 		return nil, fmt.Errorf("resolve-write does not accept positional arguments")
 	}
-	if f.configPath == "" {
-		return nil, fmt.Errorf("resolve-write requires --config")
+	configPath, envFile, err := resolveStoreFlags("resolve-write", f.configPath, f.envFile)
+	if err != nil {
+		return nil, err
 	}
+	f.configPath, f.envFile = configPath, envFile
 	if f.file == "" {
 		return nil, fmt.Errorf("resolve-write requires --file")
 	}

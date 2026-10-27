@@ -16,25 +16,32 @@ func usage() {
 Usage:
   timesheet version
   timesheet serve --config <path> --env-file <path>
-  timesheet collect --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
-  timesheet draft --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
-  timesheet run --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
-  timesheet record --config <path> [--date <YYYY-MM-DD>] (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>) [--replace]
-  timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
-  timesheet stage --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>] [--revise]
-  timesheet classifications --config <path> [--env-file <path>] --query <text>
-  timesheet classify --config <path> [--env-file <path>] --date <YYYY-MM-DD> --file <choices.json> [--project <id>]
-  timesheet acknowledge --config <path> [--env-file <path>] --date <YYYY-MM-DD> --source <github|calendar> --collection-id <id>
-  timesheet decide --config <path> [--env-file <path>] --date <YYYY-MM-DD> --meeting-id <id> --decision <attended|skipped> --collection-id <id>
-  timesheet confirm --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
-  timesheet save --config <path> [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
-  timesheet plan --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-  timesheet reconcile --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-  timesheet resolve --config <path> [--env-file <path>] --date <YYYY-MM-DD> --file <decision.json>
-  timesheet approve --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-  timesheet submit --config <path> [--env-file <path>] --date <YYYY-MM-DD> --approval-id <id>
-  timesheet submit-status --config <path> [--env-file <path>] --date <YYYY-MM-DD>
-  timesheet resolve-write --config <path> [--env-file <path>] --file <decision.json>
+  timesheet collect [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
+  timesheet draft [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
+  timesheet run [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
+  timesheet record [--config <path>] [--date <YYYY-MM-DD>] (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>) [--replace]
+  timesheet status [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
+  timesheet stage [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> [--project <id>] [--revise]
+  timesheet classifications [--config <path>] [--env-file <path>] --query <text>
+  timesheet classify [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> --file <choices.json> [--project <id>]
+  timesheet acknowledge [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> --source <github|calendar> --collection-id <id>
+  timesheet decide [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> --meeting-id <id> --decision <attended|skipped> --collection-id <id>
+  timesheet confirm [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
+  timesheet save [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> [--project <id>]
+  timesheet plan [--config <path>] [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet reconcile [--config <path>] [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet resolve [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> --file <decision.json>
+  timesheet approve [--config <path>] [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet submit [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> --approval-id <id>
+  timesheet submit-status [--config <path>] [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet resolve-write [--config <path>] [--env-file <path>] --file <decision.json>
+
+Except serve (whose paths the launcher supplies), every command's --config
+defaults to $HOME/.timesheet/config.json — a missing default is an error that
+names the file and the fix — and --env-file defaults to
+$HOME/.timesheet/.env.local when that file exists (no file values otherwise).
+An explicit flag always wins verbatim; an explicit --env-file that cannot be
+read still fails.
 
 The collect/draft/run/record/status subcommands are the deterministic headless
 surface used by the timesheet skill: collect performs one bounded collection
