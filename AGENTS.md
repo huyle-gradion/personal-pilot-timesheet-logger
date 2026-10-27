@@ -53,9 +53,11 @@ When asked to "log today's work" or "log the timesheet" for a day, follow
 `record` and `status` subcommands as the [Script] steps, perform
 only the judgment step (per-block grouped-topic descriptions, ambiguous
 events, completeness) on the draft JSON, and record token usage with
-`scripts/tokens.py`. The skill can also carry a saved day headless through
-`stage`, `classifications`/`classify`, `confirm`, `save`, `plan` (plus
-`reconcile`/`resolve` for identity blockers) and read-only `submit-status`.
+`scripts/tokens.py`. Every invocation then carries the day through the full
+headless tail - `stage`, `classifications`/`classify`, `confirm`, `save`,
+`plan` (plus `reconcile`/`resolve` for identity blockers) and read-only
+`submit-status` - and ends by printing the exact `approve`/`submit` commands
+for the human; it never stops after `record`/`status`.
 It is runner-agnostic (Pi or any agent with shell access); it never runs the
 TTY-gated `approve`, `submit` or `resolve-write` — those need an interactive
 terminal and the exact typed `plan_id`/`approval_id`/`write_ref`, and
