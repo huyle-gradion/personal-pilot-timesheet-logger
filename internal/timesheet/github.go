@@ -435,10 +435,23 @@ type familyWalk struct {
 	httpBody   []byte
 	err        error
 	maxPages   int
+	// coveredFrom and coveredUntil carry the first and last parsed created_at
+	// a comment walk saw, in provider order. They are detail watermarks, never
+	// a completeness proof.
+	coveredFrom  time.Time
+	coveredUntil time.Time
 }
 
 // familyPageLoop walks one paged family under the given page ceiling.
 func (g *githubRun) familyPageLoop(query url.Values, path string, maxPages int, decode func(body []byte) (int, error)) familyWalk {
+	return g.familyPageLoopWindow(query, path, maxPages, decode, nil)
+}
+
+// familyPageLoopWindow is familyPageLoop with one optional post-decode hook.
+// windowPassed is consulted only after a full page (n == 100) was decoded and
+// every item on it processed; non-nil true ends the walk as window_passed.
+// Nil keeps familyPageLoop's exact walking behavior for every other family.
+func (g *githubRun) familyPageLoopWindow(query url.Values, path string, maxPages int, decode func(body []byte) (int, error), windowPassed func() bool) familyWalk {
 	walk := familyWalk{maxPages: maxPages}
 	for page := 1; page <= maxPages; page++ {
 		q := cloneValues(query)
@@ -468,6 +481,10 @@ func (g *githubRun) familyPageLoop(query url.Values, path string, maxPages int, 
 		}
 		if n < 100 {
 			walk.stop = "finished"
+			return walk
+		}
+		if windowPassed != nil && windowPassed() {
+			walk.stop = stopWindowPassed
 			return walk
 		}
 		walk.pages++
@@ -880,7 +897,11 @@ func fetchSubmittedReviews(g *githubRun, repo, owner, name string, windowStart, 
 }
 
 func fetchReviewComments(g *githubRun, repo, owner, name string, windowStart, windowEnd time.Time) ([]EvidenceItem, FamilyReport) {
-	query := url.Values{"sort": {"created"}, "direction": {"asc"}}
+	query := url.Values{
+		"sort":      {"created"},
+		"direction": {"asc"},
+		"since":     {commentWindowSince(windowStart)},
+	}
 	path := "/repos/" + owner + "/" + name + "/pulls/comments"
 	resource := func(doc *commentDoc) string {
 		return pullResourceFromURL(doc.PullRequestURL, repo)
@@ -898,7 +919,7 @@ func fetchIssueComments(g *githubRun, repo, owner, name string, windowStart, win
 	query := url.Values{
 		"sort":      {"created"},
 		"direction": {"asc"},
-		"since":     {windowStart.UTC().Format(time.RFC3339)},
+		"since":     {commentWindowSince(windowStart)},
 	}
 	path := "/repos/" + owner + "/" + name + "/issues/comments"
 	resource := func(doc *commentDoc) string {
@@ -973,17 +994,24 @@ func fetchIssueComments(g *githubRun, repo, owner, name string, windowStart, win
 // comment from the documented issue document).
 func fetchCommentsPageLoop(g *githubRun, query url.Values, path, repo string, windowStart, windowEnd time.Time, kind, refKind, provenancePrefix, label string, resourceFn func(*commentDoc) string, refine func(*EvidenceItem, *commentDoc)) ([]EvidenceItem, familyWalk) {
 	var items []EvidenceItem
+	window := &commentWindow{windowEnd: windowEnd}
+	var pagePassedWindow bool
 	decode := func(body []byte) (int, error) {
 		var docs []commentDoc
 		if err := json.Unmarshal(body, &docs); err != nil {
 			return 0, err
 		}
+		// The window-end proof is decided from the whole decoded page BEFORE
+		// the attribution filter: under the declared created-ascending sort a
+		// page ending at/after the exclusive window end means every later page
+		// does too. The page's items are still processed normally either way.
+		pagePassedWindow = window.observePage(docs)
 		for _, doc := range docs {
 			if doc.User == nil || doc.User.Login != g.scope.user {
 				continue
 			}
 			at, err := time.Parse(time.RFC3339, doc.CreatedAt)
-			if err != nil || !at.Before(windowEnd) || !at.After(windowStart.Add(-time.Second)) {
+			if err != nil || at.Before(windowStart) || !at.Before(windowEnd) {
 				continue
 			}
 			title := label
@@ -1010,7 +1038,8 @@ func fetchCommentsPageLoop(g *githubRun, query url.Values, path, repo string, wi
 		}
 		return len(docs), nil
 	}
-	walk := g.familyPageLoop(query, path, maxGithubFamilyPages, decode)
+	walk := g.familyPageLoopWindow(query, path, maxGithubFamilyPages, decode, func() bool { return pagePassedWindow })
+	walk.coveredFrom, walk.coveredUntil = window.coveredFrom, window.coveredUntil
 	return items, walk
 }
 
@@ -1204,11 +1233,13 @@ func sanitizeHTTPDiagnostic(status int, body []byte) string {
 }
 
 // familyStatus maps a pagination walk result to honest family coverage.
-// "finished"/"empty" and the events feed's own windowed reporting are the
-// only paths to a non-incomplete status; anything else preserves the visible
-// bound. The capped detail names the ceiling the walk actually ran under
-// (walk.maxPages), so search families bound by maxSearchResultPages report
-// their own ceiling, not the shared REST one.
+// "finished"/"empty"/window_passed and the events feed's own windowed
+// reporting are the only paths to a non-incomplete status; anything else
+// preserves the visible bound. The capped detail names the ceiling the walk
+// actually ran under (walk.maxPages) and never claims more pages exist: the
+// walk simply never established coverage beyond what it examined. The
+// window_passed detail carries the parsed watermark and the declared-sort
+// proof that ended the walk.
 func familyStatus(walk familyWalk, n int, label string) (string, string) {
 	if walk.err != nil {
 		return StatusFailed, truncateRunes(walk.err.Error(), maxDetailRunes)
@@ -1219,10 +1250,17 @@ func familyStatus(walk familyWalk, n int, label string) (string, string) {
 			return "empty", fmt.Sprintf("no attributable %s items in the day's window (pagination exhausted after %d page(s))", label, walk.pages+1)
 		}
 		return StatusComplete, fmt.Sprintf("%d item(s) retained; pagination exhausted after %d page(s)", n, walk.pages+1)
+	case stopWindowPassed:
+		proof := fmt.Sprintf("window end reached on page %d under the documented created-ascending sort", walk.pages+1)
+		if n == 0 {
+			return "empty", fmt.Sprintf("no attributable %s items in the day's window (%s)", label, proof)
+		}
+		return StatusComplete, fmt.Sprintf("%d item(s) retained; walk covered %s .. %s (%s)",
+			n, walk.coveredFrom.UTC().Format(time.RFC3339), walk.coveredUntil.UTC().Format(time.RFC3339), proof)
 	case "capped":
 		return StatusIncomplete, fmt.Sprintf(
-			"the collector's %d-page pagination ceiling was reached with more pages available; coverage for %s is bounded, not exhaustive",
-			walk.maxPages, label)
+			"the collector's %d-page pagination ceiling was reached; coverage not established beyond the %d page(s) examined for %s",
+			walk.maxPages, walk.maxPages, label)
 	default:
 		return StatusIncomplete, fmt.Sprintf("%s coverage is incomplete (%s)", label, walk.stop)
 	}
