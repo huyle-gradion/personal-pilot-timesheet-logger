@@ -32,10 +32,53 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
   bound to the union span and joined description, so changing any contributor
   fails the replay closed. The shortest-first split and the meeting's silent
   suppression of an overlapping work block are gone.
-- GitHub comment collection applies an overlapping `since` bound and stops
-  after the requested day under created-ascending order. Search limits remain.
-- Development stamp `0.2.0-dev.5`; release stamping, adapter version and
-  publication remain owner-gated.
+- Add the stateless daily planner `next` (issue #195): one typed JSON state per
+  invocation — `action` (exact argv), `judgment` (model answer file),
+  `stopped` (explicit blocker and remedy) or `human_gates` (read-only
+  `submit-status` plus the exact approve/submit commands). It writes nothing,
+  executes nothing, keeps no progress journal, and has no `--do` dispatcher or
+  `--answer` flag. The regular Pi skill now drives the day by repeating
+  `next`; `run`, `record`, `stage`, `classify`, `save`, `plan` and the recovery
+  verbs remain directly invocable.
+- Bind judgments to current content instead of timestamps: the descriptions
+  answer carries `draft_digest`, the classifications answer carries
+  `ledger_digest`, and a stale or unbound answer is re-judged rather than
+  handed to `record`/`classify`. The classification judgment includes a
+  self-contained `blocks[]` (`interval_id`, `block_id`, `start`, `end`,
+  `description`), so it needs no draft or temporary artifact. Staging freshness
+  compares the stored stage map with the ledger's own projection, and
+  classification freshness uses the existing content digests.
+- Add `setup` for once-only `~/.timesheet` creation: generated configuration is
+  validated before any target effect, files are published by fsynced
+  private temporary file plus no-replace hard link, and an existing config,
+  env file, symlink or unsafe mode is reported and left byte-identical.
+- Add the skill's `scripts/ts-env` locator (repository four levels above
+  `scripts`, symlink-aware, then `$TIMESHEET_ROOT` or `PATH`) and the
+  `next --help` capability check that builds once before the loop when the
+  found binary predates the planner. The skill, README, Linux setup guide and
+  `docs/architecture/timesheet-daily-workflow.md` document the new split
+  between the regular Pi skill and the optional launcher/TUI.
+- Stopped states now name the precise blocker for an unacknowledged source, an
+  unselected project, a blocked plan, a finalized ledger that diverges, or a
+  missing remote boundary. Source acknowledgement, attendance, identity
+  resolution and plan reuse are never silently guessed; an explicitly
+  user-authorized decision is still honored once where safe, and a repeated
+  failed action is repaired only for an answer-file validation error, otherwise
+  it stops with one line.
+- Scope temporary draft and answer paths by the normalized store path and day,
+  so separate stores cannot consume each other's judgments. Missing or empty
+  finalized ledgers stop progression. Saved contribution revisions, including
+  overnight origins, must match the ready plan before human gates are shown.
+- GitHub comment collection now applies an overlapping `since` bound and stops
+  after passing the requested day's end under created-ascending order. Genuine
+  pagination and submitted-review search limits remain explicitly incomplete.
+- Linux validation passed full race-enabled tests, vet and locator checks.
+  `scripts/verification/regular-pi-smoke.mjs` drives the actual regular Pi runtime
+  through human gates using local deterministic model/calendar/catalog fixtures.
+  This does not verify live-model comprehension or production providers. macOS
+  runtime was not tested.
+- Development stamp remains `0.2.0-dev.5`; no version bump, release tag,
+  adapter-version change or publication is part of this work.
 
 ## 0.2.0-dev.4
 

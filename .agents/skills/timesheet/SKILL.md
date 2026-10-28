@@ -3,33 +3,71 @@ name: timesheet
 description: Log today's work into the personal timesheet from real git, pull-request and calendar evidence. Run when the user asks to "log today's work" or "log the timesheet", or a past working day.
 ---
 
-Run exactly what is written - no flag discovery; errors name their fix. **Every invocation runs the whole pipeline, steps 1-9, in order - never stop after `record`/`status`/`stage`:** the day ends recorded, saved, planned and reported, with only the human gates of step 9 left. Once per day, never twice per block (idempotent). Steps are **[Script]** or **[AI]** (judgment). Never: the TTY-gated `approve`/`submit`/`resolve-write` (human-only; attempting them is a contract violation, and the binary refuses non-TTY shells before any remote call); editing evidence, block times, or PR lists during review.
+# Timesheet
 
-Inputs (resolve once; never commit): `TS_BINARY=<repo>/bin/timesheet` - the CLI defaults to `$HOME/.timesheet/config.json` and, when it exists, `$HOME/.timesheet/.env.local`; pass `--config <path>`/`--env-file <path>` only to override - never read/print/copy the env file; only the binary reads it. If `bin/timesheet version` fails: `go build -trimpath -o bin/timesheet ./cmd/timesheet`; else never build mid-run.
+The binary owns the pipeline; the model owns only the judgment it asks for and the human-gate report. Drive the day with one loop over `next` — never hold the step order in prose.
 
-The day: omit `--date` and the binary resolves today in the configured timezone - never compute the date yourself from the host clock. Pass `--date YYYY-MM-DD` only for a past day. After `run`, the draft's `date` field is the day every later step uses.
+## Setup (once per invocation)
 
-Steps 5-8 command shape: `"$TS_BINARY" <cmd> --date "$DAY"` (except classifications), one process, exclusive store lock (never beside serve); ids verbatim from receipts. Pipeline: run -> record -> stage -> classifications/classify -> confirm -> save -> plan -> [reconcile/resolve if blockers] -> plan (new plan_id) -> submit-status; the human then approves and submits.
+`SKILL_DIR` is this skill's absolute directory, supplied by the loader. Pass `--config <path>` / `--env-file <path>` to `next` only to override the defaults. Never read, print or copy the env file: only the binary reads it.
 
-1. **[Script] Run** (re-runnable; a failed source never blocks the day): `"$TS_BINARY" run > "$TMP/draft.json"` - stdout is the entire judgment input; `DAY` comes from the draft's `date` field (never from the host clock). For a past day add `--date YYYY-MM-DD`.
+```sh
+SKILL_DIR="<absolute directory of this loaded skill>"
+TS_BINARY="$("$SKILL_DIR/scripts/ts-env")"       # must succeed; its error names the fix
+TS_ROOT="$("$SKILL_DIR/scripts/ts-env" --root)"  # repository root, for the build and token script
+```
 
-2. **[AI] Review**: judge ONLY `$TMP/draft.json` (never raw git log/calendar/prior days); write ONLY `$TMP/descriptions.json`: `{"notes": "<string>", "descriptions": {"<block_id>": "<prose>"}}` - one grouped-topic entry per block; no draft fields or `PRs:` list (`record` appends `prs_inline`); `notes` = one JSON string or omit; `--file reviewed.json` = recovery only. A block may carry `outside_work_hours` + `work_hours_reason` (`day_not_in_policy`, `before_window`, `between_windows`, `after_window`, `partial`): informational only - outside main hours is allowed, so never reject, skip, or shift a block for it.
+`ts-env` resolves the repository from its own real path (symlinks included), then `<repo>/bin/timesheet`, `$TIMESHEET_ROOT/bin/timesheet`, or a `timesheet` on `PATH`. Prove the binary supports `next` before the loop; a found `bin/timesheet` may predate it:
 
-3. **[Script] Record** (idempotent per block): `"$TS_BINARY" record --date "$DAY" --draft "$TMP/draft.json" --descriptions "$TMP/descriptions.json"` - rejection (missing/empty description, unknown `block_id`) => fix, re-run. Re-collected day => re-record with `--replace` (file = day's complete content; absent blocks removed). **[Script] Verify**: `"$TS_BINARY" status --date "$DAY"` - also where the `collection_id`s used in step 7 come from.
+```sh
+"$TS_BINARY" next --help >/dev/null 2>&1 || {
+  ( cd "$TS_ROOT" && go build -trimpath -o bin/timesheet ./cmd/timesheet )
+  TS_BINARY="$TS_ROOT/bin/timesheet"
+  "$TS_BINARY" next --help >/dev/null 2>&1
+}
+```
 
-4. **[Script] Tokens**: `python3 scripts/tokens.py` (add `--pi-dir "$HOME/.pi/agent/sessions"` on Pi); both if both ran; appends to `benchmarks/tokens.csv` (idempotent).
+Use the Go on `PATH`, or `( cd "$TS_ROOT" && mise exec -- go build -trimpath -o bin/timesheet ./cmd/timesheet )` when the shell has none. If the check or build fails, stop and report it. Build only here, never mid-loop. A mise-managed Go is environment troubleshooting, not a project dependency.
 
-5. **[Script] Stage**: staged intervals re-derive from the entries ledger (entries/ = human log AND staging source); no start+end => skipped, times never invented. Refused as already finalized => the step is done, unless the entries ledger changed since the save (e.g. a `--replace` re-record); then `stage --revise`, which re-derives and re-finalizes at a new revision.
+## The loop
 
-6. **[Script]+[AI] Classify**: `"$TS_BINARY" classifications --query <text>` (live: network+credential; the default env file supplies it when it exists); **[AI]** picks; **[Script]** `classify --date "$DAY" --file choices.json`; edits later => stage+classify.
+Invoke `"$TS_BINARY" next` (add `--date YYYY-MM-DD` initially for a past day; add `--project <id>` when the configuration defines several projects and one is chosen). It prints ONE JSON document. Capture `DAY` from the first report's `day`, then always resume with `next --date "$DAY"` and the same config/env/project overrides. This keeps a run on its original day across midnight. Obey exactly one `state` per report. Never compute the date from the host clock.
 
-7. **[Script] Confirm + Save**: `confirm` = source gate - incomplete collect => `acknowledge --source <github|calendar> --collection-id <id from status or the run stderr>`, proposed meetings => `decide --meeting-id <id> --decision <attended|skipped> --collection-id <id>`, then confirm again; then `save`. After save the day is final; further stage/confirm/save re-runs are refused (`stage --revise` is the only way to change a finalized day).
+- `action` — run `action.cmd` as an argv vector: element 0 is the executable, the rest are its arguments, each passed as its own argument. Never join the vector into a shell string, never `eval` it, and never substitute a field into one. Use the absolute artifact paths the binary prints (`run` prints `run: artifacts: <path>`); invent no `$TMP` directory.
+- `judgment` — do the model work below, writing only `judgment.answer_file`, then `next` again. Judgments are files: there is no `--answer` flag, and `--do` is refused. Copy every digest field from the report verbatim; never recompute it.
+- `stopped` — print `reason` verbatim: it names the precise blocker and remedy. Never silently acknowledge a source, guess an attendance verdict, choose an identity binding, or reuse a stale plan. When the user has explicitly authorized the specific decision (the acknowledgement command shown, a meeting verdict, or a resolve decision file they authored), perform exactly that one step and invoke `next` again; otherwise stop.
+- `human_gates` — run `human.status_command` exactly as the binary printed it (read-only submit-status; the binary shell-quotes it) and surface its unresolved writes and `next_safe_action`; then print `human.approve_command` and `human.submit_command` exactly and stop. Never run them: `approve`/`submit`/`resolve-write` are TTY-gated human steps, and attempting one is a contract violation.
 
-8. **[Script] Plan** (live, read-only; prints plan_id/ops/blockers). Blockers => `reconcile` (fresh read-only observation); **[AI/human]** `resolve --file decision.json` (adopt|accept_observed|foreign; ids verbatim from the reconcile receipt); any resolve => plan again for a NEW plan_id (never reuse the old one). The agent's pipeline ends at the first blocker-free plan.
+**Failure discipline.** A failed action is never retried as-is. If `next` still reports the same `step` and `action.cmd`, repair only the judgment it consumes when the error is a validation error on `judgment.answer_file` (unknown block/interval id, missing description, missing or stale digest) — rewrite the answer with the current report's digest — and run it once more. Any other repeat is a blocker: print the binary's error and one line naming the action, then stop; never spin.
 
-9. **[Script] Report, then stop at the human gates.** Run `submit-status` (read-only, not gated) and surface any unresolved writes/next_action for the day. `approve`, `submit --approval-id <id>`, `resolve-write --file <f>` are human-only [Script] prompts needing tty stdin+stdout and the exact plan_id/approval_id/write_ref typed - a deliberate-act barrier, not human-presence proof. The agent MUST NOT attempt them (attempting = contract violation). End EVERY run by printing the exact two commands for the human's own terminal, with `$DAY` filled in:
-   - `"$TS_BINARY" approve --date "$DAY"` - shows the plan; type the displayed plan_id to confirm.
-   - `"$TS_BINARY" submit --date "$DAY" --approval-id <approval_id from the approve receipt>` - type that approval_id to confirm.
-   Failure discipline: never auto-retry a submit; uncertain/unidentified/in_flight stay unresolved until human resolution (submit-status shows next_action; resolve-write needs a fresh reconcile/plan observation); persistence_failed is not consumption (the approval stays active); post-save entries divergence is caught by the plan content hash.
+## Judgment
 
-Step 2 bound: **<= 1,000 tokens/day (input + output)**, cache separate; [Script] steps: no model tokens.
+### `block_descriptions`
+
+Read the draft path named in `judgment.protocol` (also `draft.json` beside `judgment.answer_file`). Judge only that draft's current blocks — never raw git/calendar/prior-day evidence or a remembered draft. Write to `judgment.answer_file`:
+
+```json
+{"draft_digest":"<judgment.draft_digest copied verbatim>","notes":"<string>","descriptions":{"<block_id>":"<prose>"}}
+```
+
+One grouped-topic entry per draft block; no draft fields, block times or `PRs:` list (`record` appends `prs_inline`); `notes` is one JSON string or omitted. A block may carry `outside_work_hours` + `work_hours_reason` (`day_not_in_policy`, `before_window`, `between_windows`, `after_window`, `partial`): informational only — out-of-policy time is allowed, so never reject, skip, shift or edit a block for it. Never alter evidence. A stale or missing `draft_digest` sends `next` back to this judgment; rewrite the whole answer with the current digest.
+
+### `classifications`
+
+Use only `judgment.blocks[]`: each entry's `interval_id`, `block_id`, `start`, `end` and `description`. The report is self-contained; do not read a draft, descriptions file or `$TMP` artifact for this judgment. Query the catalog per distinct `description`/topic with `"$TS_BINARY" classifications --query "<topic text>"`, carrying the same `--config`/`--env-file` flags given to `next`; the read is live (network + credential) and fails closed. Choose exactly one returned option per interval, then write to `judgment.answer_file`:
+
+```json
+{"ledger_digest":"<judgment.ledger_digest copied verbatim>","selections":{"<interval_id>":{"catalog_id":"<catalog_id>","classification_id":"<option id>"}}}
+```
+
+Copy `catalog_id` from the classifications receipt and `classification_id` from the chosen option's `id` verbatim; never invent an id or topic, silently default, or add fields the receipt does not carry. `{"selections":{}}` is the honest no-op when nothing fits, and still carries the exact `ledger_digest`. `next` emits the `classify` action only after the file's `ledger_digest` matches the current staged ledger; never run `classify` on an unbound or stale file.
+
+## Tokens (optional, non-blocking)
+
+When the runner keeps transcripts, record the day's usage with the repository script; a failure never affects the day or the gates:
+
+```sh
+[ -n "$TS_ROOT" ] && python3 "$TS_ROOT/scripts/tokens.py" --pi-dir "$HOME/.pi/agent/sessions" || true
+```
+
+Keep judgment within **1,000 tokens/day (input + output)**, cache separate; every [Script] step spends none.
