@@ -137,6 +137,14 @@ func collectContributions(st *State, date string) ([]contributingInterval, error
 	return out, nil
 }
 
+func contributionRevisions(contributions []contributingInterval) map[string]int {
+	revisions := make(map[string]int)
+	for _, c := range contributions {
+		revisions[c.OriginDate] = c.OriginRevision
+	}
+	return revisions
+}
+
 // selectedChoiceFor resolves one interval's explicit selection reference into
 // the semantic choice it bound (R4F1). The referenced STORED catalog is only
 // the historical rendering the operator selected from; it binds what was
@@ -943,11 +951,7 @@ func (s *Session) previewPlan(date string) (PlanPreview, error) {
 		seenBlocker[key] = true
 		preview.Blockers = append(preview.Blockers, b)
 	}
-	for _, d := range sortedKeys(origins) {
-		if day, ok := st.Days[d]; ok {
-			preview.SourceRevisions[d] = day.Revision
-		}
-	}
+	preview.SourceRevisions = contributionRevisions(contributions)
 
 	observedByDate := map[string]map[string]RemoteEntry{}
 	for _, d := range relevantDates {
