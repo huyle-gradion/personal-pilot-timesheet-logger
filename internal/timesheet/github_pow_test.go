@@ -28,41 +28,6 @@ func powWindowEnd() time.Time { return statusTestWindow.Add(24 * time.Hour) }
 
 func powActor() map[string]any { return map[string]any{"login": statusTestUser} }
 
-// powMergeItem builds one /search/issues result carrying the documented
-// merge fields. An empty mergedBy omits merged_by; an empty mergedAt omits
-// merged_at (both are the unverified shapes).
-func powMergeItem(number int, mergedAt, mergedBy string) map[string]any {
-	item := map[string]any{
-		"number":   number,
-		"title":    "synthetic merge",
-		"html_url": fmt.Sprintf("https://example.invalid/o/r/pull/%d", number),
-	}
-	if mergedAt != "" {
-		item["merged_at"] = mergedAt
-	}
-	if mergedBy != "" {
-		item["merged_by"] = map[string]any{"login": mergedBy}
-	}
-	return item
-}
-
-func powMergeSearchDoc(total int, incomplete bool, items ...map[string]any) map[string]any {
-	return map[string]any{"total_count": total, "incomplete_results": incomplete, "items": items}
-}
-
-// powMergeSearchHandler serves one merged-search document and checks the
-// documented merge-date qualifier is used.
-func powMergeSearchHandler(t *testing.T, doc map[string]any) http.HandlerFunc {
-	t.Helper()
-	return func(w http.ResponseWriter, r *http.Request) {
-		if q := r.URL.Query().Get("q"); !strings.Contains(q, "merged:") {
-			t.Errorf("search query %q must use the documented merged: qualifier", q)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(doc)
-	}
-}
-
 func powEvent(id, eventType, at string, payload map[string]any) map[string]any {
 	doc := map[string]any{
 		"id":         id,
@@ -104,8 +69,8 @@ func powFindItem(items []EvidenceItem, ref string) *EvidenceItem {
 }
 
 func TestFetchMergedPullsAttributesVerifiedMerge(t *testing.T) {
-	f := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(1, false,
-		powMergeItem(12, "2026-10-22T10:00:00Z", statusTestUser))))
+	f := newPowMergeFixture(t, nil, powMergeSearchDoc(1, false,
+		powMergeDetail(12, "2026-10-22T10:00:00Z", statusTestUser)))
 
 	items, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 
@@ -115,7 +80,7 @@ func TestFetchMergedPullsAttributesVerifiedMerge(t *testing.T) {
 	item := items[0]
 	if item.Ref != "gh:o/r:pr-merge:12" || item.Kind != "merged_pull_request" ||
 		item.Resource != "pr:o/r:12" || item.Actor != statusTestUser ||
-		item.Time != "2026-10-22T10:00:00Z" || item.Provenance != "search/issues" {
+		item.Time != "2026-10-22T10:00:00Z" || item.Provenance != "search/issues,repos/pulls/12" {
 		t.Fatalf("merge item identity = %+v, want the pinned canonical merged_pull_request item", item)
 	}
 	if item.URL != "https://example.invalid/o/r/pull/12" || item.Title != "synthetic merge" {
@@ -127,8 +92,8 @@ func TestFetchMergedPullsAttributesVerifiedMerge(t *testing.T) {
 }
 
 func TestFetchMergedPullsIncludesWindowStart(t *testing.T) {
-	f := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(1, false,
-		powMergeItem(12, statusTestWindow.UTC().Format(time.RFC3339), statusTestUser))))
+	f := newPowMergeFixture(t, nil, powMergeSearchDoc(1, false,
+		powMergeDetail(12, statusTestWindow.UTC().Format(time.RFC3339), statusTestUser)))
 
 	items, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 
@@ -141,8 +106,8 @@ func TestFetchMergedPullsIncludesWindowStart(t *testing.T) {
 }
 
 func TestFetchMergedPullsDropsMergeByOtherActor(t *testing.T) {
-	f := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(1, false,
-		powMergeItem(12, "2026-10-22T10:00:00Z", "other-actor"))))
+	f := newPowMergeFixture(t, nil, powMergeSearchDoc(1, false,
+		powMergeDetail(12, "2026-10-22T10:00:00Z", "other-actor")))
 
 	items, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 
@@ -156,8 +121,8 @@ func TestFetchMergedPullsDropsMergeByOtherActor(t *testing.T) {
 
 func TestFetchMergedPullsDropsMergeOutsideWindow(t *testing.T) {
 	before := statusTestWindow.Add(-time.Second).UTC().Format(time.RFC3339)
-	f := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(1, false,
-		powMergeItem(11, before, statusTestUser))))
+	f := newPowMergeFixture(t, nil, powMergeSearchDoc(1, false,
+		powMergeDetail(11, before, statusTestUser)))
 
 	items, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 
@@ -175,8 +140,8 @@ func TestFetchMergedPullsDropsMergeOutsideWindow(t *testing.T) {
 // slop must not leak into this family.
 func TestFetchMergedPullsDropsMergeBeforeWindowStartBySubsecond(t *testing.T) {
 	before := statusTestWindow.Add(-500 * time.Millisecond).UTC().Format(time.RFC3339Nano)
-	f := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(1, false,
-		powMergeItem(12, before, statusTestUser))))
+	f := newPowMergeFixture(t, nil, powMergeSearchDoc(1, false,
+		powMergeDetail(12, before, statusTestUser)))
 
 	items, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 
@@ -191,8 +156,8 @@ func TestFetchMergedPullsDropsMergeBeforeWindowStartBySubsecond(t *testing.T) {
 // TestFetchMergedPullsDropsMergeAtWindowEnd pins the exclusive end: a merge at
 // exactly windowEnd belongs to the next day and must be dropped.
 func TestFetchMergedPullsDropsMergeAtWindowEnd(t *testing.T) {
-	f := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(1, false,
-		powMergeItem(12, powWindowEnd().UTC().Format(time.RFC3339), statusTestUser))))
+	f := newPowMergeFixture(t, nil, powMergeSearchDoc(1, false,
+		powMergeDetail(12, powWindowEnd().UTC().Format(time.RFC3339), statusTestUser)))
 
 	items, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 
@@ -205,9 +170,9 @@ func TestFetchMergedPullsDropsMergeAtWindowEnd(t *testing.T) {
 }
 
 func TestFetchMergedPullsUnverifiedResultsAreReported(t *testing.T) {
-	f := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(2, false,
-		powMergeItem(11, "2026-10-22T10:00:00Z", ""),
-		powMergeItem(12, "", statusTestUser))))
+	f := newPowMergeFixture(t, nil, powMergeSearchDoc(2, false,
+		powMergeDetail(11, "2026-10-22T10:00:00Z", ""),
+		powMergeDetail(12, "", statusTestUser)))
 
 	items, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 
@@ -224,8 +189,8 @@ func TestFetchMergedPullsUnverifiedResultsAreReported(t *testing.T) {
 	// Another actor's merge is over-fetched noise, not a coverage limitation:
 	// even with no merged_at it must not count as unverified or make the
 	// family incomplete. Only the configured user's merge is worth verifying.
-	other := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(1, false,
-		powMergeItem(13, "", "other-actor"))))
+	other := newPowMergeFixture(t, nil, powMergeSearchDoc(1, false,
+		powMergeDetail(13, "", "other-actor")))
 	items, report = fetchMergedPulls(other.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 	if len(items) != 0 {
 		t.Fatalf("retained items = %d, want 0: another actor's merge is never attributed (%v)", len(items), items)
@@ -236,7 +201,7 @@ func TestFetchMergedPullsUnverifiedResultsAreReported(t *testing.T) {
 }
 
 func TestMergedPullRequestRESTAndEventDeduplicate(t *testing.T) {
-	f := newGithubStatusFixture(t,
+	f := newPowMergeFixture(t,
 		powEventsHandler([]map[string]any{powEvent("evt-merge-12", "PullRequestEvent", "2026-10-22T10:00:07Z", map[string]any{
 			"action": "closed",
 			"pull_request": map[string]any{
@@ -248,8 +213,8 @@ func TestMergedPullRequestRESTAndEventDeduplicate(t *testing.T) {
 				"html_url":  "https://example.invalid/o/r/pull/12",
 			},
 		})}),
-		powMergeSearchHandler(t, powMergeSearchDoc(1, false,
-			powMergeItem(12, "2026-10-22T10:00:00Z", statusTestUser))))
+		powMergeSearchDoc(1, false,
+			powMergeDetail(12, "2026-10-22T10:00:00Z", statusTestUser)))
 
 	run := f.run(t)
 	merges, _ := fetchMergedPulls(run, statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
@@ -266,7 +231,7 @@ func TestMergedPullRequestRESTAndEventDeduplicate(t *testing.T) {
 	if item.Kind != "merged_pull_request" || item.Ref != "gh:o/r:pr-merge:12" || item.Resource != "pr:o/r:12" {
 		t.Fatalf("deduplicated item = %+v, want the pinned merge identity", item)
 	}
-	if item.Provenance != "search/issues,repos/events" {
+	if item.Provenance != "search/issues,repos/pulls/12,repos/events" {
 		t.Fatalf("provenance = %q, want the REST and events provenances merged", item.Provenance)
 	}
 	if topics[0].Title != "Pull request #12 (o/r)" {
@@ -276,7 +241,7 @@ func TestMergedPullRequestRESTAndEventDeduplicate(t *testing.T) {
 
 func TestFetchMergedPullsSearchBoundsForceIncomplete(t *testing.T) {
 	t.Run("incomplete_results", func(t *testing.T) {
-		f := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(0, true)))
+		f := newPowMergeFixture(t, nil, powMergeSearchDoc(0, true))
 		_, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 		if report.Status != StatusIncomplete || !strings.Contains(report.Detail, "incomplete_results") {
 			t.Fatalf("family report = %+v, want incomplete naming incomplete_results", report)
@@ -284,7 +249,7 @@ func TestFetchMergedPullsSearchBoundsForceIncomplete(t *testing.T) {
 	})
 
 	t.Run("total_count_above_1000", func(t *testing.T) {
-		f := newGithubStatusFixture(t, nil, powMergeSearchHandler(t, powMergeSearchDoc(1001, false)))
+		f := newPowMergeFixture(t, nil, powMergeSearchDoc(1001, false))
 		_, report := fetchMergedPulls(f.run(t), statusTestRepo, "o", "r", statusTestWindow, powWindowEnd())
 		if report.Status != StatusIncomplete || !strings.Contains(report.Detail, "1,000-result bound") {
 			t.Fatalf("family report = %+v, want incomplete naming the 1,000-result bound", report)
@@ -417,13 +382,14 @@ func TestPRTopicGroupsOpenMergeAndConversationComment(t *testing.T) {
 				}},
 			})
 		case strings.Contains(q, "merged:"):
-			_ = json.NewEncoder(w).Encode(powMergeSearchDoc(1, false,
-				powMergeItem(12, "2026-10-22T15:00:00Z", statusTestUser)))
+			powMergeSearchHandler(t, powMergeSearchDoc(1, false,
+				powMergeDetail(12, "2026-10-22T15:00:00Z", statusTestUser)))(w, r)
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": 0, "incomplete_results": false, "items": []map[string]any{}})
 		}
 	}
 	f := newGithubStatusFixture(t, powEventsHandler([]map[string]any{}), search)
+	registerPowMergeDetails(t, f, []map[string]any{powMergeDetail(12, "2026-10-22T15:00:00Z", statusTestUser)})
 	f.issueCommentsHandler = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode([]map[string]any{

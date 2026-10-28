@@ -30,12 +30,15 @@ package timesheet
 //   3. Merged pull requests — GET /search/issues with the qualifiers type:pr,
 //      repo:{owner}/{repo}, merged:{date}..{date}; `merged:` is the documented
 //      merge-date qualifier and there is no `merged-by:` qualifier, so the
-//      merger is verified client-side. Each result is kept only when
-//      merged_by.login names the configured user and the exact merged_at
-//      instant falls in the day's [start, end) window; over-fetched results
-//      merged by another actor or outside the window are not attributed.
-//      The search bound handling (1,000 results, incomplete_results, page
-//      ceiling) matches the authored-PR family.
+//      issue-shaped results supply candidate PR numbers, not merger identity.
+//      GET /repos/{owner}/{repo}/pulls/{pull_number} verifies each candidate
+//      (https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request).
+//      Attribution requires the detail document's merged_by.login to name the
+//      configured user and its exact merged_at to fall in [start, end).
+//      Search bounds match the authored-PR family. Detail requests are bounded
+//      by maxMergePRCandidates unique PRs. Skipped candidates, failed detail
+//      requests, and unresolved detail attribution make coverage incomplete;
+//      a failed search remains failed. Verified evidence is retained.
 //   4. Submitted PR reviews — candidate pull requests come from
 //      GET /search/issues with type:pr, reviewed-by:{user}, repo:{repo}; no
 //      date qualifier is used because GitHub's `updated` qualifier is when the
@@ -94,7 +97,8 @@ package timesheet
 // comment gh:{repo}:issue-comment:{id} (issues/comments and events),
 // PR review comment gh:{repo}:pr-review-comment:{id} (pulls/comments and
 // events), submitted review gh:{repo}:review:{id} (pulls/{n}/reviews and
-// events), merge gh:{repo}:pr-merge:{number} (search/issues and events).
+// events), merge gh:{repo}:pr-merge:{number} (search/issues discovery with
+// pulls/{number} verification, and events).
 // Distinct provider actions keep distinct identities and are never
 // merged. Topics group by retained provider resource identity (pull request,
 // issue, discussion numbers taken from provider payload/resource fields),
@@ -103,8 +107,9 @@ package timesheet
 // Bounds surfaced when hit, named per family and repository: the collector's
 // page ceilings (maxGithubFamilyPages for REST families, maxSearchResultPages
 // for the three search families), the events feed's 30-day/300-event retention,
-// the submitted-review candidate ceiling, the issue-comment PR-discriminator
-// lookup ceiling, search incomplete_results and the 1,000-result limit, HTTP
+// maxMergePRCandidates for merged-PR detail requests, the submitted-review
+// candidate ceiling, the issue-comment PR-discriminator lookup ceiling,
+// search incomplete_results and the 1,000-result limit, HTTP
 // 403/429 rate limiting, permission failures, topic item caps, and undecodable
 // responses. A nonempty response is never treated as complete coverage.
 //
@@ -354,8 +359,6 @@ type searchItem struct {
 	Number    int    `json:"number"`
 	Title     string `json:"title"`
 	CreatedAt string `json:"created_at"`
-	MergedAt  string `json:"merged_at"`
-	MergedBy  *actor `json:"merged_by"`
 	HTMLURL   string `json:"html_url"`
 	User      *actor `json:"user"`
 }
@@ -666,100 +669,6 @@ func fetchAuthoredPulls(g *githubRun, repo, owner, name string, windowStart, win
 		status = "empty"
 	}
 	return items, FamilyReport{Family: "authored_pull_requests", QueriedRepo: repo, Count: n, Status: status, Detail: detail}
-}
-
-// fetchMergedPulls is family 3: pull requests merged by the configured user.
-// `merged:` is the documented search qualifier for the merge date; there is no
-// merged-by: qualifier, so the merger is verified client-side from each
-// result's merged_by.login and the exact merged_at instant is checked against
-// the day's [start, end) window. A nil merged_by or an empty/unparsable
-// merged_at cannot establish the merger or the instant and is counted as
-// unverified in the detail, never attributed. A result whose merged_by names
-// another actor, or whose merged_at falls outside the window, is over-fetched
-// noise from the date-granular qualifier and is not attributed. Search bounds
-// (1,000 results, incomplete_results, page ceiling) match the authored-PR
-// family.
-func fetchMergedPulls(g *githubRun, repo, owner, name string, windowStart, windowEnd time.Time) ([]EvidenceItem, FamilyReport) {
-	dayFrom := windowStart.UTC().Format("2006-01-02")
-	dayTo := windowEnd.Add(-time.Second).UTC().Format("2006-01-02")
-	query := url.Values{}
-	query.Set("q", fmt.Sprintf("type:pr repo:%s merged:%s..%s", repo, dayFrom, dayTo))
-	query.Set("sort", "created")
-	query.Set("order", "desc")
-	path := "/search/issues"
-	var items []EvidenceItem
-	incomplete := false
-	total := 0
-	unverified := 0
-	decode := func(body []byte) (int, error) {
-		var doc searchDoc
-		if err := json.Unmarshal(body, &doc); err != nil {
-			return 0, err
-		}
-		total = doc.TotalCount
-		if doc.IncompleteResults {
-			incomplete = true
-		}
-		for _, item := range doc.Items {
-			// `merged:` is date-granular in UTC, so the query over-fetches the
-			// day's date range; attribution requires the provider-named
-			// merger and the exact merged_at instant inside the window.
-			// Another actor's merge is over-fetched noise, not a coverage
-			// limitation, so it is dropped without counting it unverified.
-			if item.MergedBy == nil || strings.TrimSpace(item.MergedBy.Login) == "" {
-				unverified++
-				continue
-			}
-			if item.MergedBy.Login != g.scope.user {
-				continue
-			}
-			at, err := time.Parse(time.RFC3339, item.MergedAt)
-			if err != nil {
-				unverified++
-				continue
-			}
-			// merged_at is full-precision RFC3339, unlike the comment
-			// families' since-truncated query bounds, so the window is exact
-			// and half-open: no one-second slop at the start.
-			if at.Before(windowStart) || !at.Before(windowEnd) {
-				continue
-			}
-			items = append(items, EvidenceItem{
-				Ref:        fmt.Sprintf("gh:%s:pr-merge:%d", repo, item.Number),
-				Kind:       "merged_pull_request",
-				Actor:      item.MergedBy.Login,
-				Time:       at.UTC().Format(time.RFC3339),
-				Repo:       repo,
-				Resource:   fmt.Sprintf("pr:%s:%d", repo, item.Number),
-				URL:        item.HTMLURL,
-				Title:      sanitizerText(item.Title),
-				Provenance: "search/issues",
-			})
-		}
-		return len(doc.Items), nil
-	}
-	// Same search-endpoint pairing as fetchAuthoredPulls: the merged-PR
-	// search runs under maxSearchResultPages, documented at the constant.
-	walk := g.familyPageLoop(query, path, maxSearchResultPages, decode)
-	n := len(items)
-	status, detail := familyStatus(walk, n, "merged-pull-request search")
-	if incomplete {
-		status = StatusIncomplete
-		detail = niceJoin(detail, "the search provider reported incomplete_results within its documented time/runtime bound")
-	}
-	if total > 1000 {
-		status = StatusIncomplete
-		detail = niceJoin(detail, "the search result total exceeds the documented 1,000-result bound")
-	}
-	if unverified > 0 && status != StatusFailed {
-		status = StatusIncomplete
-		detail = niceJoin(detail, fmt.Sprintf(
-			"%d merged pull request search result(s) carried no verifiable merged_by login or merged_at instant; the merger could not be attributed, so they were omitted rather than guessed", unverified))
-	}
-	if status == StatusComplete && n == 0 {
-		status = "empty"
-	}
-	return items, FamilyReport{Family: "merged_pull_requests", QueriedRepo: repo, Count: n, Status: status, Detail: detail}
 }
 
 // fetchSubmittedReviews is family 4: submitted pull request reviews by the
