@@ -89,7 +89,7 @@ func TestRunWithoutDateResolvesTodayInConfiguredTimezone(t *testing.T) {
 			if draft.Date != tc.want {
 				t.Fatalf("draft date = %q, want %q for timezone %s at %s", draft.Date, tc.want, tc.timezone, fixedNow)
 			}
-			artifacts := filepath.Join(tmp, "timesheet", tc.want, "draft.json")
+			artifacts := filepath.Join(testArtifactDir(t, cfg, tc.want), "draft.json")
 			if !strings.Contains(string(stderr), artifacts) {
 				t.Fatalf("stderr %q does not name the resolved artifacts path %q", stderr, artifacts)
 			}

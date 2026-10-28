@@ -138,7 +138,7 @@ func TestRunMatchesDraftByteForByte(t *testing.T) {
 	}
 
 	// stderr names the deterministic artifacts directory.
-	artifacts := filepath.Join(os.TempDir(), "timesheet", day, "draft.json")
+	artifacts := filepath.Join(testArtifactDir(t, cfg, day), "draft.json")
 	if !strings.Contains(string(runErrOut), artifacts) {
 		t.Fatalf("stderr %q does not name the artifacts path %q", runErrOut, artifacts)
 	}
