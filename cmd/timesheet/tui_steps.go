@@ -42,25 +42,26 @@ func stepAct(a nextAction) string {
 // after every success.
 func (e tuiEnv) act(step, project string) any {
 	var err error
+	notice := ""
 	switch step {
 	case "run":
 		err = e.actRun()
 	case "record":
 		err = e.actRecord()
 	case "stage":
-		err = e.actStage(project)
+		notice, err = e.actStage(project)
 	case "classify":
 		err = e.actClassify(project)
 	case "classify-default":
 		err = e.actClassifyDefault(project)
 	case "save":
-		err = e.actSave(project)
+		notice, err = e.actSave(project)
 	case "plan":
 		_, err = e.h.call("preview_plan", timesheet.Request{Day: e.day})
 	default:
 		err = fmt.Errorf("tui: the derived step offers no act")
 	}
-	return actDoneEvent{err: err}
+	return actDoneEvent{err: err, notice: notice}
 }
 
 func (e tuiEnv) artifactPath(name string) (string, error) {
@@ -78,24 +79,28 @@ func (e tuiEnv) actRun() error {
 	if err != nil {
 		return err
 	}
-	dir, err := dayArtifactsDir(e.cfg.StatePath, e.day)
+	draftPath, err := e.artifactPath("draft.json")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(draftPath), 0o700); err != nil {
 		return fmt.Errorf("tui: the artifacts directory cannot be created")
 	}
-	return os.WriteFile(filepath.Join(dir, "draft.json"), data, 0o600)
+	return os.WriteFile(draftPath, data, 0o600)
 }
 
 // actRecord is record's descriptions-only core over the artifacts files; it
 // opens no store, like the record verb.
 func (e tuiEnv) actRecord() error {
-	dir, err := dayArtifactsDir(e.cfg.StatePath, e.day)
+	draftPath, err := e.artifactPath("draft.json")
 	if err != nil {
 		return err
 	}
-	reviewed, err := composeDescriptionsOnly(filepath.Join(dir, "draft.json"), filepath.Join(dir, "descriptions.json"))
+	descriptionsPath, err := e.artifactPath("descriptions.json")
+	if err != nil {
+		return err
+	}
+	reviewed, err := composeDescriptionsOnly(draftPath, descriptionsPath)
 	if err != nil {
 		return err
 	}
@@ -107,22 +112,37 @@ func (e tuiEnv) actRecord() error {
 }
 
 // actStage mirrors the stage verb on a not-yet-finalized day (a finalized day
-// is a stopped reason naming --revise, never an act).
-func (e tuiEnv) actStage(project string) error {
+// is a stopped reason naming --revise, never an act). The receipt's summary
+// becomes the day screen's notice, skipped blocks included.
+func (e tuiEnv) actStage(project string) (string, error) {
 	summary, err := openFinalizeDay(e.h, "tui", e.day)
 	if err != nil {
-		return err
+		return "", err
 	}
-	_, err = applyStage(e.h, e.cfg, "tui", e.day, project, summary)
-	return err
+	staged, err := applyStage(e.h, e.cfg, "tui", e.day, project, summary)
+	if err != nil {
+		return "", err
+	}
+	return stageNotice(staged), nil
+}
+
+// stageNotice folds the stage receipt the CLI prints into one notice line:
+// what staged, at which revision, and every skipped block with its reason.
+func stageNotice(r *StageReceipt) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "staged %d interval(s) at revision %d", r.StagedIntervals, r.Revision)
+	for _, s := range r.Skipped {
+		fmt.Fprintf(&b, "; skipped %s: %s", s.BlockID, s.Reason)
+	}
+	return b.String()
 }
 
 func (e tuiEnv) actClassify(project string) error {
-	dir, err := dayArtifactsDir(e.cfg.StatePath, e.day)
+	choicesPath, err := e.artifactPath("choices.json")
 	if err != nil {
 		return err
 	}
-	_, err = classifyFileDay(e.h, e.cfg, e.day, project, filepath.Join(dir, "choices.json"))
+	_, err = classifyFileDay(e.h, e.cfg, e.day, project, choicesPath)
 	return err
 }
 
@@ -131,22 +151,26 @@ func (e tuiEnv) actClassifyDefault(project string) error {
 	return err
 }
 
-func (e tuiEnv) actSave(project string) error {
-	_, err := saveDay(e.h, e.cfg, "tui", e.day, project)
-	return err
+func (e tuiEnv) actSave(project string) (string, error) {
+	saved, err := saveDay(e.h, e.cfg, "tui", e.day, project)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("saved revision %d: %d interval(s), %d minute(s)",
+		saved.Revision, saved.Intervals, saved.TotalMinutes), nil
 }
 
 // tick rebuilds the loop snapshot: the same derivation `next` runs, over the
 // store the TUI holds; a stop document is a snapshot like any other.
-func (e tuiEnv) tick() any {
+func (e tuiEnv) tick() (tickEvent, error) {
 	obs, stop, err := buildNextObservation(e.cfg, e.configPath, e.envFile, e.day, e.project, e.h.store)
 	if err != nil {
-		return actDoneEvent{err: err}
+		return tickEvent{}, err
 	}
 	snap := loopSnapshot{day: e.day, project: obs.Project}
 	if stop != nil {
 		snap.action = *stop
-		return tickEvent{snap: snap}
+		return tickEvent{snap: snap}, nil
 	}
 	snap.action = deriveDayNext(obs)
 	if snap.action.State == stateHumanGates && snap.action.Human != nil {
@@ -155,7 +179,7 @@ func (e tuiEnv) tick() any {
 		// approval_id here. A failed read leaves the status absent.
 		_, snap.status, _ = e.gateArtifact(gateSubmit)
 	}
-	return tickEvent{snap: snap}
+	return tickEvent{snap: snap}, nil
 }
 
 // gateArtifact fetches the gate's fresh artifact (approve: preview_plan; submit:
@@ -248,9 +272,9 @@ func (e tuiEnv) refreshAfterStale(reopen string) any {
 	if _, err := e.h.call("review", timesheet.Request{Day: e.day}); err != nil {
 		return actDoneEvent{err: err}
 	}
-	te, ok := e.tick().(tickEvent)
-	if !ok {
-		return actDoneEvent{err: fmt.Errorf("tui: the re-derivation produced no state")}
+	te, err := e.tick()
+	if err != nil {
+		return actDoneEvent{err: err}
 	}
 	te.reopen = reopen
 	return te
@@ -306,7 +330,7 @@ func (e tuiEnv) openEditor(kind, digest, answerFile string, blocks []nextBlock) 
 // writeBench writes the loop's own answer file exactly as the operator
 // authored it: no digest is recomputed, no second validation runs; the next
 // tick and the verbs' fail-closed replays stay the only validators.
-func (e tuiEnv) writeBench(kind string, bench benchState) any {
+func (e tuiEnv) writeBench(bench benchState) any {
 	text := bench.text
 	if strings.TrimSpace(text) == "" {
 		return actDoneEvent{err: fmt.Errorf("tui: the answer document is empty")}

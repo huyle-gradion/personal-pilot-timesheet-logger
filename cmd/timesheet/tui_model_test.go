@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
@@ -164,8 +165,6 @@ func TestReDeriveAfterErrorSupersedesReport(t *testing.T) {
 
 type unknownTestEvent struct{}
 
-func (unknownTestEvent) isTuiEvent() {}
-
 // TestPreflightBuildsFirstSnapshot drives the real preflight over a scratch
 // store: an empty day derives the run action before any screen starts.
 func TestPreflightBuildsFirstSnapshot(t *testing.T) {
@@ -199,10 +198,9 @@ func TestEnvTickRebuildsLoopSnapshot(t *testing.T) {
 		t.Fatalf("preflight: %v", err)
 	}
 	defer func() { _ = m.env.h.store.Close() }()
-	ev := m.env.tick()
-	te, ok := ev.(tickEvent)
-	if !ok {
-		t.Fatalf("tick returned %T, want tickEvent", ev)
+	te, err := m.env.tick()
+	if err != nil {
+		t.Fatalf("tick: %v", err)
 	}
 	if te.snap.day != "2026-10-20" || te.snap.action.State != stateAction {
 		t.Fatalf("tick snapshot = %+v, want the derived action for the day", te.snap)
@@ -211,4 +209,26 @@ func TestEnvTickRebuildsLoopSnapshot(t *testing.T) {
 	if _, err := timesheet.ReadWorkflowSnapshot(m.env.cfg, m.env.h.store, "2026-10-20"); err != nil {
 		t.Fatalf("the tick closed the caller's store: %v", err)
 	}
+}
+
+// TestPreflightPropagatesDerivationError pins the preflight's error path: a
+// first derivation that fails surfaces the derivation's own refusal, not a
+// generic no-state report, and the held store is released.
+func TestPreflightPropagatesDerivationError(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	pretendTTY(t)
+	cfgPath := writeRunConfig(t)
+	_, err := preflightTui(&nextFlags{configPath: cfgPath, date: "2026-10-20", project: "NOPE"})
+	if err == nil || !strings.Contains(err.Error(), "--project NOPE is not configured") {
+		t.Fatalf("preflight error = %v, want the derivation's own unknown-project refusal", err)
+	}
+	cfg, err := timesheet.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := timesheet.OpenStore(cfg.StatePath)
+	if err != nil {
+		t.Fatalf("the failed preflight did not release the store: %v", err)
+	}
+	_ = reopened.Close()
 }

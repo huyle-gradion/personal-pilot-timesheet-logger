@@ -168,13 +168,25 @@ func TestTuiDayLoopRoundTrip(t *testing.T) {
 		}
 	}
 
-	// Record, stage and save each run from the derived step alone; the offline
-	// configuration then stops at the plan remedy, rendered verbatim.
+	// Record, stage and save each run from the derived step alone, and the
+	// stage and save receipts fold their summaries into the day screen's
+	// notice line; the offline configuration then stops at the plan remedy,
+	// rendered verbatim.
 	for _, want := range []string{"record", "stage", "save"} {
 		if m.snap.action.Step != want {
 			t.Fatalf("step = %q, want %q (last error: %v)", m.snap.action.Step, want, m.err)
 		}
 		m = drive(t, m, "enter")
+		switch want {
+		case "stage":
+			if !strings.Contains(m.notice, "staged 1 interval(s) at revision ") {
+				t.Fatalf("stage notice = %q, want the receipt summary", m.notice)
+			}
+		case "save":
+			if !strings.Contains(m.notice, "saved revision ") {
+				t.Fatalf("save notice = %q, want the receipt summary", m.notice)
+			}
+		}
 	}
 	if m.snap.action.State != stateStopped {
 		t.Fatalf("final state = %q, want stopped at the offline plan remedy", m.snap.action.State)
@@ -195,7 +207,7 @@ func TestBenchWriteAsAuthored(t *testing.T) {
 			text:       "{\"ledger_digest\":\"ledger-1\",\"selections\":{\"iv-1\":{\"catalog_id\":\"cat-1\",\"classification_id\":\"opt-a\"}}}",
 			caret:      10,
 		}
-		done := (tuiEnv{}).writeBench(judgmentClassifications, bench).(actDoneEvent)
+		done := (tuiEnv{}).writeBench(bench).(actDoneEvent)
 		if done.err != nil {
 			t.Fatalf("write: %v", done.err)
 		}
@@ -226,14 +238,13 @@ func TestBenchWriteAsAuthored(t *testing.T) {
 			answerFile: filepath.Join(t.TempDir(), "choices.json"),
 			text:       "{\"ledger_digest\":\"\",\"selections\":{}}",
 		}
-		done := (tuiEnv{}).writeBench(judgmentClassifications, bench).(actDoneEvent)
+		done := (tuiEnv{}).writeBench(bench).(actDoneEvent)
 		if done.err == nil || !strings.Contains(done.err.Error(), "digest") {
 			t.Fatalf("lost-digest write = %v, want the refusal", done.err)
 		}
 	})
 	t.Run("an empty document refuses", func(t *testing.T) {
-		done := (tuiEnv{}).writeBench(judgmentBlockDescriptions,
-			benchState{screen: screenBench, kind: judgmentBlockDescriptions}).(actDoneEvent)
+		done := (tuiEnv{}).writeBench(benchState{screen: screenBench, kind: judgmentBlockDescriptions}).(actDoneEvent)
 		if done.err == nil || !strings.Contains(done.err.Error(), "empty") {
 			t.Fatalf("empty write = %v, want the refusal", done.err)
 		}

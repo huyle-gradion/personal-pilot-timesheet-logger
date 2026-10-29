@@ -84,10 +84,10 @@ func preflightTui(f *nextFlags) (tuiModel, error) {
 			close: func() { _ = store.Close() },
 		},
 	}
-	first, ok := env.tick().(tickEvent)
-	if !ok {
+	first, err := env.tick()
+	if err != nil {
 		_ = store.Close()
-		return tuiModel{}, fmt.Errorf("tui: the first derivation produced no state")
+		return tuiModel{}, err
 	}
 	return tuiModel{env: env, snap: first.snap}, nil
 }
@@ -128,18 +128,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m tuiModel) View() string {
 	switch m.bench.screen {
 	case screenBench:
-		return renderBench(m)
+		return sanitizeFrame(renderBench(m))
 	case screenGate:
-		return renderGate(m)
+		return sanitizeFrame(renderGate(m))
 	default:
-		return renderDay(m)
+		return sanitizeFrame(renderDay(m))
 	}
 }
 
-// tuiEventFromMsg adapts the driver's messages onto the reducer's events.
-// Only KeyRunes and KeySpace messages with Alt unset are text; every other
-// key, structural or modified, stays a named keyEvent, so a key like home or
-// delete can never reach an open document as text.
 // tuiEventFromMsg adapts the driver's messages onto the reducer's events.
 // Only KeyRunes and KeySpace messages with Alt unset are text; every other
 // key, structural or modified, stays a named keyEvent, so a key like home or

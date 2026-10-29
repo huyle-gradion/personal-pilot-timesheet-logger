@@ -5,9 +5,21 @@ package main
 import (
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
+
+// sanitizeFrame strips control runes (ESC among them) from a rendered frame;
+// recorded content renders, but it never drives the terminal.
+func sanitizeFrame(frame string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' {
+			return -1
+		}
+		return r
+	}, frame)
+}
 
 // renderDay renders the day screen: the loop state and the key legend.
 func renderDay(m tuiModel) string {

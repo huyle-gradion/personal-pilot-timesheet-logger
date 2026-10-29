@@ -33,8 +33,8 @@ type tuiEnv struct {
 // the in-flight gate: while one op runs to completion every key is ignored (no
 // cancellation; HandleLine takes no context). err is the last failed op or
 // tick; the loop keeps the last good snapshot. closeErr is the close op's
-// failure on quit; notice is the last gate success line; stop ends the
-// program.
+// failure on quit; notice is the last act or gate receipt summary; stop ends
+// the program.
 type tuiModel struct {
 	env      tuiEnv
 	snap     loopSnapshot
@@ -93,7 +93,7 @@ type tickEvent struct {
 type closeSentEvent struct{ err error }
 
 // actDoneEvent reports one act or gate op ran to completion; notice is the
-// success line the day screen keeps until the next tick.
+// receipt summary the day screen keeps until the next act or gate reports.
 type actDoneEvent struct {
 	err    error
 	notice string
@@ -131,7 +131,7 @@ func update(m tuiModel, ev any) (tuiModel, effect) {
 	case textEvent:
 		return updateText(m, e)
 	case tickEvent:
-		m.busy, m.err, m.notice = false, nil, ""
+		m.busy, m.err = false, nil
 		m.snap = e.snap
 		if e.reopen != "" {
 			j := e.snap.action.Judgment
@@ -177,7 +177,7 @@ func update(m tuiModel, ev any) (tuiModel, effect) {
 func updateActDone(m tuiModel, e actDoneEvent) (tuiModel, effect) {
 	if e.err == nil {
 		m.err, m.notice, m.bench = nil, e.notice, benchState{}
-		return m, m.env.tick
+		return m, tickEffect(m.env)
 	}
 	var app *timesheet.AppError
 	if errors.As(e.err, &app) && app.Code == timesheet.CodeStaleRevision {
@@ -233,7 +233,7 @@ func updateKey(m tuiModel, key string) (tuiModel, effect) {
 	case "r":
 		// A new op supersedes the last failure's report.
 		m.busy, m.err = true, nil
-		return m, m.env.tick
+		return m, tickEffect(m.env)
 	case "enter":
 		step := stepAct(m.snap.action)
 		if step == "" {
@@ -288,6 +288,18 @@ func openEditorEffect(m tuiModel, kind string) effect {
 	return func() any { return m.env.openEditor(kind, digest, answerFile, blocks) }
 }
 
+// tickEffect wraps one tick as an effect; a failed derivation lands on the
+// act failure path with its real error, a stop document is a tickEvent.
+func tickEffect(e tuiEnv) effect {
+	return func() any {
+		te, err := e.tick()
+		if err != nil {
+			return actDoneEvent{err: err}
+		}
+		return te
+	}
+}
+
 // updateFormKey is both form screens' key map. Authored text arrives as a
 // textEvent, never through here, so every named key outside this switch is
 // ignored on a form.
@@ -307,7 +319,7 @@ func updateFormKey(m tuiModel, key string) (tuiModel, effect) {
 	case "ctrl+s":
 		if b.screen == screenBench {
 			m.busy, m.err = true, nil
-			return m, func() any { return m.env.writeBench(b.kind, b) }
+			return m, func() any { return m.env.writeBench(b) }
 		}
 	case "left", "right", "backspace":
 		b.text, b.caret = editLine(b.text, b.caret, key)

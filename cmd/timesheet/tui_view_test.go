@@ -1,7 +1,9 @@
 package main
 
 import (
+	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
@@ -184,6 +186,23 @@ func errForTest(msg string) error { return &appErrForTest{msg} }
 type appErrForTest struct{ msg string }
 
 func (e *appErrForTest) Error() string { return e.msg }
+
+// TestViewStripsControlRunes pins the frame boundary: an ESC or any other
+// control byte in recorded content never reaches the terminal, while the text
+// around it and newlines do.
+func TestViewStripsControlRunes(t *testing.T) {
+	snap := loopSnapshot{day: "2026-10-20", project: "WORK", action: nextAction{Day: "2026-10-20"}.withStop(
+		"needful \x1b[31mred\x07 reason with\na newline")}
+	frame := tuiModel{snap: snap}.View()
+	for _, r := range frame {
+		if unicode.IsControl(r) && r != '\n' {
+			t.Fatalf("the frame carried control rune %q:\n%q", r, frame)
+		}
+	}
+	if !strings.Contains(frame, "[31mred reason with\na newline") {
+		t.Fatalf("the frame lost content it must keep:\n%q", frame)
+	}
+}
 
 // TestRenderBenchGolden pins the bench form: the pre-filled document, the
 // digest header, and the visible caret.

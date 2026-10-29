@@ -1404,7 +1404,7 @@ func classifyFileDay(h *headlessSession, cfg *timesheet.Config, date, project, a
 		if err := checkSavedClassificationBinding(h, date, data); err != nil {
 			return ClassifyReceipt{}, err
 		}
-		return runClassifyFinalized(h, &finalizeFlags{date: date, file: answerFile}, summary, selections)
+		return runClassifyFinalized(h, date, answerFile, summary, selections)
 	}
 	project, err = resolveProject("classify", cfg, project)
 	if err != nil {
@@ -1482,20 +1482,20 @@ func classifyFileCore(h *headlessSession, cfg *timesheet.Config, date, project s
 // (unknown_interval), a catalog that is not stored (stale_catalog) or a
 // classification the catalog did not return (unknown_classification) fails
 // closed with the day untouched at its saved revision.
-func runClassifyFinalized(h *headlessSession, f *finalizeFlags, summary timesheet.DaySummary, selections map[string]timesheet.ClassificationChoiceEntry) (ClassifyReceipt, error) {
-	applied, err := applySelections(h, f.date, summary.Revision, selections)
+func runClassifyFinalized(h *headlessSession, date, answerFile string, summary timesheet.DaySummary, selections map[string]timesheet.ClassificationChoiceEntry) (ClassifyReceipt, error) {
+	applied, err := applySelections(h, date, summary.Revision, selections)
 	if err != nil {
 		return ClassifyReceipt{}, err
 	}
 	durable := 0
 	for _, seg := range summary.Confirmed.Segments {
-		if seg.OriginDate == f.date {
+		if seg.OriginDate == date {
 			durable++
 		}
 	}
 	receipt := ClassifyReceipt{
-		Date:            f.date,
-		File:            f.file,
+		Date:            date,
+		File:            answerFile,
 		Applied:         applied,
 		Selections:      len(applied),
 		Revision:        summary.Revision,
@@ -1505,7 +1505,7 @@ func runClassifyFinalized(h *headlessSession, f *finalizeFlags, summary timeshee
 		receipt.Note = fmt.Sprintf("no selections in the choices file; nothing was classified; the saved day was left unchanged at revision %d", summary.Revision)
 		return receipt, nil
 	}
-	confirmed, err := h.call("confirm", timesheet.Request{Day: f.date, Revision: &summary.Revision})
+	confirmed, err := h.call("confirm", timesheet.Request{Day: date, Revision: &summary.Revision})
 	if err != nil {
 		return ClassifyReceipt{}, err
 	}
@@ -1513,7 +1513,7 @@ func runClassifyFinalized(h *headlessSession, f *finalizeFlags, summary timeshee
 	if !ok {
 		return ClassifyReceipt{}, fmt.Errorf("classify: unexpected confirm payload")
 	}
-	saved, err := h.call("save", timesheet.Request{Day: f.date, Revision: &confirmReceipt.Revision})
+	saved, err := h.call("save", timesheet.Request{Day: date, Revision: &confirmReceipt.Revision})
 	if err != nil {
 		return ClassifyReceipt{}, err
 	}
