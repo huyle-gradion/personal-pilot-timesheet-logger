@@ -36,7 +36,7 @@ Omitted `--date` means today in the configured timezone. The skill invokes
 | `action` | `action.cmd` is the exact argv | run the vector verbatim, never a shell string |
 | `judgment` | a model decision is required | write only `judgment.answer_file`, then `next` again |
 | `stopped` | progression cannot be derived or is human-owned | print `reason`; do not guess |
-| `human_gates` | the day is ready for approval/submission | run read-only `submit-status`, print the exact commands, capture metrics, stop |
+| `human_gates` | the day is ready for approval/submission | run read-only `submit-status`, report ready plan, capture metrics, stop |
 
 There is no `--answer` flag and no `--do` dispatcher. A judgment is the file at
 `judgment.answer_file`; the following `next` invocation consumes it only when
@@ -75,11 +75,18 @@ Both answer files carry the binding the report published, copied verbatim:
 | Owner | Owns | Never does |
 |---|---|---|
 | Compiled binary | derive state and content, read ledger/stage map/answers/store, construct argv | write artifacts, execute actions, decide identity or attendance |
-| Model / skill | the two bounded judgments, reporting the blocker or human commands | shell-evaluate `action.cmd`, approve, submit, resolve-write |
+| Timesheet skill | the two bounded judgments, reporting blockers or readiness, terminal metrics | shell-evaluate `action.cmd`, approve or submit during logging, resolve-write |
 | Human | source acknowledgement, attendance verdicts, identity resolution, approval, submission | rely on the agent to perform a TTY gate |
 
 The skill is a thin adapter: locate the binary, run the argv, write the answer
 file, report. The binary is the only owner of step order.
+
+The separate `submit` skill adds an opt-in follow-up after logging. It reviews
+all operations, waits for explicit chat confirmation, then invokes
+`agent-submit` once with the exact reviewed plan and context binding. Consent
+is agent-enforced, not proof of presence. Legacy terminal commands retain
+their gates, and the restricted Pi adapter retains its existing capabilities.
+See [ADR 0009](../adr/0009-chat-confirmed-submission.md).
 
 ## 5. Explicit blockers
 

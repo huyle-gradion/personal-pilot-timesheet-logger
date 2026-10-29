@@ -59,7 +59,7 @@ type stubSubmit struct {
 	calls      []string
 	writeCalls []string
 	writeTools bool
-	failMode   string // "", "tool" (tool-level error, nothing applied), "reset" (applied, response corrupted)
+	failMode   string
 	nextCreate int
 }
 
@@ -149,6 +149,12 @@ func (s *stubSubmit) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			s.writeCalls = append(s.writeCalls, p.Name)
 			switch s.failMode {
+			case "second-tool":
+				if len(s.writeCalls) == 2 {
+					result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "synthetic second write failure"}}}
+				} else {
+					result = s.applyWrite(p.Name, p.Arguments)
+				}
 			case "tool":
 				result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "synthetic write failure"}}}
 			case "reset":

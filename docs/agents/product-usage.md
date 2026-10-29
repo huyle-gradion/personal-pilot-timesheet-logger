@@ -1,5 +1,13 @@
 # Product usage: local and connected (remote) daily workflow
 
+This guide includes historical CLI examples. Use the [README](../../README.md)
+and [interface contract](timesheet-interface.md) for the current command surface.
+The regular timesheet skill stops at a ready plan and always attempts local
+metrics capture on terminal outcomes. The separate `/submit` workflow supports
+explicit chat confirmation without terminal commands, as specified in
+[ADR 0009](../adr/0009-chat-confirmed-submission.md). Historical terminal-only
+submission statements below do not apply to that opt-in path.
+
 This is the practical operator guide for the `timesheet` CLI and the `/timesheet`
 skill. It reflects the current binary at HEAD `6d28f7a` (`go run ./cmd/timesheet
 help`). Reference detail lives in the linked notes; this guide links rather than

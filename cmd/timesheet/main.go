@@ -36,6 +36,7 @@ Usage:
   timesheet approve [--config <path>] [--env-file <path>] --date <YYYY-MM-DD>
   timesheet submit [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> --approval-id <id>
   timesheet submit-status [--config <path>] [--env-file <path>] --date <YYYY-MM-DD>
+  timesheet agent-submit [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> [--plan-id <id> --review-id <id> --confirm-chat]
   timesheet resolve-write [--config <path>] [--env-file <path>] --file <decision.json>
 
 Except serve (whose paths the launcher supplies), every command resolves its
@@ -435,6 +436,14 @@ func main() {
 		}
 	case "resolve":
 		if err := runResolve(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "agent-submit":
+		if err := runAgentSubmit(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return
 			}
