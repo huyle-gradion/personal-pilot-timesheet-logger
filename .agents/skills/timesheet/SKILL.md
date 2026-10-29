@@ -36,7 +36,7 @@ Invoke `"$TS_BINARY" next` (add `--date YYYY-MM-DD` initially for a past day; ad
 - `action` — run `action.cmd` as an argv vector: element 0 is the executable, the rest are its arguments, each passed as its own argument. Never join the vector into a shell string, never `eval` it, and never substitute a field into one. Use the absolute artifact paths the binary prints (`run` prints `run: artifacts: <path>`); invent no `$TMP` directory.
 - `judgment` — do the model work below, writing only `judgment.answer_file`, then `next` again. Judgments are files: there is no `--answer` flag, and `--do` is refused. Copy every digest field from the report verbatim; never recompute it.
 - `stopped` — print `reason` verbatim: it names the precise blocker and remedy. Never silently acknowledge a source, guess an attendance verdict, choose an identity binding, or reuse a stale plan. When the user has explicitly authorized the specific decision (the acknowledgement command shown, a meeting verdict, or a resolve decision file they authored), perform exactly that one step and invoke `next` again; otherwise run Terminal capture and stop.
-- `human_gates` — run `human.status_command` exactly as the binary printed it (read-only submit-status; the binary shell-quotes it) and surface its unresolved writes and `next_safe_action`; then print `human.approve_command` and `human.submit_command` exactly, run Terminal capture and stop. Never run them: `approve`/`submit`/`resolve-write` are TTY-gated human steps, and attempting one is a contract violation.
+- `human_gates` — run `human.status_command` exactly as the binary printed it (read-only submit-status; the binary shell-quotes it) and surface its unresolved writes and `next_safe_action`. Report the plan is ready for review, run Terminal capture and stop. The user can follow up with `/submit` or ask to submit, which invokes the separate `submit` skill. Logging never authorizes submission. The legacy `approve`/`submit`/`resolve-write` commands remain interactive human steps; this skill never executes them.
 
 **Failure discipline.** A failed action is never retried as-is. If `next` still reports the same `step` and `action.cmd`, repair only the judgment it consumes when the error is a validation error on `judgment.answer_file` (unknown block/interval id, missing description, missing or stale digest) — rewrite the answer with the current report's digest — and run it once more. Any other repeat is a blocker: print the binary's error and one line naming the action, then stop; never spin.
 
@@ -70,7 +70,7 @@ Before the final response on EVERY terminal outcome, including a ready plan,
 an unresolved blocker, setup/build failure or failed action, run this exact
 helper once. Do this after reporting the primary outcome internally, not
 instead of planning or error handling. Collection failure never changes the
-timesheet outcome or prevents later approval or submission.
+timesheet outcome or prevents a later chat-confirmed submission.
 
 ```sh
 "$SKILL_DIR/scripts/ts-metrics"

@@ -162,6 +162,7 @@ func parseRecordFlags(args []string) (*recordFlags, error) {
 // directly, one typed request at a time.
 type headlessSession struct {
 	session *timesheet.Session
+	store   *timesheet.Store
 	cfg     *timesheet.Config
 	seq     int
 	close   func()
@@ -186,6 +187,7 @@ func openHeadless(configPath, envFile string) (*headlessSession, error) {
 	}
 	return &headlessSession{
 		session: timesheet.NewSession(cfg, env, store),
+		store:   store,
 		cfg:     cfg,
 		close:   func() { _ = store.Close() },
 	}, nil

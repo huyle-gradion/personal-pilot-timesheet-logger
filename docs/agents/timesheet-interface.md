@@ -1,6 +1,6 @@
-# Pilot Timesheet interface (`0.2.0-dev.7`)
+# Pilot Timesheet interface (`0.2.0-dev.8`)
 
-Application version: `0.2.0-dev.7` (unreleased development stamp; the
+Application version: `0.2.0-dev.8` (unreleased development stamp; the
 public release line remains `0.1.1` until this ships).
 Protocol schema: `1`. State schema: `3`.
 
@@ -127,9 +127,15 @@ the draft, in the record receipt, and in the status summary.
   `--date` when given, otherwise today in the configured timezone; either way
   the summary names the resolved date.
 
-None of the headless subcommands acknowledges sources, confirms work, saves
-store revisions, approves or submits anything. Remote submission remains on
-the interactive, human-approved workflow.
+The collection commands above never approve or submit. Finalization verbs
+drive saved plans. Legacy `approve`/`submit`/`resolve-write` remain TTY-gated.
+The separate `agent-submit --date DAY` returns `{plan, review_id}` without
+approval or remote mutation. With all of `--plan-id`, `--review-id` and
+`--confirm-chat`, it checks the exact review binding before approving and
+submitting once under one store lock. The binding includes day, plan, absolute
+store path and the existing endpoint/credential context digest. No protocol or
+state schema changes. Chat consent is agent-enforced, not human-presence proof;
+see [ADR 0009](../adr/0009-chat-confirmed-submission.md).
 
 `scripts/tokens.py` completes the skill's evidence loop, runner-agnostic: it
 scans local agent-session transcripts — Claude Code (`~/.claude/projects`,
