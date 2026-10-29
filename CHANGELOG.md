@@ -2,7 +2,14 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
-## Unreleased (0.2.0-dev.5)
+## Unreleased (0.2.0-dev.6)
+
+- Development stamp moves to `0.2.0-dev.6` for the daily-workflow and
+  GitHub-collection batch, in lockstep across the Go constant, the Pi
+  adapter identity, the changelog, README and the interface doc. No
+  release tag, adapter-package stamp or publication is part of this work.
+
+## 0.2.0-dev.5
 
 - Fixed-path flag defaults: every command except `serve` now runs without
   `--config` and `--env-file`. `--config` defaults to

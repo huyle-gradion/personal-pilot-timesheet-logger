@@ -1,6 +1,6 @@
 # Timesheet
 
-Application version: **`0.2.0-dev.5`** (unreleased development stamp; the
+Application version: **`0.2.0-dev.6`** (unreleased development stamp; the
 published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
 This is a development build: no version bump, release tag or adapter/package
 stamp change is part of the daily-workflow work.
