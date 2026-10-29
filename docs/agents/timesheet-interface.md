@@ -136,7 +136,8 @@ scans local agent-session transcripts — Claude Code (`~/.claude/projects`,
 default) and optionally Pi (`--pi-dir`, for example the dedicated profile
 directory) — selects sessions that invoked the binary, sums usage per
 calendar day, and appends one idempotent row per (date, runtime, session) to
-`benchmarks/tokens.csv`.
+your local `benchmarks/tokens.csv`; token data is personal and stays out of
+the repository.
 
 ## Protocol envelope
 

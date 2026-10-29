@@ -12,9 +12,10 @@
 
 ### Orchestration
 
-When coordinating implementation, review, fixes, commits, or vault updates, start at
-`docs/orchestration/README.md`. It defines authority, worker handoffs, review gates,
-and the staged redesign plan. A plan is not permission to implement or submit work.
+Personal workflow and orchestration notes — coordination authority, worker
+handoffs, review gates and staged redesign plans — are kept out of the public
+tree; they live in a private archive outside the repository. A plan is not
+permission to implement or submit work.
 
 ### Issue tracker
 
@@ -36,10 +37,10 @@ iCal URL) stored in the macOS Keychain, with code reading from there. See
 
 ## Knowledge base integration
 
-- **Vault**: `/Users/huy.leminh/ai-database`
-- **Project Note**: `/Users/huy.leminh/ai-database/01 - Projects/Project - assignment-1.md`
-- **Architecture Decisions**: `/Users/huy.leminh/ai-database/05 - Architecture Decisions/`
-- **Daily Logs**: `/Users/huy.leminh/ai-database/02 - Daily & Logs/`
+- **Vault**: the owner's private Obsidian vault, local to the owner's machine (paths intentionally not recorded here)
+- **Project Note**: the project note in the private vault's Projects folder
+- **Architecture Decisions**: ADRs mirrored on the private vault
+- **Daily Logs**: the vault's daily-log folder
 
 ### Knowledge base operating rules
 

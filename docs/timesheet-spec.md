@@ -1,6 +1,6 @@
 # Pilot Timesheet implementation specification
 
-Status: product design accepted by the owner on 2026-10-22. Implementation kickoff requested; execution remains owner-mediated under `docs/orchestration/README.md`. This document supersedes conflicting earlier product requirements for the application, not historical records or source ownership.
+Status: product design accepted by the owner on 2026-10-22. Implementation kickoff requested; execution remains owner-mediated (personal orchestration records live out-of-tree, not in this repository). This document supersedes conflicting earlier product requirements for the application, not historical records or source ownership.
 
 ## Objective
 
@@ -130,6 +130,5 @@ Independent review of the exact implementation snapshot remains separate from op
 ## References
 
 - Execution plan: `../.omo/plans/timesheet.md`
-- First owner-mediated packet: `orchestration/timesheet-handoff.md`
-- Current orchestration authority: `orchestration/README.md` and `orchestration/control-policy.md`
+- Personal orchestration records live out-of-tree; they are no longer tracked in this repository
 - Research is provenance, not required daily-agent context.

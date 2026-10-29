@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Record the day's model token usage for the timesheet skill.
 
-Assignment 1 §3.6 evidence: scan local agent-session transcripts, select the
-sessions that ran the timesheet skill (identified by a
+Scan local agent-session transcripts, select the sessions that ran the
+timesheet skill (identified by a
 `timesheet collect|draft|record|status` binary invocation in the transcript),
 sum the usage records per calendar day, and append one row per
-(date, session) to benchmarks/tokens.csv.
+(date, session) to benchmarks/tokens.csv (a personal, local file that stays
+out of the repository).
 
 Transcript sources are runner-agnostic:
 

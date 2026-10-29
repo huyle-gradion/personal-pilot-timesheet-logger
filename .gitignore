@@ -14,3 +14,7 @@ pig-session-*.html
 # references/ is a vendor bundle deliberately kept out of the repository.
 references/
 .audit/
+
+# Personal token/benchmark logs stay local; see scripts/tokens.py.
+benchmarks/tokens.csv
+benchmarks/metrics.csv

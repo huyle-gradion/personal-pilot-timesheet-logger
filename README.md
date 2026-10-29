@@ -1,5 +1,13 @@
 # Pilot Timesheet
 
+Pilot Timesheet is a single Go binary for logging your own working days with
+agent help: it collects evidence (Git/GitHub and calendar), records your day,
+stages and classifies each time block, plans the entry, and keeps an audit
+trail whose approval and submission steps are human-gated. It is built for a
+developer logging their own days with agent help. All evidence stays in
+`~/.timesheet`; nothing leaves the machine until you approve and submit it
+yourself through an interactive terminal.
+
 Application version: **`0.2.0-dev.6`** (unreleased development stamp; the
 published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
 This is a development build: no version bump, release tag or adapter/package
@@ -47,7 +55,7 @@ Daily driver, in a Pi session: type `/timesheet log today work`. Pi expands
 "today" in the configured timezone, so no Node launcher is involved. The
 launcher/TUI remains an optional target, not a requirement.
 
-The assignment deliverable is a runner-agnostic skill folder:
+The daily log is delivered by a runner-agnostic skill folder:
 `.agents/skills/timesheet/SKILL.md`, picked up by Claude Code through the
 `.claude/skills/timesheet` link and executable by any agent runtime with shell
 access. The skill locates the binary through its own
@@ -117,7 +125,8 @@ bin/timesheet submit-status   [--config <path>] [--env-file <path>] --date <date
 land in `<state dir>/entries/<date>.json`, merged idempotently per time block
 with full source references; `entries/` stays the human ledger and staging
 source. `save` is the existing confirm+save pair. `scripts/tokens.py`
-optionally records model token usage into `benchmarks/tokens.csv`; metric
+optionally records model token usage into a local `benchmarks/tokens.csv`;
+token data is personal and stays out of the repository. Metric
 collection never blocks the day. `approve`/`submit` require a terminal on
 stdin and stdout plus the exact typed `plan_id`/`approval_id` (not proof of
 human presence — a pty wrapper defeats it), so the agent never attempts them;
