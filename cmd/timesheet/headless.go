@@ -29,6 +29,7 @@ var dateOptionalCommands = map[string]bool{
 	"run":     true,
 	"record":  true,
 	"status":  true,
+	"next":    true,
 }
 
 // dateFlagUsage is the shared --date description, so --help never disagrees
@@ -347,7 +348,7 @@ func runDraft(args []string) error {
 // carries ONLY the draft JSON — the collect source report is not printed; its
 // substance is already in the draft's flags and per-block completeness. The
 // same draft bytes are also written to the deterministic artifacts directory
-// `$TMPDIR/timesheet/<date>/draft.json` (created as needed), and the artifacts
+// `$TMPDIR/timesheet/<store-identity>/<date>/draft.json` (created as needed), and the artifacts
 // path is printed on stderr so stdout stays pure draft JSON: redirecting
 // stdout yields exactly the draft bytes. The fresh collection_id is one
 // further stderr line (issue #162), so acknowledge/decide can copy it without
@@ -371,7 +372,14 @@ func runRun(args []string) error {
 	}
 	// The artifacts directory is keyed by the RESOLVED day: with an omitted
 	// --date, f.date is empty and the draft would land in an undated path.
-	dir := filepath.Join(os.TempDir(), "timesheet", day)
+	cfg, err := timesheet.LoadConfig(f.configPath)
+	if err != nil {
+		return err
+	}
+	dir, err := dayArtifactsDir(cfg.StatePath, day)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("run: the artifacts directory cannot be created")
 	}

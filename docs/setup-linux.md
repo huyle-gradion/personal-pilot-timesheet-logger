@@ -56,7 +56,7 @@ bin/timesheet setup --project 'pilot=Personal Pilot Timesheet'
   relative paths against the seed file's own directory. Pass either `--project`
   or `--seed-config`, not both.
 
-After setup, start the day with `bin/timesheet run` (it defaults to today in
+After setup, start the day with `bin/timesheet next` (it defaults to today in
 the configured timezone) and follow its one typed state until `stopped` or
 `human_gates`; the skill does the same loop.
 

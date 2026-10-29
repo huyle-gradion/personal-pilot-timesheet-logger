@@ -20,6 +20,7 @@ Usage:
   timesheet collect [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet draft [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet run [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
+  timesheet next [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>] [--project <id>]
   timesheet record [--config <path>] [--date <YYYY-MM-DD>] (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>) [--replace]
   timesheet status [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet stage [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> [--project <id>] [--revise]
@@ -69,7 +70,7 @@ step reviews, run composes collect and draft in one process and prints ONLY
 the draft JSON on stdout (the collect source report is not printed; its
 substance is already in the draft's flags and per-block completeness) while
 also writing the same draft bytes to the deterministic artifacts directory
-$TMPDIR/timesheet/<date>/draft.json (created as needed; the path is printed
+$TMPDIR/timesheet/<store-identity>/<date>/draft.json (created as needed; the path is printed
 on stderr, so redirecting stdout yields exactly the draft bytes) — collect
 and run also print the fresh collection_id as one stderr line (issue #162),
 so acknowledge/decide can copy it without reading state.json — record
@@ -88,6 +89,20 @@ acknowledge/decide steps. All five treat an omitted
 explicit --date always wins; status opens that day either way. They hold the
 same fixed-path, no-shell, credential-safe contract as
 serve and perform no approval or submission.
+
+The next subcommand is the skill's read-only step planner (issue #195). It
+writes nothing and executes nothing: each invocation re-derives ONE typed JSON
+action for the resolved day from artifacts the binary already owns — the
+entries ledger and stage-map sidecar, the run artifacts under
+$TMPDIR/timesheet/<store-identity>/<date>, and the durable store snapshot — and the caller obeys
+that one state before invoking next again. The state is action (the exact argv
+in action.cmd, run verbatim and never through a shell), judgment (a model-owned
+answer file in judgment.answer_file; next never writes it), stopped (a precise
+blocker in reason that names the human remedy; next never acknowledges,
+guesses or resolves it), or human_gates (terminal: the read-only submit-status
+command plus the exact approve and submit commands for a human, which an agent
+never executes). An omitted --date means today in the configured timezone, and
+--project names the staged intervals when the configuration defines several.
 
 The stage/acknowledge/decide/confirm/save subcommands finalize one recorded
 day (campaign issue #160, slice SUBMIT-1). Natural order: run --date first so
@@ -316,6 +331,14 @@ func main() {
 		}
 	case "run":
 		if err := runRun(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "next":
+		if err := runNext(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return
 			}
