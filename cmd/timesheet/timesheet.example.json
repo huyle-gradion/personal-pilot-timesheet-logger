@@ -40,6 +40,13 @@
   "gradion": {
     "enabled": false,
     "endpoint": "https://mcp.example.invalid/mcp",
-    "token_env": "GRADION_MCP_TOKEN"
+    "token_env": "GRADION_MCP_TOKEN",
+    "default_classification": {
+      "catalog_id": "synthetic-catalog-id",
+      "classification_id": "synthetic-option-id",
+      "code": "TRAIN",
+      "name": "Synthetic training",
+      "activity_type": "Learning"
+    }
   }
 }

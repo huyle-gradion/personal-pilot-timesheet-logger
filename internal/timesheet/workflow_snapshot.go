@@ -60,11 +60,14 @@ type ResolutionSnapshot struct {
 
 // WorkflowSnapshot is every durable fact the planner derives from.
 type WorkflowSnapshot struct {
-	Date      string
-	Finalized bool
-	Confirmed []Interval
-	Sources   []SourceSnapshot
-	Plan      *PlanSnapshot
+	ConfiguredDefaultPresent bool
+	ConfiguredDefaultError   string
+	Date                     string
+	Revision                 int
+	Finalized                bool
+	Confirmed                []Interval
+	Sources                  []SourceSnapshot
+	Plan                     *PlanSnapshot
 	// PlanCurrent binds the newest plan to the exact current contribution origins
 	// and revisions, including prior-day intervals allocating onto this date.
 	PlanCurrent bool
@@ -84,7 +87,14 @@ type WorkflowSnapshot struct {
 func ReadWorkflowSnapshot(cfg *Config, store *Store, date string) (WorkflowSnapshot, error) {
 	snap := WorkflowSnapshot{Date: date}
 	state := store.State()
+	snap.ConfiguredDefaultPresent = cfg.Gradion != nil && cfg.Gradion.DefaultClassification != nil
+	if snap.ConfiguredDefaultPresent {
+		if _, err := resolveConfiguredDefault(cfg, state); err != nil {
+			snap.ConfiguredDefaultError = err.Error()
+		}
+	}
 	if day := state.Days[date]; day != nil {
+		snap.Revision = day.Revision
 		snap.Confirmed = append([]Interval(nil), day.Confirmed...)
 		snap.Finalized = len(snap.Confirmed) > 0
 	}

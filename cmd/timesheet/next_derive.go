@@ -106,7 +106,7 @@ func deriveFinalizedDay(o nextObservation, n nextAction) nextAction {
 			NativeUnresolved: o.Workflow.NativeUnresolved,
 		})
 	case timesheet.PlanBlocked:
-		return deriveBlockedPlan(o, n, plan)
+		return deriveFinalizedBlockedPlan(o, n, plan)
 	default:
 		return n.withStop("the plan record " + plan.PlanID + " has the unknown state " + quote(plan.State) +
 			"; run `plan --date " + o.Day + "` for a fresh record")
@@ -189,6 +189,17 @@ func deriveRecordedDay(o nextObservation, n nextAction) nextAction {
 	// would reject it in applyPersistedSelections, so deriving save would only
 	// repeat a failing action.
 	binds := o.Artifacts.ChoicesPresent && sidecarBinds(o.Day, o.Artifacts.Choices, blocks)
+	if o.GradionEnabled && o.Workflow.ConfiguredDefaultPresent {
+		if o.Artifacts.ChoicesPresent && !binds {
+			return n.withStop("the classification sidecar is stale; review the current staged content and repair with classify --file; configured defaults never overwrite prior selections")
+		}
+		if len(o.Artifacts.Choices) < len(blocks) {
+			if o.Workflow.ConfiguredDefaultError != "" {
+				return n.withStop(o.Workflow.ConfiguredDefaultError)
+			}
+			return n.withAction("classify", append(o.projectArgv("classify"), "--configured-default"), "unselected intervals require the configured cached default; existing explicit selections are preserved")
+		}
+	}
 	if o.GradionEnabled && !binds {
 		// The answer file is only handed to classify when it carries THIS
 		// ledger's digest, so a stale choices file (an earlier generation, or

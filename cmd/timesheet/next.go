@@ -146,6 +146,8 @@ type nextObservation struct {
 	DescriptionsBinding string
 	ChoicesPresent      bool
 	ChoicesBinding      string
+	Choices             map[string]timesheet.ClassificationChoiceEntry
+	ChoicesError        error
 
 	// Artifacts is the ledger and its sidecars, one validated parse each.
 	Artifacts timesheet.DayArtifacts

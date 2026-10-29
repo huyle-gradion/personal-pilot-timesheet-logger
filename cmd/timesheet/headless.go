@@ -539,11 +539,12 @@ func runStatus(args []string) error {
 // project, or the --project named when several are defined. classify reuses
 // the same flag set plus --file.
 type finalizeFlags struct {
-	configPath string
-	envFile    string
-	date       string
-	project    string
-	file       string
+	configuredDefault bool
+	configPath        string
+	envFile           string
+	date              string
+	project           string
+	file              string
 	// revise is stage's explicit finalized-day revision flag: the confirmed
 	// set is replaced by a fresh derivation from the entries ledger (split
 	// included) and the day is re-finalized at a new revision.
@@ -1331,6 +1332,9 @@ func runClassify(args []string) error {
 	if err != nil {
 		return err
 	}
+	if f.configuredDefault {
+		return runClassifyDefault(f)
+	}
 	cfg, err := timesheet.LoadConfig(f.configPath)
 	if err != nil {
 		return err
@@ -1357,6 +1361,9 @@ func runClassify(args []string) error {
 		return fmt.Errorf("classify: unexpected open_day payload")
 	}
 	if len(summary.Confirmed.Segments) > 0 {
+		if err := checkSavedClassificationBinding(h, f.date, data); err != nil {
+			return err
+		}
 		return runClassifyFinalized(h, f, summary, selections)
 	}
 	project, err := resolveProject("classify", cfg, f.project)
@@ -1472,16 +1479,17 @@ func runClassifyFinalized(h *headlessSession, f *finalizeFlags, summary timeshee
 }
 
 // parseClassifyFlags parses classify's flag surface: the finalize flags plus
-// the required --file choices path.
+// either a --file choices path or --configured-default.
 func parseClassifyFlags(args []string) (*finalizeFlags, error) {
 	flags := flag.NewFlagSet("classify", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &finalizeFlags{}
+	flags.BoolVar(&f.configuredDefault, "configured-default", false, "fill unselected unsaved intervals with the configured cached default")
 	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
 	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
 	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (required)")
 	flags.StringVar(&f.project, "project", "", "project id for staged intervals (required when configuration defines multiple projects)")
-	flags.StringVar(&f.file, "file", "", "choices JSON path: {\"selections\": {\"<interval_id>\": {\"catalog_id\": \"...\", \"classification_id\": \"...\"}}} (required)")
+	flags.StringVar(&f.file, "file", "", "choices JSON path: {\"selections\": {\"<interval_id>\": {\"catalog_id\": \"...\", \"classification_id\": \"...\"}}} (mutually exclusive with --configured-default)")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}
@@ -1499,8 +1507,8 @@ func parseClassifyFlags(args []string) (*finalizeFlags, error) {
 	if _, err := time.Parse("2006-01-02", f.date); err != nil {
 		return nil, fmt.Errorf("classify: --date must be YYYY-MM-DD")
 	}
-	if f.file == "" {
-		return nil, fmt.Errorf("classify requires --file")
+	if (f.file != "") == f.configuredDefault {
+		return nil, fmt.Errorf("classify requires exactly one of --file or --configured-default")
 	}
 	return f, nil
 }

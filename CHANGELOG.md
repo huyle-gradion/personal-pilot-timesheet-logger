@@ -72,6 +72,19 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
 - GitHub comment collection now applies an overlapping `since` bound and stops
   after passing the requested day's end under created-ascending order. Genuine
   pagination and submitted-review search limits remain explicitly incomplete.
+- GitHub pagination now honors valid terminal `Link` relations, including full
+  final pages, instead of requesting a nonexistent page and reporting HTTP 422.
+  Explicit next-page relations continue short pages. Genuine failures and
+  collector limits remain incomplete; repository events remain bounded,
+  windowed evidence rather than proof of complete history for a selected day.
+- Recover classification judgments for saved days whose previews are blocked
+  on unselected classifications. Answers bind to saved content and revision;
+  stale answers are rejected before saved intervals change. Partial selections
+  require fresh planning, and empty selections stop rather than loop.
+- Add an operator-configured remote classification default and explicit
+  `classify --configured-default` mode. New unselected intervals reuse the
+  verified cached option without discovery queries. Explicit choices and saved
+  days stay unchanged; approval and submission retain live semantic checks.
 - Linux validation passed full race-enabled tests, vet and locator checks.
   `scripts/verification/regular-pi-smoke.mjs` drives the actual regular Pi runtime
   through human gates using local deterministic model/calendar/catalog fixtures.

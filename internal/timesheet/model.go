@@ -191,9 +191,10 @@ const DefaultGradionTokenEnv = "GRADION_MCP_TOKEN"
 // launcher-provisioned MCP endpoint; it is never echoed into a protocol
 // response, error, receipt or state document.
 type GradionConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Endpoint string `json:"endpoint,omitempty"`
-	TokenEnv string `json:"token_env,omitempty"`
+	DefaultClassification *ConfiguredDefaultClassification `json:"default_classification,omitempty"`
+	Enabled               bool                             `json:"enabled"`
+	Endpoint              string                           `json:"endpoint,omitempty"`
+	TokenEnv              string                           `json:"token_env,omitempty"`
 }
 
 // TokenVariable returns the configured credential variable name.

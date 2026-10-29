@@ -150,6 +150,9 @@ func runNext(args []string) error {
 	if ledger.Entries != nil {
 		obs.Units = ledgerUnits(ledger.Entries.Entries, day)
 	}
+	if !snapshot.Finalized && snapshot.ConfiguredDefaultPresent && ledger.EntriesPresent && len(ledger.Entries.Entries) > 0 {
+		return printJSON(deriveDayNext(obs))
+	}
 
 	// One read per artifact. The draft is read for its content digest (the
 	// descriptions answer is bound to it); each answer file is read once for
@@ -174,10 +177,12 @@ func runNext(args []string) error {
 	if err != nil {
 		return printJSON(nextAction{Day: day}.withStop("cannot read the descriptions answer " + obs.DescriptionsPath + ": " + err.Error()))
 	}
-	obs.ChoicesPresent, obs.ChoicesBinding, err = readAnswerBinding(obs.ChoicesPath, "ledger_digest")
+	answer, err := readClassificationAnswer(obs.ChoicesPath)
 	if err != nil {
 		return printJSON(nextAction{Day: day}.withStop("cannot read the classification answer " + obs.ChoicesPath + ": " + err.Error()))
 	}
+	obs.ChoicesPresent, obs.ChoicesBinding = answer.Present, answer.Binding
+	obs.Choices, obs.ChoicesError = answer.Selections, answer.SelectionError
 
 	return printJSON(deriveDayNext(obs))
 }
