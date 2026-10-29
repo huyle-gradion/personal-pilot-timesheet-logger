@@ -256,3 +256,8 @@ Never write before the day is reconciled; never plan from an unsaved draft.
 - `cmd/timesheet/timesheet.example.json` — minimal valid configuration with
   synthetic placeholders.
 - `docs/agents/credentials.md` — the active `.env.local` credential policy.
+
+## License
+
+Pilot Timesheet is licensed under the MIT License — see
+[LICENSE](LICENSE). Contributions are licensed under the same license.
