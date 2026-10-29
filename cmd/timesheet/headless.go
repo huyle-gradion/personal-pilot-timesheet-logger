@@ -205,7 +205,10 @@ func (h *headlessSession) call(op string, req timesheet.Request) (any, error) {
 	}
 	resp, _ := h.session.HandleLine(line)
 	if resp.Error != nil {
-		return nil, fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+		// Typed errors survive: the protocol error carries the AppError's own
+		// code and message, and Error() renders the same "code: message" bytes
+		// the previous string wrap printed.
+		return nil, &timesheet.AppError{Code: resp.Error.Code, Message: resp.Error.Message}
 	}
 	return resp.Result, nil
 }

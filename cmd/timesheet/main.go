@@ -21,6 +21,7 @@ Usage:
   timesheet draft [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet run [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet next [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>] [--project <id>]
+  timesheet tui [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>] [--project <id>]
   timesheet record [--config <path>] [--date <YYYY-MM-DD>] (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>) [--replace]
   timesheet status [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet stage [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> [--project <id>] [--revise]
@@ -340,6 +341,14 @@ func main() {
 		}
 	case "next":
 		if err := runNext(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			os.Exit(1)
+		}
+	case "tui":
+		if err := runTui(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return
 			}
