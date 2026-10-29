@@ -32,6 +32,8 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
   bound to the union span and joined description, so changing any contributor
   fails the replay closed. The shortest-first split and the meeting's silent
   suppression of an overlapping work block are gone.
+- GitHub comment collection applies an overlapping `since` bound and stops
+  after the requested day under created-ascending order. Search limits remain.
 - Development stamp `0.2.0-dev.5`; release stamping, adapter version and
   publication remain owner-gated.
 
