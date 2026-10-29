@@ -30,10 +30,9 @@ Contributions are welcome: see [Contributing](#contributing), and the
 and [`help wanted`](https://github.com/huyle-gradion/pilot-timesheet/labels/help%20wanted)
 queues for a starting point.
 
-Application version: **`0.2.0-dev.6`** (unreleased development stamp; the
+Application version: **`0.2.0-dev.7`** (unreleased development stamp; the
 published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
-This is a development build: no version bump, release tag or adapter/package
-stamp change is part of the daily-workflow work.
+This is a development build. No release tag is created for this changeset.
 
 ## Quickstart
 
@@ -193,13 +192,33 @@ bin/timesheet submit-status   [--config <path>] [--env-file <path>] --date <date
 land in `<state dir>/entries/<date>.json`, merged idempotently per time block
 with full source references; `entries/` stays the human ledger and staging
 source. `save` is the existing confirm+save pair. `scripts/tokens.py`
-optionally records model token usage into a local `benchmarks/tokens.csv`;
+records model token usage into a local `benchmarks/tokens.csv`;
 token data is personal and stays out of the repository. Metric
 collection never blocks the day. `approve`/`submit` require a terminal on
 stdin and stdout plus the exact typed `plan_id`/`approval_id` (not proof of
 human presence — a pty wrapper defeats it), so the agent never attempts them;
 a submit is never auto-retried, and unknown outcomes stay unresolved until a
 human resolves them.
+
+### Automatic local metrics
+
+The timesheet skill must invoke `scripts/ts-metrics` on ready and blocked exits.
+Capture is non-blocking and reports unavailable data honestly. The helper
+refreshes `<repo>/benchmarks/tokens.csv` from any cwd, using ordinary Pi
+`~/.pi/agent/sessions` or `$PI_CODING_AGENT_DIR/sessions`, and Claude
+`~/.claude/projects`. Pig uses `$PIG_CODING_AGENT_DIR/sessions` when set.
+Otherwise its root is nonempty `$PIG_HOME`, then `$XDG_CONFIG_HOME/pig`, then
+`~/.pig`, with `agent/sessions` appended. Empty variables are ignored, and a
+leading `~` or `~/` expands to home. `PIG_USE_PI_DIRS=1` instead selects Pi's
+agent directory and ignores the pig agent override. The observed legacy
+`~/.config/pig/agent/sessions` is also scanned. Shared Pi/pig files are counted
+once as `pi+pig-shared:<session>` because their format cannot establish which
+runtime wrote them. `scripts/tokens.py` accepts explicit `--pi-dir`,
+`--pig-dir`, `--claude-dir` and `--out` overrides. `--pig-dir` replaces all pig
+environment/default locations, including the legacy fallback. Runtime-prefixed rows refresh
+growing session snapshots without duplicates. These are observed session
+tokens, not a timing benchmark or isolated judgment cost; transcript content
+is never copied to the output. Tests use synthetic records only.
 
 To configure an authoritative default, enable Gradion, explicitly query
 `classifications --query <text>`, and review one returned option. Set

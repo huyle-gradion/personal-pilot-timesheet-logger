@@ -1,6 +1,6 @@
 {
   "name": "timesheet-pi-adapter",
-  "version": "0.1.1",
+  "version": "0.2.0-dev.7",
   "private": true,
   "description": "Restricted Pi launcher/adapter for the timesheet (R5). Local forms and transport only; the compiled Go binary owns all accounting, validation and persistence.",
   "type": "module",

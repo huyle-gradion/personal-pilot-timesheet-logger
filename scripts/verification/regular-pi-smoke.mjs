@@ -9,9 +9,11 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const flags = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {
-  assert(['--pi-bin', '--go-bin', '--gomodcache', '--evidence'].includes(process.argv[i]) && process.argv[i + 1], 'expected --pi-bin PATH, --go-bin PATH, --gomodcache PATH and optional --evidence PATH');
-  flags.set(process.argv[i], resolve(process.argv[i + 1]));
+  assert(['--pi-bin', '--go-bin', '--gomodcache', '--evidence', '--outcome'].includes(process.argv[i]) && process.argv[i + 1], 'expected runtime/cache paths, optional --evidence PATH and --outcome ready|blocked');
+  flags.set(process.argv[i], process.argv[i] === '--outcome' ? process.argv[i + 1] : resolve(process.argv[i + 1]));
 }
+const outcome = flags.get('--outcome') || 'ready';
+assert(['ready', 'blocked'].includes(outcome));
 const pi = flags.get('--pi-bin');
 if (!pi) throw new Error('MISSING_RUNTIME: pass --pi-bin pointing to the installed regular Pi executable');
 await access(pi).catch(() => { throw new Error(`MISSING_RUNTIME: ${pi}`); });
@@ -27,6 +29,9 @@ const skill = join(temp, '.agents/skills/timesheet/SKILL.md');
 await mkdir(join(dirname(skill), 'scripts'), { recursive: true, mode: 0o700 });
 await cp(join(skillSource, 'SKILL.md'), skill);
 await cp(join(skillSource, 'scripts/ts-env'), join(dirname(skill), 'scripts/ts-env'));
+await cp(join(skillSource, 'scripts/ts-metrics'), join(dirname(skill), 'scripts/ts-metrics'));
+await mkdir(join(temp, 'scripts'));
+await cp(join(root, 'scripts/tokens.py'), join(temp, 'scripts/tokens.py'));
 assert.equal(await readFile(skill, 'utf8'), await readFile(join(skillSource, 'SKILL.md'), 'utf8'), 'load an unchanged copy of the normal skill');
 const config = join(temp, 'config.json');
 const envFile = join(temp, 'fixture.env');
@@ -69,7 +74,7 @@ function run(exe, args, options = {}) {
 }
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 function bash(argv) {
-  assert(Array.isArray(argv) && argv[0] === ts, 'only the isolated audited binary may execute');
+  assert(Array.isArray(argv) && [ts, join(dirname(skill), 'scripts/ts-metrics')].includes(argv[0]), 'only the isolated binary or terminal metrics helper may execute');
   assert(!['approve', 'submit', 'resolve-write'].includes(argv[1]), 'human-only invocation forbidden');
   const code = `require('node:fs').appendFileSync(${JSON.stringify(auditFile)},${JSON.stringify(JSON.stringify(argv.slice(1)) + '\n')});const{spawnSync}=require('node:child_process');const r=spawnSync(${JSON.stringify(argv[0])},${JSON.stringify(argv.slice(1))},{encoding:'utf8'});console.log('__SMOKE_JSON__'+JSON.stringify({stdout:r.stdout,stderr:r.stderr,status:r.status}));if(r.status!==0)process.exit(1)`;
   return { name: 'bash', args: { command: `node -e ${quote(code)}`, timeout: 60 } };
@@ -137,14 +142,28 @@ function decide(request) {
     assert.deepEqual(receipt.approvals, []);
     assert.deepEqual(receipt.unresolved, []);
     trace.submitStatus = receipt;
-    phase = 'done';
     finalText = `Fixture-backed Pi smoke only. No live-model comprehension was tested.\n${text}\n${report.human.approve_command}\n${report.human.submit_command}\nStopped before human-only writes.`;
-    return { text: finalText };
+    phase = 'metrics';
+    return bash([join(dirname(skill), 'scripts/ts-metrics')]);
+  }
+  if (phase === 'metrics') {
+    const captured = shellResult(text);
+    assert(captured.includes('total=40'), 'actual helper must report synthetic observed usage');
+    trace.metrics = captured;
+    phase = 'done';
+    return { text: finalText + '\n' + captured };
   }
   assert.equal(phase, 'next');
   report = JSON.parse(shellResult(text));
   trace.reports.push(report);
   assert.equal(report.day, day);
+  if (report.state === 'stopped') {
+    assert.equal(outcome, 'blocked');
+    assert(report.reason);
+    finalText = report.reason + '\nStopped before human-only writes.';
+    phase = 'metrics';
+    return bash([join(dirname(skill), 'scripts/ts-metrics')]);
+  }
   if (report.state === 'action') {
     assert(['run', 'record', 'stage', 'classify', 'save', 'plan'].includes(report.action.cmd[1]), 'refuse a non-staging action');
     phase = 'action';
@@ -176,7 +195,7 @@ function decide(request) {
 
 try {
   const version = await run(pi, ['--version']);
-  assert.equal(version.stdout.trim(), '1.0.0', `UNSUPPORTED_RUNTIME: expected qualified Pi 1.0.0, got ${version.stdout}`);
+  assert(['1.0.0', '1.4.0'].includes(version.stdout.trim()), `UNSUPPORTED_RUNTIME: expected Pi 1.0.0 or pinned 1.4.0, got ${version.stdout}`);
   trace.piVersion = version.stdout.trim();
   const go = flags.get('--go-bin');
   await run(go, ['build', '-trimpath', '-o', ts, './cmd/timesheet'], {
@@ -234,26 +253,37 @@ try {
   });
   await new Promise(resolveListen => server.listen(0, '127.0.0.1', resolveListen));
   const base = `http://127.0.0.1:${server.address().port}`;
-  await writeFile(config, JSON.stringify({ timezone: 'UTC', state_path: stateFile, projects: [{ id: 'WORK', name: 'Synthetic work', default_classification: 'DEV' }], sources: { enabled: true, calendar: { enabled: true, user: 'fixture@test.invalid' } }, gradion: { enabled: true, endpoint: `${base}/mcp`, token_env: 'GRADION_MCP_TOKEN' } }), { mode: 0o600 });
+  const projects = [{ id: 'WORK', name: 'Synthetic work', default_classification: 'DEV' }];
+  if (outcome === 'blocked') projects.push({ id: 'OTHER', name: 'Other synthetic work', default_classification: 'DEV' });
+  await writeFile(config, JSON.stringify({ timezone: 'UTC', state_path: stateFile, projects, sources: { enabled: true, calendar: { enabled: true, user: 'fixture@test.invalid' } }, gradion: { enabled: true, endpoint: `${base}/mcp`, token_env: 'GRADION_MCP_TOKEN' } }), { mode: 0o600 });
   await writeFile(envFile, `GCAL_ICS_URL=${base}/calendar\nGRADION_MCP_TOKEN=fixture-only\n`, { mode: 0o600 });
   await writeFile(join(agent, 'models.json'), JSON.stringify({ providers: { 'smoke-fixture': { baseUrl: `${base}/v1`, api: 'openai-completions', apiKey: 'fixture-only', models: [{ id: 'smoke', name: 'Deterministic smoke fixture', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096 }] } } }));
+  await mkdir(join(agent, 'sessions'));
+  await writeFile(join(agent, 'sessions/metrics-fixture.jsonl'), JSON.stringify({ timestamp: `${day}T09:00:00Z`, message: { role: 'assistant', content: [{ type: 'toolCall', name: 'bash', arguments: { command: `${ts} next` } }], usage: { input: 30, output: 8, cacheRead: 2 } } }) + '\n');
   const result = await run(pi, ['--print', '--mode', 'json', '--no-session', '--no-extensions', '--no-context-files', '--offline', '--no-skills', '--skill', skill, '--tools', 'bash,read,write', '--provider', 'smoke-fixture', '--model', 'smoke', '--thinking', 'off', `Use the loaded timesheet skill to log ${day}. This is a deterministic fixture-backed verification. Use only ${ts}, config ${config}, and env-file ${envFile}. Never read the env file. Run next and follow each report. Stop at human_gates after reading submit-status. Do not run approve, submit, or resolve-write.`]);
   await writeFile(join(temp, 'pi.jsonl'), result.stdout);
   await writeFile(join(temp, 'pi.stderr'), result.stderr);
   if (providerError) throw providerError;
   assert.equal(phase, 'done');
-  assert(status && result.stdout.includes('Stopped before human-only writes.'));
+  assert(result.stdout.includes('Stopped before human-only writes.'));
+  assert(trace.metrics);
+  const metrics = await readFile(join(temp, 'benchmarks/tokens.csv'), 'utf8');
+  assert(metrics.includes('pi:metrics-fixture,30,8,2,40'));
   const state = JSON.parse(await readFile(stateFile, 'utf8'));
-  assert(state.days[day].confirmed.length > 0, 'real saved confirmed ledger required');
-  assert(Object.values(state.plans).some(p => p.state === 'ready' && p.date === day), 'real ready plan required');
+  if (outcome === 'ready') {
+    assert(state.days[day].confirmed.length > 0, 'real saved confirmed ledger required');
+    assert(Object.values(state.plans).some(p => p.state === 'ready' && p.date === day), 'real ready plan required');
+  } else assert.equal(trace.reports.at(-1).state, 'stopped');
   for (const key of ['approvals', 'intents', 'executions']) assert.equal((state[key] || []).length, 0, `no ${key}`);
   const argv = (await readFile(auditFile, 'utf8')).trim().split('\n').map(JSON.parse);
   assert(!argv.some(a => ['approve', 'submit', 'resolve-write'].includes(a[0])));
   assert(trace.toolCalls.filter(t => t.name === 'bash').every(t => !/(?:^|[\s"'`])(?:approve|submit|resolve-write)(?=$|[\s"'`])/.test(t.args.command)), 'all emitted Pi bash calls are audited for forbidden executable verbs');
-  for (const verb of ['run', 'record', 'stage', 'classifications', 'classify', 'save', 'plan']) assert(argv.some(a => a[0] === verb), `actual ${verb} invocation required`);
-  assert(trace.statusCommand && status, 'reported submit-status must execute through Pi bash');
-  assert(trace.mcp.some(r => r.params?.name === 'timesheet__get_my_week'));
-  assert(trace.mcp.some(r => r.params?.name === 'timesheet__get_classifications'));
+  for (const verb of outcome === 'ready' ? ['run', 'record', 'stage', 'classifications', 'classify', 'save', 'plan'] : ['run', 'record']) assert(argv.some(a => a[0] === verb), `actual ${verb} invocation required`);
+  if (outcome === 'ready') {
+    assert(trace.statusCommand && status, 'reported submit-status must execute through Pi bash');
+    assert(trace.mcp.some(r => r.params?.name === 'timesheet__get_my_week'));
+    assert(trace.mcp.some(r => r.params?.name === 'timesheet__get_classifications'));
+  }
   assert(trace.mcp.filter(r => r.method === 'tools/call').every(r => ['timesheet__get_my_week', 'timesheet__get_classifications'].includes(r.params.name)), 'no remote write method');
   const judgments = trace.reports.filter(r => r.state === 'judgment');
   assert.deepEqual(trace.toolCalls.filter(t => t.name === 'read').map(t => t.args.path), [skill, join(dirname(judgments[0].judgment.answer_file), 'draft.json')], 'Pi reads only the normal skill and the reported draft');
@@ -264,7 +294,7 @@ try {
     const binding = bound.kind === 'block_descriptions' ? 'draft_digest' : 'ledger_digest';
     assert.equal(answer[binding], bound[binding], 'judgment binding copied from the actual report');
   }
-  trace.assertions = { confirmed: state.days[day].confirmed.length, readyPlans: Object.values(state.plans).filter(p => p.state === 'ready').length, approvals: 0, intents: 0, executions: 0, prohibitedInvocations: 0 };
+  trace.assertions = { outcome, capturedSyntheticTokens: 40, confirmed: state.days[day]?.confirmed?.length || 0, readyPlans: Object.values(state.plans || {}).filter(p => p.state === 'ready').length, approvals: 0, intents: 0, executions: 0, prohibitedInvocations: 0 };
   trace.argv = argv;
   trace.finalText = finalText;
   success = true;

@@ -2,7 +2,20 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
-## Unreleased (0.2.0-dev.6)
+## Unreleased (0.2.0-dev.7)
+
+- Capture ordinary Pi, pig and Claude timesheet usage with runtime provenance,
+  refreshed growing-session totals and repository-local output. The skill now
+  requires non-blocking terminal capture on ready and blocked outcomes (#213,
+  #214). Token snapshots are not performance measurements.
+- Follow pig's `PIG_CODING_AGENT_DIR`, `PIG_HOME`, XDG and `~/.pig`
+  precedence, including tilde expansion and explicit Pi-directory sharing.
+  Retain the observed legacy config location and count shared files once
+  without guessing which runtime wrote them.
+- Align Go, adapter negotiation and package/root-lock stamps at `0.2.0-dev.7`.
+  No release tag is created.
+
+## 0.2.0-dev.6
 
 - Development stamp moves to `0.2.0-dev.6` for the daily-workflow and
   GitHub-collection batch, in lockstep across the Go constant, the Pi

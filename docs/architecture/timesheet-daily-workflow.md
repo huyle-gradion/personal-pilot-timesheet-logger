@@ -36,7 +36,7 @@ Omitted `--date` means today in the configured timezone. The skill invokes
 | `action` | `action.cmd` is the exact argv | run the vector verbatim, never a shell string |
 | `judgment` | a model decision is required | write only `judgment.answer_file`, then `next` again |
 | `stopped` | progression cannot be derived or is human-owned | print `reason`; do not guess |
-| `human_gates` | the day is ready for approval/submission | run read-only `submit-status`, print the exact commands, stop |
+| `human_gates` | the day is ready for approval/submission | run read-only `submit-status`, print the exact commands, capture metrics, stop |
 
 There is no `--answer` flag and no `--do` dispatcher. A judgment is the file at
 `judgment.answer_file`; the following `next` invocation consumes it only when
