@@ -86,11 +86,10 @@ package timesheet
 //      completeness. Its FamilyReport steady state is the dedicated
 //      `windowed` status (StatusWindowed): a fully-walked feed is bounded by
 //      the provider's design, not by the collector, and never reads as a
-//      collection limitation in the aggregate. A 422 on the page past the
-//      retained window is the documented end of that window: it reports
-//      `incomplete` (bounded provider coverage, retained count kept, a
-//      sanitized status+body diagnostic recorded), never `failed` — `failed`
-//      stays reserved for 403/429/transport/permission failures.
+//      collection limitation in the aggregate. Valid terminal Link metadata
+//      ends the walk even on a full page. An actual 422 still reports
+//      `incomplete` with retained evidence and a status+body diagnostic;
+//      it never establishes that the retained window was exhausted.
 //
 // Canonical identity: the same provider action seen through two endpoint
 // families carries one event identity and its provenance is merged — issue
@@ -128,7 +127,6 @@ package timesheet
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -269,12 +267,12 @@ func (g *githubRun) issueTargetFor(repo, owner, name string, number int, budget 
 	budget.lookups++
 	target := issueTarget{}
 	known = false
-	status, body, err := g.getJSON(nil, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, name, number))
-	if err == nil && status == http.StatusOK {
+	response, err := g.getJSON(nil, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, name, number))
+	if err == nil && response.status == http.StatusOK {
 		var doc struct {
 			PullRequest *json.RawMessage `json:"pull_request"`
 		}
-		if json.Unmarshal(body, &doc) == nil {
+		if json.Unmarshal(response.body, &doc) == nil {
 			target = issueTarget{isPR: doc.PullRequest != nil}
 			known = true
 		}
@@ -286,45 +284,6 @@ func (g *githubRun) issueTargetFor(repo, owner, name string, number int, budget 
 		g.issueTargets[key] = target
 	}
 	return target.isPR, known, false
-}
-
-// getJSON performs one authenticated GET and returns the HTTP status and, for
-// 200, the size-capped body. Errors are sanitized: request URLs are never
-// echoed and credential values never appear anywhere.
-func (g *githubRun) getJSON(q url.Values, path string) (int, []byte, error) {
-	endpoint := *g.scope.apiBase
-	endpoint.Path += strings.TrimPrefix(strings.TrimSuffix(path, "/"), "/")
-	endpoint.RawQuery = q.Encode()
-	req, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
-	if err != nil {
-		return 0, nil, fmt.Errorf("request could not be constructed")
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("Authorization", "Bearer "+g.scope.token)
-	resp, err := g.client.Do(req)
-	if err != nil {
-		// Sanitized: transport error detail can embed the URL.
-		return 0, nil, fmt.Errorf("the provider request could not be sent")
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusOK {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxGithubBodyBytes))
-		if err != nil {
-			return resp.StatusCode, nil, fmt.Errorf("the provider response could not be read")
-		}
-		return resp.StatusCode, body, nil
-	}
-	// A bounded copy of the non-200 body is returned so the stop-reason
-	// classification can render a sanitized diagnostic (HTTP status plus a
-	// bounded body snippet). The snippet is sanitized and URL-stripped where
-	// it is rendered (sanitizeHTTPDiagnostic); request URLs are never echoed
-	// and credential values never appear anywhere.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-	if err != nil {
-		return resp.StatusCode, nil, nil
-	}
-	return resp.StatusCode, body, nil
 }
 
 // --- provider document shapes ------------------------------------------------
@@ -423,88 +382,6 @@ type ghEventPayloadDoc struct {
 
 var issueNumberTailRE = regexp.MustCompile(`/issues/(\d+)$`)
 var pullNumberTailRE = regexp.MustCompile(`/pulls/(\d+)$`)
-
-// familyWalk records how one paged family walk ended. Each page has
-// per_page=100; stop is finished, empty, http, decode, transport, or capped.
-// A finished page (fewer than 100 entries) is the only provable end. For an
-// http stop, httpStatus carries the provider status and httpBody a bounded
-// copy of the provider error body (rendered only through
-// sanitizeHTTPDiagnostic, never echoed raw). maxPages records the ceiling the
-// walk ran under, so the capped detail names the real bound.
-type familyWalk struct {
-	pages      int
-	stop       string
-	httpStatus int
-	httpBody   []byte
-	err        error
-	maxPages   int
-	// coveredFrom and coveredUntil carry the first and last parsed created_at
-	// a comment walk saw, in provider order. They are detail watermarks, never
-	// a completeness proof.
-	coveredFrom  time.Time
-	coveredUntil time.Time
-}
-
-// familyPageLoop walks one paged family under the given page ceiling.
-func (g *githubRun) familyPageLoop(query url.Values, path string, maxPages int, decode func(body []byte) (int, error)) familyWalk {
-	return g.familyPageLoopWindow(query, path, maxPages, decode, nil)
-}
-
-// familyPageLoopWindow is familyPageLoop with one optional post-decode hook.
-// windowPassed is consulted only after a full page (n == 100) was decoded and
-// every item on it processed; non-nil true ends the walk as window_passed.
-// Nil keeps familyPageLoop's exact walking behavior for every other family.
-func (g *githubRun) familyPageLoopWindow(query url.Values, path string, maxPages int, decode func(body []byte) (int, error), windowPassed func() bool) familyWalk {
-	walk := familyWalk{maxPages: maxPages}
-	for page := 1; page <= maxPages; page++ {
-		q := cloneValues(query)
-		q.Set("per_page", "100")
-		q.Set("page", strconv.Itoa(page))
-		status, body, err := g.getJSON(q, path)
-		if err != nil {
-			walk.stop, walk.err = "transport", err
-			return walk
-		}
-		if status != http.StatusOK {
-			walk.stop = "http"
-			walk.httpStatus = status
-			walk.httpBody = body
-			walk.err = fmt.Errorf("provider responded with HTTP %d", status)
-			return walk
-		}
-		n, derr := decode(body)
-		if derr != nil {
-			walk.stop = "decode"
-			walk.err = fmt.Errorf("the provider response was not the expected document schema")
-			return walk
-		}
-		if n == 0 {
-			walk.stop = "empty"
-			return walk
-		}
-		if n < 100 {
-			walk.stop = "finished"
-			return walk
-		}
-		if windowPassed != nil && windowPassed() {
-			walk.stop = stopWindowPassed
-			return walk
-		}
-		walk.pages++
-	}
-	walk.stop = "capped"
-	return walk
-}
-
-func cloneValues(v url.Values) url.Values {
-	out := url.Values{}
-	for k, vs := range v {
-		for _, x := range vs {
-			out.Add(k, x)
-		}
-	}
-	return out
-}
 
 // --- the families ------------------------------------------------------------
 
@@ -956,18 +833,15 @@ func fetchCommentsPageLoop(g *githubRun, query url.Values, path, repo string, wi
 // interactions. GitHub bounds the events timeline by design (only the past 30
 // days, up to 300 events per timeline), so the family's steady state is the
 // dedicated `windowed` status — honest bounded recent-window coverage, never
-// `empty` and never a forced `incomplete`. A 422 on the page past the
-// retained window is the documented end of that window, classified as
-// `incomplete` (bounded provider coverage with the retained count and a
-// sanitized diagnostic), never `failed`; `failed` stays reserved for
-// 403/429/transport/permission failures. Reaching the collector's own page
+// `empty` and never a forced `incomplete`. A genuine 422 stays `incomplete`
+// with retained evidence and a diagnostic, not proof of exhaustion.
+// Reaching the collector's own page
 // ceiling stays `incomplete`, because that bound is the collector's, not the
 // provider's.
 func fetchRepoEvents(g *githubRun, repo, owner, name string, windowStart, windowEnd time.Time) ([]EvidenceItem, FamilyReport) {
 	query := url.Values{}
 	path := "/repos/" + owner + "/" + name + "/events"
 	var items []EvidenceItem
-	var sawOlder bool
 	decode := func(body []byte) (int, error) {
 		var docs []ghEventDoc
 		if err := json.Unmarshal(body, &docs); err != nil {
@@ -979,7 +853,6 @@ func fetchRepoEvents(g *githubRun, repo, owner, name string, windowStart, window
 				continue
 			}
 			if at.Before(windowStart) {
-				sawOlder = true
 				continue
 			}
 			if !at.Before(windowEnd) {
@@ -998,18 +871,13 @@ func fetchRepoEvents(g *githubRun, repo, owner, name string, windowStart, window
 	walk := g.familyPageLoop(query, path, maxGithubFamilyPages, decode)
 	n := len(items)
 	if walk.err != nil {
-		// sawOlder is only proof of a finished page below the window; it never
-		// overrides a real failure on a later page.
 		if walk.stop == "http" && walk.httpStatus == http.StatusUnprocessableEntity {
 			detail := niceJoin(sanitizeHTTPDiagnostic(walk.httpStatus, walk.httpBody), fmt.Sprintf(
-				"%d attributable event(s) retained before the provider's retained-window cap; coverage for repository events is bounded provider coverage (only the past 30 days, up to 300 events per timeline), not a collection failure", n))
+				"%d attributable event(s) retained before the provider rejected pagination; repository-event coverage remains incomplete because exhaustion of the retained window was not established", n))
 			return items, FamilyReport{Family: "repo_events", QueriedRepo: repo, Count: n, Status: StatusIncomplete, Detail: detail}
 		}
 		status, detail := familyStatus(walk, n, "repository events")
 		return items, FamilyReport{Family: "repo_events", QueriedRepo: repo, Count: n, Status: status, Detail: detail}
-	}
-	if sawOlder {
-		walk.stop = "finished"
 	}
 	if walk.stop == "capped" {
 		status, detail := familyStatus(walk, n, "repository events")
@@ -1019,7 +887,7 @@ func fetchRepoEvents(g *githubRun, repo, owner, name string, windowStart, window
 	// The timeline is bounded by the provider's documented design regardless
 	// of how many items were retained, so the honest status is `windowed`.
 	_, detail := familyStatus(walk, n, "repository events")
-	detail = niceJoin(detail, "the events timeline is bounded by the provider (only the past 30 days, up to 300 events per timeline); the collector reports it as windowed coverage — a bounded recent window by the provider's design, not completeness and not a collection limitation")
+	detail = niceJoin(detail, "the events timeline is bounded by the provider (only the past 30 days, up to 300 events per timeline); exhausting its retained pages establishes windowed coverage, not completeness for the selected day")
 	return items, FamilyReport{Family: "repo_events", QueriedRepo: repo, Count: n, Status: StatusWindowed, Detail: detail}
 }
 

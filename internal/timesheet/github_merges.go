@@ -65,20 +65,20 @@ func fetchMergedPulls(g *githubRun, repo, owner, name string, windowStart, windo
 			break
 		}
 		path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, name, number)
-		code, body, err := g.getJSON(nil, path)
-		if err != nil || code != http.StatusOK {
+		response, err := g.getJSON(nil, path)
+		if err != nil || response.status != http.StatusOK {
 			failures++
 			if failureDetail == "" {
 				failureDetail = "the PR detail request could not be completed"
 				if err == nil {
-					failureDetail = fmt.Sprintf("the PR detail provider responded with HTTP %d", code)
+					failureDetail = fmt.Sprintf("the PR detail provider responded with HTTP %d", response.status)
 				}
 			}
-			blocked = code == http.StatusForbidden || code == http.StatusTooManyRequests
+			blocked = response.status == http.StatusForbidden || response.status == http.StatusTooManyRequests
 			continue
 		}
 		var doc pullMergeDoc
-		if err := json.Unmarshal(body, &doc); err != nil {
+		if err := json.Unmarshal(response.body, &doc); err != nil {
 			failures++
 			if failureDetail == "" {
 				failureDetail = "the PR detail response was not the expected document schema"

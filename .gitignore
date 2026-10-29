@@ -9,6 +9,8 @@ bin/
 HANDOFF.md
 .codegraph/
 pi-session-*.html
+pig-session-*.html
 
 # references/ is a vendor bundle deliberately kept out of the repository.
 references/
+.audit/
