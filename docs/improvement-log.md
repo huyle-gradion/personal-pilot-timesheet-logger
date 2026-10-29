@@ -3,6 +3,54 @@
 The assignment's log → review what broke → improve → log again record
 (§3.5). Date-keyed; newest first. The Friday review reads this file.
 
+## 2026-10-25/26 — the submission campaign: first headless submissions to Gradion ✅
+
+**Changed:** the skill gained its missing half — submission. Campaign #160
+(five slices) plus six live-found fixes shipped in one day: day finalization
+commands (#161), classification with content-bound selections (#165/#166),
+the adapter APP_VERSION pin + drift guard (#159), `collection_id` surfacing +
+`record --replace` (#162/#163), compact `prs_inline` (#165), the four-hour
+split at stage with `stage --revise` + plan guard + receipt observability
+(#167/#168), gap-aware staging for overlapping ledger entries (#169/#170),
+and zero-match classification queries as a valid empty catalog (#171).
+
+**The loop, executed live (log → review what broke → improve → log again):**
+the first real submission was refused twice by Gradion's then-unverified
+**four-hour entry limit** (479-minute block, `write_uncertain`, remote
+verified empty after each) — root-caused from the vendor docs, fixed same-day
+(#167/#168), and the second submission recovered the day through the designed
+`not_applied` discipline instead of a blind retry. Day 21 then exposed the
+**overlap gap** (meeting inside an evidence span, #169/#170), day 22–23
+exposed the **zero-match catalog parse** (#171). Every refusal was resolved
+without a blind re-submit, exactly per the failure discipline.
+
+**Result:** working days 2026-10-20 through 2026-10-23 are **submitted to
+Gradion** — 13 entries, `all_confirmed`, zero unresolved writes, remote ids
+bound and verified by read-back. The TTY gates held throughout: every remote
+write carried a human-typed plan_id and approval_id; the agent ran everything
+else.
+
+**Measured (benchmarks/tokens.csv, 16 agent-run rows through 2026-10-25):**
+input side now ranges 3.8k–14k on routine days (run 1: 15.0k with
+flag-discovery waste; the structural cuts — compact draft, descriptions-only
+judgment, folded runbook, `run` command — hold), output is stable at
+~590–1,000 tokens/day, and today's four submission-day runs averaged ~65k
+total despite triple-recovery work. The high-water rows (103k, 81k) are
+failure-recovery sessions, recorded honestly.
+
+**Honest caveats:** the four-hour policy was verified only by refusal (the
+success boundary is 240 minutes exactly — the 239/240/90/15-minute chunks all
+confirmed); the catalog zero-match phrasings are recognized by pattern, so a
+provider rewording would need a one-line regex touch; and the two review
+debts (#168/#170 post-merge reviews) are queued for when model-concurrency
+slots free up — the submission campaign itself was partially inline
+(disclosed on the issues).
+
+**Lesson:** the failure discipline (never retry blind; resolve against a
+fresh observation) turned two scary `write_uncertain` moments into a
+five-minute recovery each — the discipline pays for itself the first time it
+fires.
+
 ## 2026-10-25 — entry-store consolidation onto the Mac
 
 The pilot runs recorded the missing working days in a development store
