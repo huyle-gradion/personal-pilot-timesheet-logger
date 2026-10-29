@@ -30,9 +30,10 @@ Contributions are welcome: see [Contributing](#contributing), and the
 and [`help wanted`](https://github.com/huyle-gradion/pilot-timesheet/labels/help%20wanted)
 queues for a starting point.
 
-Application version: **`0.2.0-dev.8`** (unreleased development stamp; the
-published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
-This is a development build. No release tag is created for this changeset.
+Application version: **`0.2.0-dev.8`** (published as the pre-release
+[`v0.2.0-dev.8`](https://github.com/huyle-gradion/pilot-timesheet/releases/tag/v0.2.0-dev.8);
+the previous stable line is `0.1.1`). Protocol schema `1`, state schema `3`.
+This is a SemVer pre-release of the upcoming `0.2.0`.
 
 ## Quickstart
 

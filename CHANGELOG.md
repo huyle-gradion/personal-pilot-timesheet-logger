@@ -2,7 +2,7 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
-## Unreleased (0.2.0-dev.8)
+## 0.2.0-dev.8
 
 - Add the separate `/submit` skill and explicit `agent-submit` review/submit
   command (#215). The agent displays the exact plan, waits for explicit chat
@@ -10,8 +10,8 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
   single-use approvals and uncertain-write barriers remain enforced. Chat
   consent is agent-enforced, not proof of human presence. Legacy terminal
   commands and trusted Pi adapter capabilities are unchanged.
-- Align Go, adapter negotiation and package/root-lock stamps at `0.2.0-dev.8`.
-  No release tag is created.
+- Align Go, adapter negotiation and package/root-lock stamps at `0.2.0-dev.8`,
+  tag `v0.2.0-dev.8` on `main`, and publish it as a GitHub pre-release (#220).
 
 ## 0.2.0-dev.7
 
