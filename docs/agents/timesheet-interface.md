@@ -1,7 +1,7 @@
-# Pilot Timesheet interface (`0.2.0-dev.8`)
+# Pilot Timesheet interface (`0.2.0-dev.9`)
 
-Application version: `0.2.0-dev.8` (published as the pre-release
-`v0.2.0-dev.8`; the previous stable line is `0.1.1`).
+Application version: `0.2.0-dev.9` (published as the pre-release
+`v0.2.0-dev.9`; the previous stable line is `0.1.1`).
 Protocol schema: `1`. State schema: `3`.
 
 This document is the public interface for the current release. The
@@ -41,6 +41,7 @@ timesheet draft --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 timesheet run --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
 timesheet record --config <path> [--date <YYYY-MM-DD>] --file <reviewed.json>
 timesheet status --config <path> [--env-file <path>] [--date <YYYY-MM-DD>]
+timesheet tui --config <path> [--env-file <path>] [--date <YYYY-MM-DD>] [--project <id>]
 ```
 
 `version` prints the application version and protocol schema and exits 0. It
@@ -69,6 +70,64 @@ state fails with `store_locked`; it does not race or overwrite the first.
 `collect`, `draft`, `run` and `status` open the store the same way, so they also fail
 with `store_locked` while a `serve` process holds the state. `record` opens no
 store and never interferes with a running `serve`.
+
+## The `tui` verb: a native terminal UI over the loop
+
+`tui` is a native Go terminal UI (issue #221) over the same store, session and
+derivation every other command uses. It opens the store once and holds the
+exclusive lock for the whole process, mirroring `serve`; a second process
+meets `store_locked` exactly as it would against `serve`. It refuses to start
+unless BOTH stdin and stdout are terminals, and every refusal (non-terminal
+stdio, `store_locked`, configuration failure) happens before the alternate
+screen starts. There is no AI harness and no model call on this path: each
+tick re-derives the day with the same `next` pipeline
+(`buildNextObservation` + `deriveDayNext`) and renders the resulting action
+verbatim — state, step, why, the judgment protocol text, the human-gate
+commands and the store-wide unresolved-write counts. Every act is dispatched
+from the derived step; the TUI duplicates zero pipeline decisions and re-runs
+the verbs' own entry cores (`collectDraft`, `composeDescriptionsOnly`,
+`applyStage`, `classifyFileDay`, `classifyDefaultDay`, `saveDay`,
+`preview_plan`) over its held session.
+
+Concurrent-CLI-record race: the `record` path never opens the store (it writes
+the lock-free entries ledger directly), so a `record` process may run while
+the TUI holds the lock. This is the engine's own design, not a new hazard: the
+mitigation is per-tick re-derivation (every screen is rebuilt from the
+artifacts and the durable snapshot) plus the fail-closed revalidation every
+consuming verb already performs on its own inputs. Pressing `r` re-derives
+explicitly after an outside change.
+
+Screens and key bindings:
+
+| Screen | Keys | Effect |
+| --- | --- | --- |
+| Day (the loop state) | `enter` | Run the act the derived step licenses: run (collect + draft), record, stage, classify (`--file` or `--configured-default`), save, plan; on a judgment step open the authoring form; on `human_gates` open the approve gate |
+| Day | `s` | Open the submit gate (`human_gates` only) |
+| Day | `r` | Re-derive the loop from the current artifacts and store |
+| Day | `q`, `ctrl+c` | Send the `close` op and exit; unsaved session state and bench text are discarded and nothing replays on restart |
+| Day (any state) | resize | The screen is stateless and repaints; resize is handled by the driver |
+| Bench (authoring) | printable, paste, left/right/backspace | Edit the pre-filled answer document (the exact JSON the judgment's protocol names, the `draft_digest` or `ledger_digest` copied verbatim into its first field) |
+| Bench | `ctrl+s` | Write the answer file exactly as authored — no digest is recomputed and no second validation runs; a lost digest or an empty document refuses the write, and the loop's next tick plus the verbs' fail-closed replay checks stay the only validators |
+| Bench | `esc` | Abandon the form; the operator text dies |
+| Gate (approve) | printable | Type the echo |
+| Gate (approve) | `enter` | Re-run `preview_plan` immediately before anything is emitted: the op fires only when the fresh `plan_id` equals the typed echo exactly; any drift emits nothing and re-renders |
+| Gate (submit) | `enter` | Re-run `submission_status` immediately before anything is emitted: `submit_plan` fires only for an `approval_id` still ACTIVE on the fresh status, so a revoked or consumed approval cannot be submitted |
+| Gate | `esc` | Dismiss the dialog; nothing was emitted |
+
+On `human_gates` the day screen also renders the day's `submission_status`:
+every unresolved write with its `write_ref`, the store-wide blockers, and the
+active approvals — an operator who dismissed the submit receipt re-acquires
+the active `approval_id` there. `submit_plan` is emitted at most once per
+confirmation and is never retried; an unknown outcome stays a durable
+unresolved write for the human to resolve (see the approval and verified
+submission section). The TUI never invokes the TTY-gated `approve`, `submit`
+or `resolve-write` CLI verbs, and it never runs `select_classification`
+outside the answer-file path: recorded days stay visible to `next` through the
+same content-bound sidecar.
+
+`stale_revision` from any act re-runs `review`, re-derives, and reopens the
+authoring form fresh when the loop still asks for the same judgment; the loop
+moving past that judgment closes the form instead of showing a dead end.
 
 ## Headless skill surface
 
