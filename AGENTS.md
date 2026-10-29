@@ -69,5 +69,6 @@ runner-agnostic (Pi or any agent with shell access). It never runs the
 TTY-gated `approve`, `submit` or `resolve-write` — those need an interactive
 terminal and the exact typed `plan_id`/`approval_id`/`write_ref`, and
 attempting them is a contract violation. Submission is never auto-retried, and
-unknown outcomes stay unresolved until a human resolves them. Optional token
-metrics never block the day.
+unknown outcomes stay unresolved until a human resolves them. Run the skill's
+mandatory terminal metrics helper on success and blocked exits. Capture errors
+are reported without blocking the day.

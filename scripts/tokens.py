@@ -1,177 +1,273 @@
 #!/usr/bin/env python3
-"""Record the day's model token usage for the timesheet skill.
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
+"""Capture observed timesheet tokens locally. Run with python3 scripts/tokens.py.
 
-Scan local agent-session transcripts, select the sessions that ran the
-timesheet skill (identified by a
-`timesheet collect|draft|record|status` binary invocation in the transcript),
-sum the usage records per calendar day, and append one row per
-(date, session) to benchmarks/tokens.csv (a personal, local file that stays
-out of the repository).
-
-Transcript sources are runner-agnostic:
-
-- `--claude-dir` (default `~/.claude`): Claude Code session JSONL under
-  `projects/`, usage read from `message.usage`.
-- `--pi-dir` (optional, no default): a directory of Pi agent session JSONL
-  transcripts — typically the dedicated profile directory, for example
-  `~/.timesheet/pi-profile`. Usage records are read from `message.usage` or
-  a top-level `usage` object.
-
-Idempotent: (date, session_id) pairs already in the CSV are skipped.
-
-Standard library only; no network access; transcripts are read, never
-modified or copied elsewhere.
+Pi and pig use message.usage input/output/cacheRead/cacheWrite. Claude uses
+message.usage input_tokens/output_tokens/cache_*_input_tokens. Runtime-prefixed
+CSV rows are refreshed, not appended twice. No transcript text leaves the reader.
+These are observed session totals, not isolated judgment cost or performance.
 """
 
 import argparse
 import csv
+from dataclasses import dataclass
+from datetime import date
 import json
 import os
-import pathlib
+from pathlib import Path
 import re
 import sys
+import tempfile
+from typing import Final, TypeAlias, TypedDict
 
-SKILL_MARKER = re.compile(r"timesheet (collect|draft|record|status)\b")
-FIELDS = ["date", "session_id", "input_tokens", "output_tokens", "cache_tokens", "total_tokens"]
-
-
-def iter_transcripts(root: pathlib.Path, subdirs):
-    """Yield *.jsonl files under root, optionally only under named subdirs."""
-    if not root.is_dir():
-        return
-    if subdirs:
-        for sub in subdirs:
-            yield from sorted((root / sub).glob("**/*.jsonl"))
-        return
-    yield from sorted(root.glob("**/*.jsonl"))
-
-
-def usage_of(record):
-    """Return the usage dict of one transcript record, runner-agnostic."""
-    message = record.get("message")
-    if isinstance(message, dict) and isinstance(message.get("usage"), dict):
-        return message["usage"]
-    if isinstance(record.get("usage"), dict):
-        return record["usage"]
-    return None
+SKILL_MARKER: Final = re.compile(
+    r'(?:^|[;&|\n])\s*["\']?(?:[^\n"\']*/timesheet|timesheet|\$TS_BINARY)["\']?\s+'
+    r"(?:next|collect|draft|run|record|status)\b"
+)
+FIELDS: Final = [
+    "date",
+    "session_id",
+    "input_tokens",
+    "output_tokens",
+    "cache_tokens",
+    "total_tokens",
+]
+REPO: Final = Path(__file__).resolve().parents[1]
+JSONValue: TypeAlias = (
+    None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+)
 
 
-def scan_session(path: pathlib.Path):
-    """Return (is_skill_session, {date: usage-dict}) for one transcript."""
+class TokenRow(TypedDict):
+    date: str
+    session_id: str
+    input_tokens: str
+    output_tokens: str
+    cache_tokens: str
+    total_tokens: str
+
+
+@dataclass(frozen=True, slots=True)
+class SessionUsage:
+    is_skill: bool
+    days: dict[str, list[int]]
+
+
+def has_invocation(record: JSONValue) -> bool:
+    if isinstance(record, list):
+        return any(has_invocation(item) for item in record)
+    if not isinstance(record, dict):
+        return False
+    command = record.get("command")
+    if isinstance(command, str) and SKILL_MARKER.search(command):
+        return True
+    return any(
+        has_invocation(value)
+        for value in record.values()
+        if isinstance(value, (dict, list))
+    )
+
+
+def scan_session(path: Path) -> SessionUsage:
     is_skill = False
-    per_day = {}
+    per_day: dict[str, list[int]] = {}
     session_date = None
-    with path.open("r", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if not is_skill and SKILL_MARKER.search(line):
-                is_skill = True
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
             try:
-                record = json.loads(line)
+                record: JSONValue = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            ts = record.get("timestamp")
-            if session_date is None and isinstance(ts, str) and len(ts) >= 10:
-                session_date = ts[:10]
-            usage = usage_of(record)
-            if usage is None:
+            if not isinstance(record, dict):
                 continue
-            day = session_date
-            if isinstance(ts, str) and len(ts) >= 10:
-                day = ts[:10]
-            agg = per_day.setdefault(day, {"input": 0, "output": 0, "cache": 0})
-            # Claude Code usage names (input_tokens, ...) and Pi usage names
-            # (input, output, cacheRead, cacheWrite) both map into one row.
-            agg["input"] += int(usage.get("input_tokens") or usage.get("input") or 0)
-            agg["output"] += int(usage.get("output_tokens") or usage.get("output") or 0)
-            agg["cache"] += int(
-                (usage.get("cache_creation_input_tokens") or 0)
-                + (usage.get("cache_read_input_tokens") or 0)
-                + (usage.get("cacheRead") or 0)
-                + (usage.get("cacheWrite") or 0)
-            )
-    return is_skill, per_day
+            message = record.get("message")
+            if not isinstance(message, dict):
+                message = {}
+            is_skill = is_skill or has_invocation(message.get("content", []))
+            ts = record.get("timestamp")
+            try:
+                day = (
+                    date.fromisoformat(ts[:10]).isoformat()
+                    if isinstance(ts, str)
+                    else session_date
+                )
+            except ValueError:
+                continue
+            session_date = session_date or day
+            usage = message.get("usage", record.get("usage"))
+            if not day or not isinstance(usage, dict) or not usage:
+                continue
+            keys = [
+                "input_tokens",
+                "input",
+                "output_tokens",
+                "output",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+                "cacheRead",
+                "cacheWrite",
+            ]
+            if not any(key in usage for key in keys):
+                continue
+            counts = [usage.get(key, 0) for key in keys]
+            if any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in counts
+            ):
+                continue
+            tokens = {
+                key: value
+                for key, value in usage.items()
+                if isinstance(value, int) and not isinstance(value, bool)
+            }
+            values = [
+                tokens.get("input_tokens", tokens.get("input", 0)),
+                tokens.get("output_tokens", tokens.get("output", 0)),
+                sum(tokens.get(key, 0) for key in keys[4:]),
+            ]
+            agg = per_day.setdefault(day, [0, 0, 0])
+            for index, value in enumerate(values):
+                agg[index] += value
+    return SessionUsage(is_skill, per_day)
 
 
-def main():
+def expand_home(path: str) -> Path:
+    if path == "~":
+        return Path.home()
+    return Path.home() / path[2:] if path.startswith("~/") else Path(path)
+
+
+def pig_session_roots(override: str | None) -> list[Path]:
+    if override:
+        return [expand_home(override)]
+    if os.environ.get("PIG_USE_PI_DIRS") == "1":
+        agent = expand_home(
+            os.environ.get("PI_CODING_AGENT_DIR") or str(Path.home() / ".pi/agent")
+        )
+    else:
+        root = Path.home() / ".pig"
+        if xdg := os.environ.get("XDG_CONFIG_HOME"):
+            root = expand_home(xdg) / "pig"
+        if home := os.environ.get("PIG_HOME"):
+            root = expand_home(home)
+        agent = (
+            expand_home(os.environ["PIG_CODING_AGENT_DIR"])
+            if os.environ.get("PIG_CODING_AGENT_DIR")
+            else root / "agent"
+        )
+    return [agent / "sessions", Path.home() / ".config/pig/agent/sessions"]
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--claude-dir",
-        default=os.path.expanduser("~/.claude"),
-        help="Claude Code home (default: ~/.claude)",
-    )
+    parser.add_argument("--claude-dir", default=str(Path.home() / ".claude"))
     parser.add_argument(
         "--pi-dir",
-        default=None,
-        help="Pi agent session/transcript directory (no default; e.g. ~/.timesheet/pi-profile)",
+        default=str(
+            expand_home(
+                os.environ.get("PI_CODING_AGENT_DIR") or str(Path.home() / ".pi/agent")
+            )
+            / "sessions"
+        ),
     )
     parser.add_argument(
-        "--out",
-        default="benchmarks/tokens.csv",
-        help="CSV to append to (default: benchmarks/tokens.csv)",
+        "--pig-dir",
+        help="override pig environment/default stores and the legacy fallback",
     )
+    parser.add_argument("--out", default=str(REPO / "benchmarks/tokens.csv"))
     args = parser.parse_args()
-
-    out_path = pathlib.Path(args.out)
-    existing = set()
+    sources = [
+        ("claude", Path(args.claude_dir) / "projects"),
+        ("pi", Path(args.pi_dir)),
+    ]
+    sources.extend(
+        ("pig", root)
+        for root in dict.fromkeys(
+            root.resolve() for root in pig_session_roots(args.pig_dir)
+        )
+    )
+    transcripts: dict[Path, tuple[Path, set[str]]] = {}
+    for runtime, root in sources:
+        for path in sorted(root.glob("**/*.jsonl")):
+            transcripts.setdefault(path.resolve(), (path, set()))[1].add(runtime)
+    out_path = Path(args.out)
+    rows: dict[tuple[str, str], TokenRow] = {}
     if out_path.exists():
-        with out_path.open("r", newline="", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
-                existing.add((row.get("date"), row.get("session_id")))
-
-    sources = [("claude", pathlib.Path(args.claude_dir), ["projects"])]
-    if args.pi_dir:
-        sources.append(("pi", pathlib.Path(args.pi_dir), None))
-
-    rows = []
-    for runtime, root, subdirs in sources:
-        for transcript in iter_transcripts(root, subdirs):
-            session_id = f"{runtime}:{transcript.stem}"
-            try:
-                is_skill, per_day = scan_session(transcript)
-            except OSError:
-                continue
-            if not is_skill:
-                continue
-            for day, usage in sorted(per_day.items()):
-                if (day, session_id) in existing:
-                    continue
-                total = usage["input"] + usage["output"] + usage["cache"]
-                rows.append(
-                    {
-                        "date": day,
-                        "session_id": session_id,
-                        "input_tokens": usage["input"],
-                        "output_tokens": usage["output"],
-                        "cache_tokens": usage["cache"],
-                        "total_tokens": total,
-                    }
+        with out_path.open(newline="", encoding="utf-8") as stream:
+            for row in csv.DictReader(stream):
+                rows[row["date"], row["session_id"]] = TokenRow(
+                    date=row["date"],
+                    session_id=row["session_id"],
+                    input_tokens=row["input_tokens"],
+                    output_tokens=row["output_tokens"],
+                    cache_tokens=row["cache_tokens"],
+                    total_tokens=row["total_tokens"],
                 )
-                existing.add((day, session_id))
-
-    if not rows:
-        print("tokens.py: no new skill sessions to record")
-        if out_path.exists():
-            with out_path.open("r", encoding="utf-8") as fh:
-                tail = fh.read().splitlines()[-3:]
-            for line in tail:
-                print("  " + line)
+    captured = 0
+    for path, runtimes in transcripts.values():
+        runtime = (
+            "+".join(sorted(runtimes)) + "-shared"
+            if len(runtimes) > 1
+            else next(iter(runtimes))
+        )
+        try:
+            session = scan_session(path)
+        except OSError:
+            print("tokens.py: unreadable transcript skipped", file=sys.stderr)
+            continue
+        if not session.is_skill:
+            continue
+        for day, values in session.days.items():
+            if (
+                runtimes <= {"pi", "pig"}
+                and (day, f"pi+pig-shared:{path.stem}") in rows
+            ):
+                runtime = "pi+pig-shared"
+            session_id = f"{runtime}:{path.stem}"
+            for producer in runtimes:
+                rows.pop((day, f"{producer}:{path.stem}"), None)
+            rows[day, session_id] = TokenRow(
+                date=day,
+                session_id=session_id,
+                input_tokens=str(values[0]),
+                output_tokens=str(values[1]),
+                cache_tokens=str(values[2]),
+                total_tokens=str(sum(values)),
+            )
+            captured += 1
+    if not captured:
+        print("tokens.py: usage unavailable; no matching sessions with valid usage")
         return 0
-
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    is_new = not out_path.exists()
-    with out_path.open("a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=FIELDS)
-        if is_new:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", newline="", encoding="utf-8", dir=out_path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            writer = csv.DictWriter(stream, fieldnames=FIELDS)
             writer.writeheader()
-        writer.writerows(rows)
-    for row in rows:
+            writer.writerows(rows[key] for key in sorted(rows))
+        os.replace(temporary, out_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    print(f"tokens.py: refreshed {captured} observed session-day row(s) in {out_path}")
+    for row in rows.values():
         print(
-            f"tokens.py: {row['date']} session {row['session_id'][:20]}… "
-            f"in={row['input_tokens']} out={row['output_tokens']} "
-            f"cache={row['cache_tokens']} total={row['total_tokens']}"
+            f"tokens.py: {row['session_id']} {row['date']} total={row['total_tokens']}"
         )
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (OSError, csv.Error, KeyError) as error:
+        print(
+            f"tokens.py: capture unavailable ({type(error).__name__})", file=sys.stderr
+        )
+        sys.exit(1)
