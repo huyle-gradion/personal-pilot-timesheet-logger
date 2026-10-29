@@ -158,6 +158,11 @@ func (c *Config) validateWorkHours() error {
 // reproduces exact R2 behavior. Endpoint and credential values are never echoed
 // in a diagnostic.
 func (c *Config) validateR3() error {
+	if c.Gradion != nil && c.Gradion.DefaultClassification != nil {
+		if err := c.Gradion.DefaultClassification.normalize(); err != nil {
+			return err
+		}
+	}
 	if c.Migration != nil {
 		m := c.Migration
 		if m.Enabled {

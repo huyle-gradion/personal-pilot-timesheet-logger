@@ -104,7 +104,7 @@ bin/timesheet run             [--config <path>] [--env-file <path>] [--date <dat
 bin/timesheet record          [--config <path>] [--env-file <path>] [--date <date>] (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>)
 bin/timesheet stage           [--config <path>] [--env-file <path>] --date <date> [--project <id>]
 bin/timesheet classifications [--config <path>] [--env-file <path>] --query <text>
-bin/timesheet classify        [--config <path>] [--env-file <path>] --date <date> --file <choices.json> [--project <id>]
+bin/timesheet classify        [--config <path>] [--env-file <path>] --date <date> (--file <choices.json> | --configured-default) [--project <id>]
 bin/timesheet save            [--config <path>] [--env-file <path>] --date <date> [--project <id>]
 bin/timesheet plan            [--config <path>] [--env-file <path>] --date <date>
 bin/timesheet reconcile       [--config <path>] [--env-file <path>] --date <date>
@@ -123,6 +123,23 @@ stdin and stdout plus the exact typed `plan_id`/`approval_id` (not proof of
 human presence — a pty wrapper defeats it), so the agent never attempts them;
 a submit is never auto-retried, and unknown outcomes stay unresolved until a
 human resolves them.
+
+To configure an authoritative default, enable Gradion, explicitly query
+`classifications --query <text>`, and review one returned option. Set
+`gradion.default_classification` to its `catalog_id`, `classification_id` from
+the option's `id`, `code`, `name` and `activity_type`. All five fields are required.
+The example config uses synthetic placeholders; replace them with the reviewed
+receipt or remove the optional object. This differs from suggestion-only
+`projects[].default_classification`.
+
+`next` then derives `classify --configured-default` for unselected unsaved
+intervals, including meetings and split chunks. It reads only that cached
+catalog and preserves existing explicit choices. To override an interval, apply
+a reviewed `classify --file` choice before filling the rest with the default.
+Missing or mismatched cache bindings stop without fetching; explicitly refresh
+and review the binding, or use `--file`. Stale sidecars require reviewed `--file`
+repair. Changing the default never rewrites existing choices or saved days.
+Approval and submission retain their live semantic verification.
 
 ## Optional launcher/TUI target
 

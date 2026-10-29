@@ -2007,7 +2007,7 @@ func (s *Session) classifications(req Request) (ClassificationsReceipt, error) {
 		next.Remote.Catalogs = map[string]*CatalogRecord{}
 	}
 	next.Remote.Catalogs[cat.CatalogID] = cat
-	pruneCatalogs(next.Remote.Catalogs)
+	pruneCatalogs(next.Remote.Catalogs, configuredDefaultCatalogID(s.cfg))
 	if err := s.store.CommitState(next); err != nil {
 		return ClassificationsReceipt{}, err
 	}
@@ -2021,7 +2021,7 @@ func (s *Session) classifications(req Request) (ClassificationsReceipt, error) {
 	return receipt, nil
 }
 
-func pruneCatalogs(catalogs map[string]*CatalogRecord) {
+func pruneCatalogs(catalogs map[string]*CatalogRecord, pinnedID string) {
 	if len(catalogs) <= maxStoredCatalogs {
 		return
 	}
@@ -2031,10 +2031,14 @@ func pruneCatalogs(catalogs map[string]*CatalogRecord) {
 	}
 	all := make([]aged, 0, len(catalogs))
 	for id, c := range catalogs {
+		if id == pinnedID {
+			continue
+		}
 		all = append(all, aged{id: id, at: c.ObservedAt})
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].at < all[j].at })
-	for i := 0; i < len(all)-maxStoredCatalogs; i++ {
+	remove := len(catalogs) - maxStoredCatalogs
+	for i := 0; i < remove; i++ {
 		delete(catalogs, all[i].id)
 	}
 }

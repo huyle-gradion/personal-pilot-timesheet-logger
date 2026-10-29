@@ -54,6 +54,8 @@ One grouped-topic entry per draft block; no draft fields, block times or `PRs:` 
 
 ### `classifications`
 
+When `next` emits a `classify --configured-default` action, execute that argv directly and resume `next`. The binary uses the operator's cached `gradion.default_classification` binding for every unselected unsaved interval, including meetings and split chunks. Existing explicit selections win. This action needs no model judgment, catalog query or answer file. A missing/mismatched cached binding or stale sidecar stops with a repair instruction. Configuration changes affect future unselected intervals only. Saved-day classification recovery remains a reviewed judgment.
+
 Use only `judgment.blocks[]`: each entry's `interval_id`, `block_id`, `start`, `end` and `description`. The report is self-contained; do not read a draft, descriptions file or `$TMP` artifact for this judgment. Query the catalog per distinct `description`/topic with `"$TS_BINARY" classifications --query "<topic text>"`, carrying the same `--config`/`--env-file` flags given to `next`; the read is live (network + credential) and fails closed. Choose exactly one returned option per interval, then write to `judgment.answer_file`:
 
 ```json
