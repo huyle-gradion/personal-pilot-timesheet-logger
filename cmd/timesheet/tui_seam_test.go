@@ -4,80 +4,80 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
-// --- tui verb seam: the TUI pipeline is the next pipeline --------------------
+// --- tui verb boundary: gate, store lock, and the loop pipeline ---------------
 //
-// Unit-1 acceptance: the tui verb derives the exact document `next` derives
-// over the same artifacts, the observation builder keeps the caller's store
-// open (the TUI holds the lock across ticks), and typed errors survive the
-// in-process session call.
+// The TUI's derivation pipeline is the next pipeline; the gates fire before
+// the alt screen starts; typed errors survive the in-process session call.
 
-// TestTuiVerbMatchesNextByteForByte is the seam's acceptance proof: for the
-// same scratch day and artifacts, tui's stdout is byte-identical to next's.
-func TestTuiVerbMatchesNextByteForByte(t *testing.T) {
+// pretendTTY overrides the terminal gate so tests can reach preflight.
+func pretendTTY(t *testing.T) {
+	t.Helper()
+	saved := ttyGate
+	ttyGate = func() bool { return true }
+	t.Cleanup(func() { ttyGate = saved })
+}
+
+// TestTuiPipelineMatchesNextDerivation is the seam's acceptance proof: after
+// one run leaves a draft artifact, the snapshot preflightTui derives is the
+// exact document `next` prints for the same day.
+func TestTuiPipelineMatchesNextDerivation(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
+	pretendTTY(t)
 	cfg := writeRunConfig(t)
 	srv, _ := startFeed(t)
 	envFile := writeRunEnvFile(t, srv.URL)
 	day := "2026-10-20"
 	args := []string{"--config", cfg, "--env-file", envFile, "--date", day}
 
-	// One run leaves a draft artifact, so the derivation has real content.
 	if _, _, err := captureOutput(t, func() error { return runRun(args) }); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-
 	nextOut, _, err := captureOutput(t, func() error { return runNext(args) })
 	if err != nil {
 		t.Fatalf("next: %v", err)
 	}
-	tuiOut, _, err := captureOutput(t, func() error { return runTui(args) })
+	m, err := preflightTui(&tuiFlags{configPath: cfg, envFile: envFile, date: day})
 	if err != nil {
-		t.Fatalf("tui: %v", err)
+		t.Fatalf("preflight: %v", err)
 	}
+	tuiOut, err := json.MarshalIndent(m.snap.action, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tuiOut = append(tuiOut, '\n')
 	if !bytes.Equal(nextOut, tuiOut) {
-		t.Fatalf("tui stdout differs from next stdout:\nnext: %s\ntui:  %s", nextOut, tuiOut)
+		t.Fatalf("tui snapshot differs from next's document:\nnext: %s\ntui:  %s", nextOut, tuiOut)
 	}
-	var doc nextAction
-	if err := json.Unmarshal(tuiOut, &doc); err != nil {
-		t.Fatalf("tui did not print one typed JSON action: %v\n%s", err, tuiOut)
+	if m.snap.action.State != stateJudgment || m.snap.action.Judgment == nil ||
+		m.snap.action.Judgment.Kind != judgmentBlockDescriptions {
+		t.Fatalf("snapshot = %+v, want the block-descriptions judgment", m.snap.action)
 	}
-	if doc.Day != day || doc.State != stateJudgment || doc.Judgment == nil {
-		t.Fatalf("tui derived %+v, want the block-descriptions judgment for %s", doc, day)
-	}
+	_ = m.env.h.store.Close()
 }
 
-// TestBuildNextObservationKeepsStoreOpen pins the property the TUI depends on:
-// the builder never closes the caller's store, so successive ticks reuse one
-// held lock.
-func TestBuildNextObservationKeepsStoreOpen(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+// TestTuiVerbRefusesNonTerminal pins the structural gate: without terminals on
+// both stdio sides the verb refuses before opening any store.
+func TestTuiVerbRefusesNonTerminal(t *testing.T) {
 	cfgPath := writeRunConfig(t)
-	cfg, err := timesheet.LoadConfig(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	day := "2026-10-20"
-	store, err := timesheet.OpenStore(cfg.StatePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = store.Close() }()
-	for tick := 0; tick < 2; tick++ {
-		if _, stop, err := buildNextObservation(cfg, cfgPath, "", day, "", store); err != nil || stop != nil {
-			t.Fatalf("tick %d: err=%v stop=%+v, want a clean observation", tick, err, stop)
-		}
+	_, _, runErr := captureOutput(t, func() error {
+		return runTui([]string{"--config", cfgPath, "--date", "2026-10-20"})
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "interactive-only") {
+		t.Fatalf("tui without a terminal = %v, want the interactive-only refusal", runErr)
 	}
 }
 
-// TestTuiVerbRefusesLockedStore checks the single-writer boundary: a second
-// process shape (here, a held store in the same test) meets the store's own
-// store_locked refusal, typed end to end.
+// TestTuiVerbRefusesLockedStore checks the single-writer boundary: a held
+// store (a second process shape) meets the store's own store_locked refusal,
+// typed end to end, before any screen starts.
 func TestTuiVerbRefusesLockedStore(t *testing.T) {
+	pretendTTY(t)
 	cfgPath := writeRunConfig(t)
 	cfg, err := timesheet.LoadConfig(cfgPath)
 	if err != nil {
