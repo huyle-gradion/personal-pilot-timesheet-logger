@@ -15,6 +15,7 @@ func usage() {
 
 Usage:
   timesheet version
+  timesheet setup [--project <id>=<name>[=<classification>]]... [--seed-config <path>] [--tz <IANA>]
   timesheet serve --config <path> --env-file <path>
   timesheet collect [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
   timesheet draft [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>]
@@ -36,12 +37,30 @@ Usage:
   timesheet submit-status [--config <path>] [--env-file <path>] --date <YYYY-MM-DD>
   timesheet resolve-write [--config <path>] [--env-file <path>] --file <decision.json>
 
-Except serve (whose paths the launcher supplies), every command's --config
-defaults to $HOME/.timesheet/config.json — a missing default is an error that
-names the file and the fix — and --env-file defaults to
-$HOME/.timesheet/.env.local when that file exists (no file values otherwise).
-An explicit flag always wins verbatim; an explicit --env-file that cannot be
-read still fails.
+Except serve (whose paths the launcher supplies), every command resolves its
+configuration in three tiers — an explicit --config, then ./timesheet.json in
+the current directory when it exists (project-local), then
+$HOME/.timesheet/config.json — and reports the chosen path once on stderr. A
+missing configuration is an error naming both candidates and the fixes. No
+ancestor directory is ever searched and the tiers are never merged. --env-file
+defaults to $HOME/.timesheet/.env.local when that file exists (no file values
+otherwise). An explicit flag always wins verbatim; an explicit --env-file that
+cannot be read still fails.
+
+The setup subcommand creates $HOME/.timesheet (mode 0700) with config.json and
+.env.local (mode 0600) exactly once. It validates the generated configuration
+in memory before its first target effect, writes each file through a private
+temporary file that is fsynced and hard-linked into place with no replace, and
+never deletes, replaces, repairs or chmods an existing file in any state — a
+present config that fails to load is reported verbatim and left
+byte-identical, and a present env file is never read or parsed. Project ids and
+names are never invented: pass repeatable
+--project '<id>=<name>[=<classification>]' values or a loadable --seed-config;
+without either, a machine with no configuration is told the exact remedy and
+nothing is created. The timezone is an explicit --tz or the host's IANA zone,
+never a guessed Local or UTC zone. State paths in generated configurations are
+absolute; existing configuration files keep today's loader semantics unchanged,
+including a relative state_path.
 
 The collect/draft/run/record/status subcommands are the deterministic headless
 surface used by the timesheet skill: collect performs one bounded collection
@@ -257,6 +276,18 @@ func main() {
 			os.Exit(2)
 		}
 		fmt.Printf("timesheet %s (protocol schema %d)\n", timesheet.AppVersion, timesheet.ProtocolSchema)
+	case "setup":
+		if err := runSetup(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "timesheet: %s\n", err)
+			var usageErr *setupUsageError
+			if errors.As(err, &usageErr) {
+				os.Exit(2)
+			}
+			os.Exit(1)
+		}
 	case "serve":
 		if err := runServe(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
