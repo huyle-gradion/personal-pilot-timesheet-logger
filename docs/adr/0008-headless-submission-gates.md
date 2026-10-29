@@ -9,6 +9,10 @@ related:
 
 # Headless submission gates
 
+The terminal-only policy in this decision is superseded for the separate
+opt-in chat-confirmed path by [ADR 0009](0009-chat-confirmed-submission.md).
+Legacy terminal commands retain the protections described here.
+
 ## Context
 
 The local workflow (`collect`/`draft`/`run`/`record`/`status`) has been headless

@@ -58,7 +58,7 @@ JSON loop: each invocation prints exactly one `action` (run its `action.cmd`
 argv verbatim, never through a shell), `judgment` (write the model answer file
 it names, copying the report's `draft_digest`/`ledger_digest` verbatim),
 `stopped` (report the precise blocker and stop) or `human_gates` (run
-read-only `submit-status`, print the exact `approve`/`submit` commands, stop).
+read-only `submit-status`, report the ready plan, stop).
 The descriptions judgment reads only the draft the protocol names; the
 classification judgment is self-contained in `judgment.blocks[]` and needs no
 draft or `$TMP` artifact. A repeated failed action is repaired only when the
@@ -72,3 +72,12 @@ attempting them is a contract violation. Submission is never auto-retried, and
 unknown outcomes stay unresolved until a human resolves them. Run the skill's
 mandatory terminal metrics helper on success and blocked exits. Capture errors
 are reported without blocking the day.
+
+## Chat-confirmed submission
+
+On `/submit` or a natural-language request to submit, follow
+`.agents/skills/submit/SKILL.md`. Review the exact day and all operations first,
+then wait for explicit confirmation in chat. Only that confirmation authorizes
+one `agent-submit` invocation with the exact reviewed plan and review IDs.
+This is agent-enforced consent, not proof of human presence. Logging or status
+never authorizes writes. The optional trusted Pi adapter gains no write tools.
