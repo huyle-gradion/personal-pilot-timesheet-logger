@@ -3,8 +3,8 @@
 **Purpose.** Settle, before any code, what `internal/benchmark` is allowed to measure now that
 `internal/metrics` measures the harness session — and retire the pieces that answer the wrong
 question. Design only: nothing here is implemented. Every anchor was re-read at `main` `63f3018`,
-and the stack between `63f3018` and this branch touches only `docs/orchestration/state.md`
-(hash-verified in review); where an anchor from #69/#73 had moved or changed status, the
+and the stack between `63f3018` and this branch touched only the personal workflow state file
+since moved out-of-tree (hash-verified in review); where an anchor from #69/#73 had moved or changed status, the
 correction is stated inline. The independent review rounds are recorded in the change's review
 record, not here.
 
@@ -15,7 +15,7 @@ record, not here.
 | question | what does running the `timesheet` CLI cost per day? | what did the agent's session cost? |
 | unit | one day's CSV row | one run record + one day's aggregate |
 | measures | wall clock + peak RSS of a `timesheet` invocation; the `[AI]` editorial child call's tokens; entries | per-call input/output/cache-read/cache-write/reasoning, durations, attributed steps |
-| store | `benchmarks/metrics.csv` (`csv_store.go:15`) | `~/.timesheet/metrics` (`metrics.Store`) |
+| store | `benchmarks/metrics.csv` (`csv_store.go:15`; personal data, untracked in the repository) | `~/.timesheet/metrics` (`metrics.Store`) |
 | never answers | harness tokens, cache-hit rate, model price | wall clock, RSS, editorial spend (day-granular, copied from the record) |
 
 Both feed the 3.6 proof; neither substitutes for the other. ADR-0006:24–27 keeps both deliberately.
@@ -389,7 +389,8 @@ not the CSV's `TotalTokens`. The UNKNOWN RULE above is unchanged and now governs
 `unknown`, never `0`. The recorded rows and the CSV reader keep their nil-token behavior. See
 [Reversal, 2026-10-21](#reversal-2026-10-21-126-the-charts-source-moves).)*
 
-**The three historical rows** (`benchmarks/metrics.csv:2-4`; 2026-10-06/07/08; totals 180/295/287;
+**The three historical rows** (`benchmarks/metrics.csv:2-4`, archived out-of-tree since the CSV is
+untracked personal data; 2026-10-06/07/08; totals 180/295/287;
 `cache_tokens` 0) are consistent with this scope: a few hundred **editorial-child** tokens per day
 is what one `[AI]` call plus a retry looks like, and `cache_tokens 0` means the editor reported no
 cache-read that day — not that the harness used none. The provenance is an inference from

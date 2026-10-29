@@ -12,7 +12,7 @@ decision: "docs/adr/0005-review-first-timesheet-architecture.md"
 
 The owner confirmed this design after 52 interview questions on 2026-10-09. It replaces the original assignment requirements as the product baseline. Existing implementation and milestones are historical deliverables, not evidence that this redesign is implemented.
 
-Source: `/Users/huy.leminh/ai-database/Note No.1.md`, followed by the owner's interview answers and final confirmation. Definitions live in [GLOSSARY.md](../GLOSSARY.md). The architectural replacement is recorded in [ADR 0005](adr/0005-review-first-timesheet-architecture.md), mirrored as vault ADR-006.
+Source: the owner's private notes vault, followed by the owner's interview answers and final confirmation. Definitions live in [GLOSSARY.md](../GLOSSARY.md). The architectural replacement is recorded in [ADR 0005](adr/0005-review-first-timesheet-architecture.md), mirrored as vault ADR-006.
 
 Target the owner's macOS environment and Gradion first. Additional evidence sources must be possible without building a general timesheet platform. Retain Go and reuse compatible components after assessing them against this specification. Documentation approval is not implementation authorization.
 

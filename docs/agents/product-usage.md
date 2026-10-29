@@ -37,7 +37,7 @@ install the latest Charm modules; the pinned versions build as-is.
 Build a local binary once and use it as `$TS`:
 
 ```bash
-cd /Users/you/src/assignment-1
+cd /Users/you/src/pilot-timesheet
 go build -o ./bin/timesheet ./cmd/timesheet      # build once
 TS="./bin/timesheet"
 ```
