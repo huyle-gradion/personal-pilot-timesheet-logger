@@ -1,6 +1,6 @@
-# Timesheet interface (`0.2.0-dev.5`)
+# Timesheet interface (`0.2.0-dev.6`)
 
-Application version: `0.2.0-dev.5` (unreleased development stamp; the
+Application version: `0.2.0-dev.6` (unreleased development stamp; the
 public release line remains `0.1.1` until this ships).
 Protocol schema: `1`. State schema: `3`.
 
