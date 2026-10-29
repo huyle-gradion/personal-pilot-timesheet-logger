@@ -2,6 +2,29 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
+## 0.2.0-dev.9
+
+- Add the `tui` verb (#221): a native Go terminal UI over the same store,
+  session and derivation the CLI verbs use. The day screen renders the loop's
+  own `next` action verbatim (state, step, why, judgment protocol, human-gate
+  counts), `enter` runs the derived act in-process over one held store lock
+  (run, record, stage, classify, save, plan), judgment authoring writes the
+  loop's own answer files with `draft_digest`/`ledger_digest` copied verbatim
+  (no second validation path), `stale_revision` re-runs review and reopens the
+  form fresh, and approve/submit sit behind display-before-ask typed-echo gates
+  that re-run `preview_plan`/`submission_status` immediately before emitting
+  `approve_plan`/`submit_plan`. Quit sends `close` and discards unsaved session
+  state; non-terminal stdio and `store_locked` refuse before the alt screen
+  starts. No AI harness and no model calls exist on this path. The
+  TTY-gated `approve`, `submit` and `resolve-write` verbs are unchanged and the
+  TUI never invokes them.
+- Extract shared verb entry cores (`collectDraft`, `composeDescriptionsOnly`,
+  `stageAndReplay`, `confirmAndSave`, `classifyFileDay`, `classifyDefaultDay`,
+  `saveDay`) so the verbs and the TUI run one pipeline; verb behavior and
+  printed receipts are unchanged. `headlessSession.call` returns the op's own
+  typed `*timesheet.AppError` with byte-identical printed output.
+- Align Go, adapter negotiation and package/root-lock stamps at `0.2.0-dev.9`.
+
 ## 0.2.0-dev.8
 
 - Add the separate `/submit` skill and explicit `agent-submit` review/submit

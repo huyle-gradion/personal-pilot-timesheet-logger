@@ -19,10 +19,10 @@ import (
 	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
-// nextFlags is next's own surface. It is deliberately separate from
-// parseHeadlessFlags: next also carries --project and --do, and it resolves an
-// omitted --date through the binary's existing helper without depending on the
-// shared dateOptionalCommands map being wired for "next" yet.
+// nextFlags is the surface shared by the next and tui verbs: both take the
+// store-path flags, --date and --project, and both resolve an omitted --date
+// through the binary's existing helper. --do is next's reserved flag; tui
+// refuses it in its own runner.
 type nextFlags struct {
 	configPath string
 	envFile    string
@@ -31,8 +31,8 @@ type nextFlags struct {
 	do         bool
 }
 
-func parseNextFlags(args []string) (*nextFlags, error) {
-	flags := flag.NewFlagSet("next", flag.ContinueOnError)
+func parseNextFlags(name string, args []string) (*nextFlags, error) {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &nextFlags{}
 	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
@@ -44,16 +44,16 @@ func parseNextFlags(args []string) (*nextFlags, error) {
 		return nil, err
 	}
 	if flags.NArg() != 0 {
-		return nil, fmt.Errorf("next does not accept positional arguments")
+		return nil, fmt.Errorf("%s does not accept positional arguments", name)
 	}
-	configPath, envFile, err := resolveStoreFlags("next", f.configPath, f.envFile)
+	configPath, envFile, err := resolveStoreFlags(name, f.configPath, f.envFile)
 	if err != nil {
 		return nil, err
 	}
 	f.configPath, f.envFile = configPath, envFile
 	if dateSupplied(flags) {
 		if _, err := time.Parse("2006-01-02", f.date); err != nil {
-			return nil, fmt.Errorf("next: --date must be YYYY-MM-DD")
+			return nil, fmt.Errorf("%s: --date must be YYYY-MM-DD", name)
 		}
 	}
 	return f, nil
@@ -67,7 +67,7 @@ func parseNextFlags(args []string) (*nextFlags, error) {
 // errors, config load failures and the store's own lock refusal
 // (store_locked) remain nonzero process errors.
 func runNext(args []string) error {
-	f, err := parseNextFlags(args)
+	f, err := parseNextFlags("next", args)
 	if err != nil {
 		return err
 	}
@@ -95,13 +95,37 @@ func runNext(args []string) error {
 	if err != nil {
 		return err
 	}
-	exe, err := absoluteExecutable()
+	store, err := timesheet.OpenStore(cfg.StatePath)
 	if err != nil {
 		return err
 	}
-	dir, err := dayArtifactsDir(cfg.StatePath, day)
+	obs, stop, err := buildNextObservation(cfg, configPath, envFile, day, f.project, store)
+	if closeErr := store.Close(); closeErr != nil {
+		return fmt.Errorf("next: the store lock cannot be released")
+	}
 	if err != nil {
 		return err
+	}
+	if stop != nil {
+		return printJSON(*stop)
+	}
+	return printJSON(deriveDayNext(obs))
+}
+
+// buildNextObservation assembles one day's nextObservation over the caller's
+// already-open store. The caller owns the store's lifetime: runNext closes it
+// before deriving or printing, and the tui verb holds the lock across ticks.
+// An underivable STATE (unreadable durable fact, artifact or sidecar) returns
+// a typed stop document the caller prints; only process-level failures (the
+// executable path, project resolution) return an error.
+func buildNextObservation(cfg *timesheet.Config, configPath, envFile, day, project string, store *timesheet.Store) (nextObservation, *nextAction, error) {
+	exe, err := absoluteExecutable()
+	if err != nil {
+		return nextObservation{}, nil, err
+	}
+	dir, err := dayArtifactsDir(cfg.StatePath, day)
+	if err != nil {
+		return nextObservation{}, nil, err
 	}
 	obs := nextObservation{
 		Day:              day,
@@ -114,44 +138,36 @@ func runNext(args []string) error {
 		SidecarPath:      timesheet.ChoicesPath(cfg.StatePath, day),
 		GradionEnabled:   cfg.Gradion != nil && cfg.Gradion.Enabled,
 	}
-	obs.Project, obs.ProjectBlocked, obs.ProjectIDs, err = resolveNextProject(cfg, f.project)
+	obs.Project, obs.ProjectBlocked, obs.ProjectIDs, err = resolveNextProject(cfg, project)
 	if err != nil {
-		return err
+		return nextObservation{}, nil, err
 	}
 
-	// Durable facts are read under the store's exclusive lock and the store is
-	// closed before derivation. An unreadable durable fact is an underivable
-	// state and prints a typed stopped document; only CLI/flag errors and the
-	// store's own lock refusal (store_locked) stay nonzero process errors.
-	store, err := timesheet.OpenStore(cfg.StatePath)
-	if err != nil {
-		return err
-	}
+	// Durable facts are read under the store's exclusive lock, which the caller
+	// holds. An unreadable durable fact is an underivable state and returns a
+	// typed stop document; only CLI/flag errors and the store's own lock
+	// refusal (store_locked) stay nonzero process errors.
 	snapshot, snapErr := timesheet.ReadWorkflowSnapshot(cfg, store, day)
-	if closeErr := store.Close(); closeErr != nil {
-		return fmt.Errorf("next: the store lock cannot be released")
-	}
 	if snapErr != nil {
-		return printJSON(nextAction{Day: day}.withStop("cannot read the day's durable workflow facts: " + snapErr.Error()))
+		return obs, stoppedAction(day, "cannot read the day's durable workflow facts: "+snapErr.Error()), nil
 	}
 	obs.Workflow = snapshot
 
-	// The durable snapshot is read under the store lock and the store is closed
-	// before the artifacts are read (record never opens the store, so artifact
-	// files are lock-free by the binary's existing design). A writer racing
-	// between the two reads can only produce a conservative derivation: every
-	// derived verb re-validates its own inputs fail-closed, and next mutates
-	// nothing.
+	// The durable snapshot is read under the store lock while the artifact
+	// files are lock-free by the binary's existing design (record never opens
+	// the store). A writer racing between the two reads can only produce a
+	// conservative derivation: every derived verb re-validates its own inputs
+	// fail-closed, and next mutates nothing.
 	ledger, err := timesheet.ReadDayArtifacts(cfg.StatePath, day)
 	if err != nil {
-		return printJSON(nextAction{Day: day}.withStop("cannot read the day's recorded artifacts: " + err.Error()))
+		return obs, stoppedAction(day, "cannot read the day's recorded artifacts: "+err.Error()), nil
 	}
 	obs.Artifacts = ledger
 	if ledger.Entries != nil {
 		obs.Units = ledgerUnits(ledger.Entries.Entries, day)
 	}
 	if !snapshot.Finalized && snapshot.ConfiguredDefaultPresent && ledger.EntriesPresent && len(ledger.Entries.Entries) > 0 {
-		return printJSON(deriveDayNext(obs))
+		return obs, nil, nil
 	}
 
 	// One read per artifact. The draft is read for its content digest (the
@@ -162,7 +178,7 @@ func runNext(args []string) error {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
-		return printJSON(nextAction{Day: day}.withStop("cannot read the draft artifact " + obs.DraftPath + ": " + err.Error()))
+		return obs, stoppedAction(day, "cannot read the draft artifact "+obs.DraftPath+": "+err.Error()), nil
 	default:
 		obs.DraftPresent = true
 		obs.DraftDigest = draftDigest(draft)
@@ -175,16 +191,22 @@ func runNext(args []string) error {
 	}
 	obs.DescriptionsPresent, obs.DescriptionsBinding, err = readAnswerBinding(obs.DescriptionsPath, "draft_digest")
 	if err != nil {
-		return printJSON(nextAction{Day: day}.withStop("cannot read the descriptions answer " + obs.DescriptionsPath + ": " + err.Error()))
+		return obs, stoppedAction(day, "cannot read the descriptions answer "+obs.DescriptionsPath+": "+err.Error()), nil
 	}
 	answer, err := readClassificationAnswer(obs.ChoicesPath)
 	if err != nil {
-		return printJSON(nextAction{Day: day}.withStop("cannot read the classification answer " + obs.ChoicesPath + ": " + err.Error()))
+		return obs, stoppedAction(day, "cannot read the classification answer "+obs.ChoicesPath+": "+err.Error()), nil
 	}
 	obs.ChoicesPresent, obs.ChoicesBinding = answer.Present, answer.Binding
 	obs.Choices, obs.ChoicesError = answer.Selections, answer.SelectionError
+	return obs, nil, nil
+}
 
-	return printJSON(deriveDayNext(obs))
+// stoppedAction is withStop in the pointer form buildNextObservation returns;
+// nil stays the derived case.
+func stoppedAction(day, reason string) *nextAction {
+	n := nextAction{Day: day}.withStop(reason)
+	return &n
 }
 
 // resolveNextProject returns the exact project id derived commands carry. It

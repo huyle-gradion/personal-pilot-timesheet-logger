@@ -205,7 +205,10 @@ func (h *headlessSession) call(op string, req timesheet.Request) (any, error) {
 	}
 	resp, _ := h.session.HandleLine(line)
 	if resp.Error != nil {
-		return nil, fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+		// Typed errors survive: the protocol error carries the AppError's own
+		// code and message, and Error() renders the same "code: message" bytes
+		// the previous string wrap printed.
+		return nil, &timesheet.AppError{Code: resp.Error.Code, Message: resp.Error.Message}
 	}
 	return resp.Result, nil
 }
@@ -274,10 +277,23 @@ func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, string, e
 		return timesheet.Draft{}, "", err
 	}
 	defer h.done()
-	if _, err := h.call("open_day", timesheet.Request{Day: date}); err != nil {
+	draft, collectionID, err := collectDraft(h, date)
+	if err != nil {
 		return timesheet.Draft{}, "", err
 	}
-	res, err := h.call("collect", timesheet.Request{Day: date})
+	_, _ = h.call("close", timesheet.Request{})
+	return draft, collectionID, nil
+}
+
+// collectDraft is the collect+review+draft flow over one held session: open
+// day, one bounded collect, review, and the compact draft with its work-hours
+// annotation. It is the run verb's core and the tui verb's run act; the
+// session must be the caller's own.
+func collectDraft(h *headlessSession, day string) (timesheet.Draft, string, error) {
+	if _, err := h.call("open_day", timesheet.Request{Day: day}); err != nil {
+		return timesheet.Draft{}, "", err
+	}
+	res, err := h.call("collect", timesheet.Request{Day: day})
 	if err != nil {
 		return timesheet.Draft{}, "", err
 	}
@@ -285,7 +301,7 @@ func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, string, e
 	if result, ok := res.(timesheet.CollectResult); ok {
 		collectionID = result.CollectionID
 	}
-	res, err = h.call("review", timesheet.Request{Day: date})
+	res, err = h.call("review", timesheet.Request{Day: day})
 	if err != nil {
 		return timesheet.Draft{}, "", err
 	}
@@ -293,7 +309,6 @@ func buildDayDraft(configPath, envFile, date string) (timesheet.Draft, string, e
 	if !ok {
 		return timesheet.Draft{}, "", fmt.Errorf("draft: unexpected review payload")
 	}
-	_, _ = h.call("close", timesheet.Request{})
 	draft := timesheet.BuildDraft(review, timesheet.AppVersion)
 	// Work-hours annotation is presentation-only: it reads the loaded config's
 	// optional policy and the day's recorded timezone, and leaves every block
@@ -426,24 +441,7 @@ func runRecord(args []string) error {
 	}
 	var reviewed timesheet.ReviewedDraft
 	if f.draft != "" {
-		draftData, err := os.ReadFile(f.draft)
-		if err != nil {
-			return fmt.Errorf("record: the draft file cannot be read")
-		}
-		var draft timesheet.Draft
-		if err := json.Unmarshal(draftData, &draft); err != nil {
-			return fmt.Errorf("record: the draft file is not valid JSON for the expected draft schema")
-		}
-		descData, err := os.ReadFile(f.descriptions)
-		if err != nil {
-			return fmt.Errorf("record: the descriptions file cannot be read")
-		}
-		desc, err := timesheet.ParseDescriptions(descData)
-		if err != nil {
-			return err
-		}
-		reviewed, err = timesheet.ComposeReviewed(draft, desc)
-		if err != nil {
+		if reviewed, err = composeDescriptionsOnly(f.draft, f.descriptions); err != nil {
 			return err
 		}
 	} else {
@@ -476,6 +474,29 @@ func runRecord(args []string) error {
 		return err
 	}
 	return printJSON(receipt)
+}
+
+// composeDescriptionsOnly is the descriptions-only judgment input's core,
+// shared by the record verb and the tui verb's record act: read the draft and
+// the bound descriptions answer, and compose the reviewed draft.
+func composeDescriptionsOnly(draftPath, descriptionsPath string) (timesheet.ReviewedDraft, error) {
+	draftData, err := os.ReadFile(draftPath)
+	if err != nil {
+		return timesheet.ReviewedDraft{}, fmt.Errorf("record: the draft file cannot be read")
+	}
+	var draft timesheet.Draft
+	if err := json.Unmarshal(draftData, &draft); err != nil {
+		return timesheet.ReviewedDraft{}, fmt.Errorf("record: the draft file is not valid JSON for the expected draft schema")
+	}
+	descData, err := os.ReadFile(descriptionsPath)
+	if err != nil {
+		return timesheet.ReviewedDraft{}, fmt.Errorf("record: the descriptions file cannot be read")
+	}
+	desc, err := timesheet.ParseDescriptions(descData)
+	if err != nil {
+		return timesheet.ReviewedDraft{}, err
+	}
+	return timesheet.ComposeReviewed(draft, desc)
 }
 
 // runStatus prints the store status and the recorded entries summary for the
@@ -1341,72 +1362,101 @@ func runClassify(args []string) error {
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(f.file)
-	if err != nil {
-		return fmt.Errorf("classify: the choices file cannot be read")
-	}
-	selections, err := timesheet.ParseClassificationChoices(data)
-	if err != nil {
-		return err
-	}
 	h, err := openHeadless(f.configPath, f.envFile)
 	if err != nil {
 		return err
 	}
 	defer h.done()
-	res, err := h.call("open_day", timesheet.Request{Day: f.date})
+	// f.project passes through unresolved: only the not-yet-finalized branch
+	// needs a project, and it resolves there, so a finalized day still
+	// classifies without --project under a multi-project configuration.
+	receipt, err := classifyFileDay(h, cfg, f.date, f.project, f.file)
 	if err != nil {
 		return err
+	}
+	_, _ = h.call("close", timesheet.Request{})
+	return printJSON(receipt)
+}
+
+// classifyFileDay is classify --file's whole flow over one held session: read
+// the bound answer file, open the day, and either re-finalize the durable
+// intervals (no project needed) or resolve the project and re-derive the
+// staged set with the content-bound sidecar. The tui verb's classify act is
+// the same flow over its own held session.
+func classifyFileDay(h *headlessSession, cfg *timesheet.Config, date, project, answerFile string) (ClassifyReceipt, error) {
+	data, err := os.ReadFile(answerFile)
+	if err != nil {
+		return ClassifyReceipt{}, fmt.Errorf("classify: the choices file cannot be read")
+	}
+	selections, err := timesheet.ParseClassificationChoices(data)
+	if err != nil {
+		return ClassifyReceipt{}, err
+	}
+	res, err := h.call("open_day", timesheet.Request{Day: date})
+	if err != nil {
+		return ClassifyReceipt{}, err
 	}
 	summary, ok := res.(timesheet.DaySummary)
 	if !ok {
-		return fmt.Errorf("classify: unexpected open_day payload")
+		return ClassifyReceipt{}, fmt.Errorf("classify: unexpected open_day payload")
 	}
 	if len(summary.Confirmed.Segments) > 0 {
-		if err := checkSavedClassificationBinding(h, f.date, data); err != nil {
-			return err
+		if err := checkSavedClassificationBinding(h, date, data); err != nil {
+			return ClassifyReceipt{}, err
 		}
-		return runClassifyFinalized(h, f, summary, selections)
+		return runClassifyFinalized(h, date, answerFile, summary, selections)
 	}
-	project, err := resolveProject("classify", cfg, f.project)
+	project, err = resolveProject("classify", cfg, project)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
-	staged, err := applyStage(h, cfg, "classify", f.date, project, summary)
+	receipt, err := classifyFileCore(h, cfg, date, project, summary, selections)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
+	}
+	receipt.File = answerFile
+	return receipt, nil
+}
+
+// classifyFileCore is classify's not-yet-finalized core, shared by the verb
+// and the tui verb's classify act: re-derive the staged set, apply each
+// selection in interval_id order, and persist the selections content-bound to
+// the recorded blocks this derivation mapped them to.
+func classifyFileCore(h *headlessSession, cfg *timesheet.Config, date, project string, summary timesheet.DaySummary, selections map[string]timesheet.ClassificationChoiceEntry) (ClassifyReceipt, error) {
+	staged, err := applyStage(h, cfg, "classify", date, project, summary)
+	if err != nil {
+		return ClassifyReceipt{}, err
 	}
 	noteStageSkips("classify", staged)
-	applied, err := applySelections(h, f.date, summary.Revision, selections)
+	applied, err := applySelections(h, date, summary.Revision, selections)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
 	// Content-bind each selection to the recorded block this derivation just
 	// mapped its interval to, so a later replay can prove the day still holds
 	// the exact blocks the choices were made against (staged ids re-derive
 	// sequentially; without the binding an entries shift would re-attach a
 	// selection to the wrong successor interval).
-	blocks, err := stagedBlocks(cfg, f.date)
+	blocks, err := stagedBlocks(cfg, date)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
 	bound := make(map[string]timesheet.ClassificationChoiceEntry, len(selections))
 	for _, a := range applied {
 		e, ok := blocks[a.IntervalID]
 		if !ok {
-			return fmt.Errorf("classify: interval %s cannot be bound to a recorded block; review again; re-run stage + classify", a.IntervalID)
+			return ClassifyReceipt{}, fmt.Errorf("classify: interval %s cannot be bound to a recorded block; review again; re-run stage + classify", a.IntervalID)
 		}
 		sel := selections[a.IntervalID]
-		sel.ContentDigest = timesheet.BlockContentDigest(f.date, e)
+		sel.ContentDigest = timesheet.BlockContentDigest(date, e)
 		bound[a.IntervalID] = sel
 	}
-	if err := timesheet.WriteClassificationChoices(cfg.StatePath, timesheet.AppVersion, f.date, bound, time.Now()); err != nil {
-		return err
+	if err := timesheet.WriteClassificationChoices(cfg.StatePath, timesheet.AppVersion, date, bound, time.Now()); err != nil {
+		return ClassifyReceipt{}, err
 	}
 	receipt := ClassifyReceipt{
-		Date:            f.date,
-		File:            f.file,
-		SidecarFile:     timesheet.ChoicesPath(cfg.StatePath, f.date),
+		Date:            date,
+		SidecarFile:     timesheet.ChoicesPath(cfg.StatePath, date),
 		Applied:         applied,
 		Selections:      len(applied),
 		Revision:        summary.Revision,
@@ -1415,8 +1465,7 @@ func runClassify(args []string) error {
 	if len(applied) == 0 {
 		receipt.Note = "no selections in the choices file; nothing was classified"
 	}
-	_, _ = h.call("close", timesheet.Request{})
-	return printJSON(receipt)
+	return receipt, nil
 }
 
 // runClassifyFinalized is classify's finalized-day path. The day was opened
@@ -1433,20 +1482,20 @@ func runClassify(args []string) error {
 // (unknown_interval), a catalog that is not stored (stale_catalog) or a
 // classification the catalog did not return (unknown_classification) fails
 // closed with the day untouched at its saved revision.
-func runClassifyFinalized(h *headlessSession, f *finalizeFlags, summary timesheet.DaySummary, selections map[string]timesheet.ClassificationChoiceEntry) error {
-	applied, err := applySelections(h, f.date, summary.Revision, selections)
+func runClassifyFinalized(h *headlessSession, date, answerFile string, summary timesheet.DaySummary, selections map[string]timesheet.ClassificationChoiceEntry) (ClassifyReceipt, error) {
+	applied, err := applySelections(h, date, summary.Revision, selections)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
 	durable := 0
 	for _, seg := range summary.Confirmed.Segments {
-		if seg.OriginDate == f.date {
+		if seg.OriginDate == date {
 			durable++
 		}
 	}
 	receipt := ClassifyReceipt{
-		Date:            f.date,
-		File:            f.file,
+		Date:            date,
+		File:            answerFile,
 		Applied:         applied,
 		Selections:      len(applied),
 		Revision:        summary.Revision,
@@ -1454,30 +1503,28 @@ func runClassifyFinalized(h *headlessSession, f *finalizeFlags, summary timeshee
 	}
 	if len(applied) == 0 {
 		receipt.Note = fmt.Sprintf("no selections in the choices file; nothing was classified; the saved day was left unchanged at revision %d", summary.Revision)
-		_, _ = h.call("close", timesheet.Request{})
-		return printJSON(receipt)
+		return receipt, nil
 	}
-	confirmed, err := h.call("confirm", timesheet.Request{Day: f.date, Revision: &summary.Revision})
+	confirmed, err := h.call("confirm", timesheet.Request{Day: date, Revision: &summary.Revision})
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
 	confirmReceipt, ok := confirmed.(timesheet.ConfirmReceipt)
 	if !ok {
-		return fmt.Errorf("classify: unexpected confirm payload")
+		return ClassifyReceipt{}, fmt.Errorf("classify: unexpected confirm payload")
 	}
-	saved, err := h.call("save", timesheet.Request{Day: f.date, Revision: &confirmReceipt.Revision})
+	saved, err := h.call("save", timesheet.Request{Day: date, Revision: &confirmReceipt.Revision})
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
 	saveReceipt, ok := saved.(timesheet.SaveReceipt)
 	if !ok {
-		return fmt.Errorf("classify: unexpected save payload")
+		return ClassifyReceipt{}, fmt.Errorf("classify: unexpected save payload")
 	}
 	receipt.Refinalized = true
 	receipt.Revision = saveReceipt.Revision
 	receipt.Note = fmt.Sprintf("day was already finalized; the selections keyed off the durable interval ids and the day was re-finalized at revision %d", saveReceipt.Revision)
-	_, _ = h.call("close", timesheet.Request{})
-	return printJSON(receipt)
+	return receipt, nil
 }
 
 // parseClassifyFlags parses classify's flag surface: the finalize flags plus
@@ -1680,26 +1727,58 @@ func runConfirm(args []string) error {
 	if err != nil {
 		return err
 	}
-	staged, err := applyStage(h, cfg, "confirm", f.date, project, summary)
-	if err != nil {
+	if _, _, err := stageAndReplay(h, cfg, "confirm", f.date, project, summary); err != nil {
 		return err
 	}
-	noteStageSkips("confirm", staged)
-	replayed, err := applyPersistedSelections(h, cfg, "confirm", f.date, summary.Revision)
+	receipt, _, err := confirmAndSave(h, "confirm", f.date, summary.Revision, false)
 	if err != nil {
 		return err
-	}
-	noteClassifyReplays("confirm", replayed)
-	res, err := h.call("confirm", timesheet.Request{Day: f.date, Revision: &summary.Revision})
-	if err != nil {
-		return err
-	}
-	receipt, ok := res.(timesheet.ConfirmReceipt)
-	if !ok {
-		return fmt.Errorf("confirm: unexpected confirm payload")
 	}
 	_, _ = h.call("close", timesheet.Request{})
 	return printJSON(receipt)
+}
+
+// stageAndReplay is confirm and save's shared prefix: derive the staged set
+// from the entries ledger, then replay the persisted classification selections
+// against it, with both receipts' honesty notes on stderr.
+func stageAndReplay(h *headlessSession, cfg *timesheet.Config, name, date, project string, summary timesheet.DaySummary) (*StageReceipt, int, error) {
+	staged, err := applyStage(h, cfg, name, date, project, summary)
+	if err != nil {
+		return nil, 0, err
+	}
+	noteStageSkips(name, staged)
+	replayed, err := applyPersistedSelections(h, cfg, name, date, summary.Revision)
+	if err != nil {
+		return nil, 0, err
+	}
+	noteClassifyReplays(name, replayed)
+	return staged, replayed, nil
+}
+
+// confirmAndSave runs the confirm op and, when throughSave, the durable save
+// that commits it. It is confirm and save's shared core and the tui verb's
+// save act.
+func confirmAndSave(h *headlessSession, name, date string, revision int, throughSave bool) (timesheet.ConfirmReceipt, *timesheet.SaveReceipt, error) {
+	confirmed, err := h.call("confirm", timesheet.Request{Day: date, Revision: &revision})
+	if err != nil {
+		return timesheet.ConfirmReceipt{}, nil, err
+	}
+	receipt, ok := confirmed.(timesheet.ConfirmReceipt)
+	if !ok {
+		return timesheet.ConfirmReceipt{}, nil, fmt.Errorf("%s: unexpected confirm payload", name)
+	}
+	if !throughSave {
+		return receipt, nil, nil
+	}
+	saved, err := h.call("save", timesheet.Request{Day: date, Revision: &receipt.Revision})
+	if err != nil {
+		return timesheet.ConfirmReceipt{}, nil, err
+	}
+	saveReceipt, ok := saved.(timesheet.SaveReceipt)
+	if !ok {
+		return timesheet.ConfirmReceipt{}, nil, fmt.Errorf("%s: unexpected save payload", name)
+	}
+	return receipt, &saveReceipt, nil
 }
 
 // --- SUBMIT-3 plan & identity commands -------------------------------------------
@@ -1890,38 +1969,31 @@ func runSave(args []string) error {
 		return err
 	}
 	defer h.done()
-	summary, err := openFinalizeDay(h, "save", f.date)
+	saved, err := saveDay(h, cfg, "save", f.date, project)
 	if err != nil {
 		return err
-	}
-	staged, err := applyStage(h, cfg, "save", f.date, project, summary)
-	if err != nil {
-		return err
-	}
-	noteStageSkips("save", staged)
-	replayed, err := applyPersistedSelections(h, cfg, "save", f.date, summary.Revision)
-	if err != nil {
-		return err
-	}
-	noteClassifyReplays("save", replayed)
-	confirmed, err := h.call("confirm", timesheet.Request{Day: f.date, Revision: &summary.Revision})
-	if err != nil {
-		return err
-	}
-	confirmReceipt, ok := confirmed.(timesheet.ConfirmReceipt)
-	if !ok {
-		return fmt.Errorf("save: unexpected confirm payload")
-	}
-	res, err := h.call("save", timesheet.Request{Day: f.date, Revision: &confirmReceipt.Revision})
-	if err != nil {
-		return err
-	}
-	receipt, ok := res.(timesheet.SaveReceipt)
-	if !ok {
-		return fmt.Errorf("save: unexpected save payload")
 	}
 	_, _ = h.call("close", timesheet.Request{})
-	return printJSON(receipt)
+	return printJSON(*saved)
+}
+
+// saveDay is the save verb's whole flow over one held session: open the day
+// (refusing a finalized one), derive the staged set, replay the persisted
+// selections, confirm, and commit durably. The tui verb's save act is the
+// same flow over its own held session.
+func saveDay(h *headlessSession, cfg *timesheet.Config, name, date, project string) (*timesheet.SaveReceipt, error) {
+	summary, err := openFinalizeDay(h, name, date)
+	if err != nil {
+		return nil, err
+	}
+	if _, _, err := stageAndReplay(h, cfg, name, date, project, summary); err != nil {
+		return nil, err
+	}
+	_, saved, err := confirmAndSave(h, name, date, summary.Revision, true)
+	if err != nil {
+		return nil, err
+	}
+	return saved, nil
 }
 
 // --- SUBMIT-4 human-gate commands -------------------------------------------------
