@@ -134,7 +134,7 @@ func TestGateDialogKeys(t *testing.T) {
 	m := gateModel(nil, nil, "")
 	m.bench.kind = gateSubmit
 	m.bench.answerFile = "type the exact approval_id shown above to submit"
-	m, eff := update(m, keyEvent{key: "a"})
+	m, eff := update(m, textEvent{runes: []rune{'a'}})
 	if eff != nil || m.bench.text != "a" {
 		t.Fatalf("typing built %q with effect %v", m.bench.text, eff)
 	}

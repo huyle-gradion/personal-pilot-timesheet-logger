@@ -77,6 +77,11 @@ const (
 
 type keyEvent struct{ key string }
 
+// textEvent carries the runes of one text input (typed or pasted). The driver
+// produces it from KeyRunes and KeySpace messages only, so a structural key's
+// name can never reach an open document as text.
+type textEvent struct{ runes []rune }
+
 // tickEvent carries the rebuilt snapshot; reopen reopens a judgment form
 // fresh after a stale-revision recovery.
 type tickEvent struct {
@@ -123,6 +128,8 @@ func update(m tuiModel, ev any) (tuiModel, effect) {
 	switch e := ev.(type) {
 	case keyEvent:
 		return updateKey(m, e.key)
+	case textEvent:
+		return updateText(m, e)
 	case tickEvent:
 		m.busy, m.err, m.notice = false, nil, ""
 		m.snap = e.snap
@@ -163,9 +170,10 @@ func update(m tuiModel, ev any) (tuiModel, effect) {
 	}
 }
 
-// updateActDone finishes one act or gate op: success re-derives; a
-// stale_revision re-runs review and reopens the form fresh; any other failure
-// is reported and an open form keeps the operator's text.
+// updateActDone finishes one act or gate op: success re-derives and keeps the
+// receipt's notice line; a stale_revision re-runs review and reopens the form
+// fresh; any other failure is reported under a cleared busy lock and an open
+// form keeps the operator's text.
 func updateActDone(m tuiModel, e actDoneEvent) (tuiModel, effect) {
 	if e.err == nil {
 		m.err, m.notice, m.bench = nil, e.notice, benchState{}
@@ -179,7 +187,7 @@ func updateActDone(m tuiModel, e actDoneEvent) (tuiModel, effect) {
 		}
 		return m, func() any { return m.env.refreshAfterStale(reopen) }
 	}
-	m.err = e.err
+	m.err, m.busy = e.err, false
 	return m, nil
 }
 
@@ -216,6 +224,11 @@ func updateKey(m tuiModel, key string) (tuiModel, effect) {
 	}
 	switch key {
 	case "q", "ctrl+c":
+		// The close op runs under the busy lock, so keys pressed while it is
+		// in flight cannot start a racing act on the unsynchronized session;
+		// closeSentEvent stops the program either way, so busy is never
+		// cleared.
+		m.busy, m.err = true, nil
 		return m, m.env.sendClose
 	case "r":
 		// A new op supersedes the last failure's report.
@@ -275,8 +288,9 @@ func openEditorEffect(m tuiModel, kind string) effect {
 	return func() any { return m.env.openEditor(kind, digest, answerFile, blocks) }
 }
 
-// updateFormKey is both form screens' key map; structural keys are non-rune
-// keys, so they never collide with authored text.
+// updateFormKey is both form screens' key map. Authored text arrives as a
+// textEvent, never through here, so every named key outside this switch is
+// ignored on a form.
 func updateFormKey(m tuiModel, key string) (tuiModel, effect) {
 	b := m.bench
 	switch key {
@@ -295,12 +309,30 @@ func updateFormKey(m tuiModel, key string) (tuiModel, effect) {
 			m.busy, m.err = true, nil
 			return m, func() any { return m.env.writeBench(b.kind, b) }
 		}
+	case "left", "right", "backspace":
+		b.text, b.caret = editLine(b.text, b.caret, key)
+		m.bench = b
 	}
-	b.text, b.caret = editLine(b.text, b.caret, key)
+	return m, nil
+}
+
+// updateText inserts authored text at the caret on the form screens; on the
+// day screen the act keys are plain runes, so text routes to the key map.
+func updateText(m tuiModel, e textEvent) (tuiModel, effect) {
+	if m.bench.screen == screenDay {
+		return updateKey(m, string(e.runes))
+	}
+	if m.busy {
+		return m, nil
+	}
+	b := m.bench
+	b.text, b.caret = insertRunes(b.text, b.caret, e.runes)
 	m.bench = b
 	return m, nil
 }
 
+// editLine applies one structural editing key to the form's document and
+// caret; it never inserts text.
 func editLine(text string, caret int, key string) (string, int) {
 	runes := []rune(text)
 	switch key {
@@ -317,15 +349,14 @@ func editLine(text string, caret int, key string) (string, int) {
 		out = append(out, runes[caret:]...)
 		return string(out), caret - 1
 	}
-	if key == "up" || key == "down" || key == "tab" || key == "pgup" || key == "pgdown" ||
-		strings.HasPrefix(key, "ctrl+") || strings.HasPrefix(key, "alt+") ||
-		strings.HasPrefix(key, "meta+") {
+	return text, caret
+}
+
+func insertRunes(text string, caret int, ins []rune) (string, int) {
+	if len(ins) == 0 {
 		return text, caret
 	}
-	ins := []rune(key)
-	if len(ins) == 0 || utf8.RuneCountInString(key) != len(ins) {
-		return text, caret
-	}
+	runes := []rune(text)
 	out := make([]rune, 0, len(runes)+len(ins))
 	out = append(out, runes[:caret]...)
 	out = append(out, ins...)

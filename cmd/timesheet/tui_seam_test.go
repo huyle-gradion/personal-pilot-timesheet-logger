@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
@@ -59,6 +62,32 @@ func TestTuiPipelineMatchesNextDerivation(t *testing.T) {
 		t.Fatalf("snapshot = %+v, want the block-descriptions judgment", m.snap.action)
 	}
 	_ = m.env.h.store.Close()
+}
+
+// TestTuiEventFromMsg pins the driver's text boundary: KeyRunes and KeySpace
+// with Alt unset become text, every structural or modified key stays a named
+// key event.
+func TestTuiEventFromMsg(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  tea.Msg
+		want any
+	}{
+		{"runes are text", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}}, textEvent{runes: []rune{'a'}}},
+		{"a paste is one text event", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abc")}, textEvent{runes: []rune("abc")}},
+		{"space is text", tea.KeyMsg{Type: tea.KeySpace}, textEvent{runes: []rune{' '}}},
+		{"a named key stays named", tea.KeyMsg{Type: tea.KeyDelete}, keyEvent{key: "delete"}},
+		{"enter stays named", tea.KeyMsg{Type: tea.KeyEnter}, keyEvent{key: "enter"}},
+		{"a modified rune stays named", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}, Alt: true}, keyEvent{key: "alt+r"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tuiEventFromMsg(tc.msg)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("tuiEventFromMsg = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
 }
 
 // TestTuiVerbRefusesNonTerminal pins the structural gate: without terminals on

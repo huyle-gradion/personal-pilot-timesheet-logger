@@ -59,10 +59,11 @@ func drive(t *testing.T, m tuiModel, key string) tuiModel {
 	return m
 }
 
-// typeInto feeds one key per rune to the reducer without running effects.
+// typeInto feeds one rune per text event to the reducer without running
+// effects, the way the driver delivers typed text.
 func typeInto(m tuiModel, text string) tuiModel {
 	for _, r := range text {
-		m, _ = update(m, keyEvent{key: string(r)})
+		m, _ = update(m, textEvent{runes: []rune{r}})
 	}
 	return m
 }
@@ -135,8 +136,8 @@ func TestTuiDayLoopRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	m = clearBench(m)
-	m = typeInto(m, string(body)+"\n")
-	if m.bench.text != string(body)+"\n" {
+	m = typeInto(m, string(body))
+	if m.bench.text != string(body) {
 		t.Fatalf("authored text did not survive the editing keys:\n%s", m.bench.text)
 	}
 	m = drive(t, m, "ctrl+s")

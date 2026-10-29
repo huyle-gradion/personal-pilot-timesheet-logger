@@ -22,9 +22,9 @@ func busyModel() tuiModel {
 	return m
 }
 
-// TestUpdateKeyTable pins the key map: r re-derives, q and ctrl+c close, every
-// other key is a no-op, and while an op is in flight every key is ignored so
-// two effects can never run on the session at once.
+// TestUpdateKeyTable pins the key map: r re-derives, q and ctrl+c close under
+// the busy lock, every other key is a no-op, and while an op is in flight
+// every key is ignored so two effects can never run on the session at once.
 func TestUpdateKeyTable(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -34,8 +34,8 @@ func TestUpdateKeyTable(t *testing.T) {
 		wantEffect bool
 	}{
 		{"r re-derives", dayModel(), "r", true, true},
-		{"q closes", dayModel(), "q", false, true},
-		{"ctrl+c closes", dayModel(), "ctrl+c", false, true},
+		{"q closes under the busy lock", dayModel(), "q", true, true},
+		{"ctrl+c closes under the busy lock", dayModel(), "ctrl+c", true, true},
 		{"other keys are a no-op", dayModel(), "x", false, false},
 		{"busy locks re-derive", busyModel(), "r", true, false},
 		{"busy locks quit", busyModel(), "q", true, false},
@@ -71,12 +71,12 @@ func TestUpdateEventsTable(t *testing.T) {
 			t.Fatalf("snapshot = %+v, want the fresh stop document", m.snap)
 		}
 	})
-	t.Run("tick failure keeps the last good snapshot", func(t *testing.T) {
-		m := dayModel()
+	t.Run("an act failure clears the busy lock and keeps the last good snapshot", func(t *testing.T) {
+		m := busyModel()
 		before := m.snap
 		m, _ = update(m, actDoneEvent{err: errors.New("boom")})
 		if m.busy || m.err == nil || m.snap != before {
-			t.Fatalf("tick failure = %+v, want busy cleared, error set, snapshot kept", m)
+			t.Fatalf("act failure = %+v, want busy cleared, error set, snapshot kept", m)
 		}
 	})
 	t.Run("close sent stops the program", func(t *testing.T) {
@@ -90,6 +90,59 @@ func TestUpdateEventsTable(t *testing.T) {
 		got, _ := update(m, unknownTestEvent{})
 		if got.snap != m.snap || got.busy || got.stop {
 			t.Fatalf("unknown event mutated the model: %+v", got)
+		}
+	})
+}
+
+// TestFormTextEditing pins the form input boundary: a named structural key
+// never changes the document, text inserts at the caret, and a multi-rune
+// paste inserts exactly.
+func TestFormTextEditing(t *testing.T) {
+	form := func() tuiModel {
+		m := dayModel()
+		m.bench = benchState{screen: screenBench, kind: judgmentBlockDescriptions, text: "ab", caret: 1}
+		return m
+	}
+	t.Run("named keys never change the document", func(t *testing.T) {
+		for _, key := range []string{"home", "end", "delete", "insert", "shift+tab", "f3", "up", "tab", "pgup", "ctrl+left"} {
+			m, _ := update(form(), keyEvent{key: key})
+			if m.bench.text != "ab" || m.bench.caret != 1 {
+				t.Fatalf("key %q changed the document to %q at caret %d", key, m.bench.text, m.bench.caret)
+			}
+		}
+	})
+	t.Run("text inserts at the caret", func(t *testing.T) {
+		m, _ := update(form(), textEvent{runes: []rune{'X'}})
+		if m.bench.text != "aXb" || m.bench.caret != 2 {
+			t.Fatalf("text insert = %q at caret %d, want aXb at 2", m.bench.text, m.bench.caret)
+		}
+	})
+	t.Run("a space inserts a space", func(t *testing.T) {
+		m, _ := update(form(), textEvent{runes: []rune{' '}})
+		if m.bench.text != "a b" {
+			t.Fatalf("space insert = %q, want a b", m.bench.text)
+		}
+	})
+	t.Run("a multi-rune paste inserts exactly", func(t *testing.T) {
+		m, _ := update(form(), textEvent{runes: []rune("hello")})
+		if m.bench.text != "ahellob" || m.bench.caret != 6 {
+			t.Fatalf("paste = %q at caret %d, want ahellob at 6", m.bench.text, m.bench.caret)
+		}
+	})
+	t.Run("structural keys still move the caret and delete", func(t *testing.T) {
+		m, _ := update(form(), keyEvent{key: "backspace"})
+		if m.bench.text != "b" || m.bench.caret != 0 {
+			t.Fatalf("backspace = %q at caret %d, want b at 0", m.bench.text, m.bench.caret)
+		}
+		m, _ = update(form(), keyEvent{key: "left"})
+		if m.bench.caret != 0 {
+			t.Fatalf("left moved the caret to %d, want 0", m.bench.caret)
+		}
+	})
+	t.Run("the day screen keeps its rune act keys", func(t *testing.T) {
+		m, eff := update(dayModel(), textEvent{runes: []rune{'r'}})
+		if eff == nil || !m.busy {
+			t.Fatalf("day-screen r = effect %v busy %v, want the re-derive", eff, m.busy)
 		}
 	})
 }

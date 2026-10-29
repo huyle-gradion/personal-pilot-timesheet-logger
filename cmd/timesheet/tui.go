@@ -136,9 +136,27 @@ func (m tuiModel) View() string {
 	}
 }
 
+// tuiEventFromMsg adapts the driver's messages onto the reducer's events.
+// Only KeyRunes and KeySpace messages with Alt unset are text; every other
+// key, structural or modified, stays a named keyEvent, so a key like home or
+// delete can never reach an open document as text.
+// tuiEventFromMsg adapts the driver's messages onto the reducer's events.
+// Only KeyRunes and KeySpace messages with Alt unset are text; every other
+// key, structural or modified, stays a named keyEvent, so a key like home or
+// delete can never reach an open document as text.
 func tuiEventFromMsg(msg tea.Msg) any {
 	switch m := msg.(type) {
 	case tea.KeyMsg:
+		if !m.Alt {
+			switch m.Type {
+			case tea.KeyRunes:
+				return textEvent{runes: m.Runes}
+			case tea.KeySpace:
+				// The parser keeps the space rune on KeySpace, but a
+				// directly built message may not; a space is a space.
+				return textEvent{runes: []rune{' '}}
+			}
+		}
 		return keyEvent{key: m.String()}
 	default:
 		return msg

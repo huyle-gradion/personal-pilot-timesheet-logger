@@ -1362,16 +1362,15 @@ func runClassify(args []string) error {
 	if err != nil {
 		return err
 	}
-	project, err := resolveProject("classify", cfg, f.project)
-	if err != nil {
-		return err
-	}
 	h, err := openHeadless(f.configPath, f.envFile)
 	if err != nil {
 		return err
 	}
 	defer h.done()
-	receipt, err := classifyFileDay(h, cfg, f.date, project, f.file)
+	// f.project passes through unresolved: only the not-yet-finalized branch
+	// needs a project, and it resolves there, so a finalized day still
+	// classifies without --project under a multi-project configuration.
+	receipt, err := classifyFileDay(h, cfg, f.date, f.project, f.file)
 	if err != nil {
 		return err
 	}
@@ -1381,8 +1380,9 @@ func runClassify(args []string) error {
 
 // classifyFileDay is classify --file's whole flow over one held session: read
 // the bound answer file, open the day, and either re-finalize the durable
-// intervals or re-derive the staged set and content-bind the sidecar. The tui
-// verb's classify act is the same flow over its own held session.
+// intervals (no project needed) or resolve the project and re-derive the
+// staged set with the content-bound sidecar. The tui verb's classify act is
+// the same flow over its own held session.
 func classifyFileDay(h *headlessSession, cfg *timesheet.Config, date, project, answerFile string) (ClassifyReceipt, error) {
 	data, err := os.ReadFile(answerFile)
 	if err != nil {
