@@ -18,3 +18,12 @@ references/
 # Personal token/benchmark logs stay local; see scripts/tokens.py.
 benchmarks/tokens.csv
 benchmarks/metrics.csv
+
+# Local build artifacts (root binaries from go build without -o).
+/timesheet
+/bin-timesheet
+
+# Owner-local runtime dirs: worktrees, orchestration plans, session records.
+.slim/
+.omo/
+
