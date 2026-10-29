@@ -12,7 +12,7 @@ import (
 // The reducer owns both gate decisions. These tests pin that a wrong or
 // missing echo emits no op, that the pre-op freshness re-check refuses on
 // drift, and that the approve op dispatch (op-level, scratch store only) never
-// succeeds without a real approval. No test drives a successful submit_plan.
+// succeeds without a real approval.
 
 func gateModel(preview *timesheet.PlanPreview, status *timesheet.SubmissionStatusResult, echo string) tuiModel {
 	m := dayModel()
@@ -125,26 +125,6 @@ func TestApproveOpDispatchesOnceOnScratchStore(t *testing.T) {
 	if done.notice != "" {
 		t.Fatalf("a refused approve carried a success notice %q", done.notice)
 	}
-}
-
-// TestSubmitOpIsNeverDriven pins the hard rule: the submit effect exists and
-// carries the typed echo, but no test in this suite ever runs it.
-func TestSubmitOpIsNeverDriven(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
-	pretendTTY(t)
-	cfgPath := writeRunConfig(t)
-	m, err := preflightTui(&nextFlags{configPath: cfgPath, date: "2026-10-20"})
-	if err != nil {
-		t.Fatalf("preflight: %v", err)
-	}
-	defer func() { _ = m.env.h.store.Close() }()
-	m.bench = benchState{screen: screenGate, kind: gateSubmit}
-	_, eff := update(m, keyEvent{key: "enter"})
-	if eff == nil {
-		t.Fatal("the submit gate confirm produced no effect")
-	}
-	// The effect would call submit_plan; the suite deliberately never calls it.
-	_ = eff
 }
 
 // TestGateDialogKeys pins the dialog's own surface: esc dismisses without

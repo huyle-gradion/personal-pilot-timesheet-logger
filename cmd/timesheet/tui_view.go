@@ -1,8 +1,6 @@
 package main
 
-// The TUI's rendering: pure functions, one per screen, model to string. The
-// day screen renders the loop's own nextAction verbatim and never paraphrases
-// a reason or improvises a remedy; optional payloads are nil-checked.
+// The TUI's rendering: pure functions, one per screen, model to string.
 
 import (
 	"strconv"
@@ -133,7 +131,7 @@ func renderBench(m tuiModel) string {
 }
 
 // renderGate renders a display-before-ask gate dialog: the fresh artifact and
-// the exact id to type. Nothing here emits an op; the reducer decides.
+// the exact id to type.
 func renderGate(m tuiModel) string {
 	b := m.bench
 	out := "human gate: " + b.kind + "\n"
@@ -155,7 +153,6 @@ func renderGate(m tuiModel) string {
 	return out + "\n[enter] confirm (re-checks freshness first)   [esc] dismiss\n"
 }
 
-// renderCaret renders a text with its caret position visible.
 func renderCaret(text string, caret int) string {
 	runes := []rune(text)
 	if caret < 0 {

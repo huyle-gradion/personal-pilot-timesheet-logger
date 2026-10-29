@@ -1,11 +1,7 @@
 package main
 
 // The TUI's step recipes over one held headlessSession, built in tui.go over
-// the TUI's own store; openHeadless is never called here. Every recipe runs to
-// completion inside one effect, so the session stays single-owner by
-// construction. stepAct is the total table over the derived step, and the acts
-// reuse the verbs' own entry cores: the TUI duplicates zero pipeline
-// decisions.
+// the TUI's own store. stepAct is the total table over the derived step.
 
 import (
 	"encoding/json"
@@ -67,7 +63,6 @@ func (e tuiEnv) act(step, project string) any {
 	return actDoneEvent{err: err}
 }
 
-// artifactPath joins one artifacts-file name for the day.
 func (e tuiEnv) artifactPath(name string) (string, error) {
 	dir, err := dayArtifactsDir(e.cfg.StatePath, e.day)
 	return filepath.Join(dir, name), err
@@ -122,7 +117,6 @@ func (e tuiEnv) actStage(project string) error {
 	return err
 }
 
-// actClassify, actClassifyDefault and actSave are the verbs' own entries.
 func (e tuiEnv) actClassify(project string) error {
 	dir, err := dayArtifactsDir(e.cfg.StatePath, e.day)
 	if err != nil {
@@ -209,7 +203,7 @@ func (e tuiEnv) openGate(kind string) any {
 }
 
 // confirmGate re-runs the freshness check immediately before any op could be
-// emitted; the decision itself is the reducer's.
+// emitted.
 func (e tuiEnv) confirmGate(kind, echo string) any {
 	preview, status, err := e.gateArtifact(kind)
 	if err != nil {

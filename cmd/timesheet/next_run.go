@@ -202,8 +202,8 @@ func buildNextObservation(cfg *timesheet.Config, configPath, envFile, day, proje
 	return obs, nil, nil
 }
 
-// stoppedAction is one typed stopped document for the day: the exact document
-// runNext prints for an underivable state.
+// stoppedAction is withStop in the pointer form buildNextObservation returns;
+// nil stays the derived case.
 func stoppedAction(day, reason string) *nextAction {
 	n := nextAction{Day: day}.withStop(reason)
 	return &n

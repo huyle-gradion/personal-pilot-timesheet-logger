@@ -111,8 +111,6 @@ func TestReDeriveAfterErrorSupersedesReport(t *testing.T) {
 
 type unknownTestEvent struct{}
 
-type teaWindowMsg struct{}
-
 func (unknownTestEvent) isTuiEvent() {}
 
 // TestPreflightBuildsFirstSnapshot drives the real preflight over a scratch

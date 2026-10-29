@@ -4,10 +4,7 @@ package main
 // and session surface every other command uses. It opens the store once and
 // holds the exclusive lock for the whole process, mirroring serve; every
 // refusal (non-terminal stdio, store_locked) happens before the alt screen
-// starts. No AI harness and no model calls exist on this path: the loop's own
-// derivation decides what may happen now, and the screen renders it verbatim.
-// Only this file touches the bubbletea driver; Update maps its messages onto
-// the reducer's events.
+// starts.
 
 import (
 	"fmt"
@@ -31,7 +28,6 @@ func runTui(args []string) error {
 	if f.do {
 		return fmt.Errorf("tui: --do is next's reserved flag; the tui verb takes no action flag")
 	}
-	// The gate fires before the store opens and before any screen exists.
 	if !ttyGate() {
 		return fmt.Errorf("tui is interactive-only: run it in a terminal (both stdin and stdout must be terminals)")
 	}
@@ -96,7 +92,6 @@ func preflightTui(f *nextFlags) (tuiModel, error) {
 	return tuiModel{env: env, snap: first.snap}, nil
 }
 
-// runTuiProgram runs the driver: the only TUI code that touches the terminal.
 func runTuiProgram(m tuiModel) error {
 	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	if model, ok := final.(tuiModel); ok && model.closeErr != nil {
@@ -130,7 +125,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return next, func() tea.Msg { return eff() }
 }
 
-// View renders the screen the model is on.
 func (m tuiModel) View() string {
 	switch m.bench.screen {
 	case screenBench:
@@ -142,9 +136,6 @@ func (m tuiModel) View() string {
 	}
 }
 
-// tuiEventFromMsg maps the driver's messages onto the reducer's events; an
-// effect's own event passes through unchanged, anything unknown does too and
-// the reducer's default ignores it.
 func tuiEventFromMsg(msg tea.Msg) any {
 	switch m := msg.(type) {
 	case tea.KeyMsg:

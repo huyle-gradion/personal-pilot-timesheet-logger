@@ -1087,20 +1087,13 @@ func runStage(args []string) error {
 		}
 		receipt, err = reviseStage(h, cfg, f.date, project, summary)
 	} else {
-		receipt, err = stageDay(h, cfg, f.date, project, summary)
+		receipt, err = applyStage(h, cfg, "stage", f.date, project, summary)
 	}
 	if err != nil {
 		return err
 	}
 	_, _ = h.call("close", timesheet.Request{})
 	return printJSON(receipt)
-}
-
-// stageDay is the plain stage entry over one held session: the staged set
-// re-derived from the entries ledger on a day that carries no confirmed
-// intervals.
-func stageDay(h *headlessSession, cfg *timesheet.Config, date, project string, summary timesheet.DaySummary) (*StageReceipt, error) {
-	return applyStage(h, cfg, "stage", date, project, summary)
 }
 
 // reviseStage is stage's explicit finalized-day revision: every staged interval

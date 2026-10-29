@@ -1,10 +1,6 @@
 package main
 
-// The TUI's pure reducer: model, events, update. No terminal imports — tui.go
-// adapts bubbletea's driver messages onto these events, so tests run headless.
-// The loop is the model: loopSnapshot is rebuilt every tick from the same
-// derivation `next` runs, the screen renders it verbatim, and benchState is
-// the only mutable domain state (operator text that dies with the process).
+// The TUI's pure reducer: model, events, update.
 
 import (
 	"errors"
@@ -51,10 +47,9 @@ type tuiModel struct {
 }
 
 // benchState is the TUI's only mutable domain state: operator text that has
-// not gone through a session op; it grants no authority and dies with the
-// process. On the bench screen it carries the authored document with the
-// judgment's own digest and answer path; on the gate screen, the typed echo
-// and fresh artifacts. No plan or approval is cached beyond the open dialog.
+// not gone through a session op. On the bench screen it carries the authored
+// document with the judgment's own digest and answer path; on the gate screen,
+// the typed echo and fresh artifacts.
 type benchState struct {
 	screen     tuiScreen
 	kind       string                  // judgment kind, or the gate kind approve|submit
@@ -80,8 +75,6 @@ const (
 	gateSubmit  = "submit"
 )
 
-// Events are plain structs; the reducer's switch is total, its default
-// ignores anything else.
 type keyEvent struct{ key string }
 
 // tickEvent carries the rebuilt snapshot; reopen reopens a judgment form
@@ -136,7 +129,6 @@ func update(m tuiModel, ev any) (tuiModel, effect) {
 		if e.reopen != "" {
 			j := e.snap.action.Judgment
 			if e.snap.action.State == stateJudgment && j != nil && j.Kind == e.reopen {
-				// Stale-revision recovery: reopen the form fresh.
 				m.bench = benchState{screen: screenBench}
 				return m, openEditorEffect(m, e.reopen)
 			}
@@ -284,8 +276,7 @@ func openEditorEffect(m tuiModel, kind string) effect {
 }
 
 // updateFormKey is both form screens' key map; structural keys are non-rune
-// keys, so they never collide with authored text: esc dismisses, the gate's
-// enter confirms (freshness re-checked first), the bench's ctrl+s writes.
+// keys, so they never collide with authored text.
 func updateFormKey(m tuiModel, key string) (tuiModel, effect) {
 	b := m.bench
 	switch key {
@@ -310,10 +301,6 @@ func updateFormKey(m tuiModel, key string) (tuiModel, effect) {
 	return m, nil
 }
 
-// editLine applies one editing key to the form's text at its caret. Only the
-// keys the reducer maps here reach it: left, right, backspace, and any
-// printable input (including multi-rune paste); every other named key is
-// ignored.
 func editLine(text string, caret int, key string) (string, int) {
 	runes := []rune(text)
 	switch key {
