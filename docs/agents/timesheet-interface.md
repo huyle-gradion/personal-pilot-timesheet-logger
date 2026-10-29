@@ -1,7 +1,7 @@
 # Pilot Timesheet interface (`0.2.0-dev.8`)
 
-Application version: `0.2.0-dev.8` (unreleased development stamp; the
-public release line remains `0.1.1` until this ships).
+Application version: `0.2.0-dev.8` (published as the pre-release
+`v0.2.0-dev.8`; the previous stable line is `0.1.1`).
 Protocol schema: `1`. State schema: `3`.
 
 This document is the public interface for the current release. The
