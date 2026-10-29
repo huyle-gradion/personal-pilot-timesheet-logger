@@ -10,13 +10,13 @@ agent help: it collects evidence (Git/GitHub and calendar), records your day,
 stages and classifies each time block, plans the entry, and keeps an audit
 trail whose approval and submission steps are human-gated. It is built for a
 developer logging their own days with agent help. All evidence stays in
-`~/.timesheet`; nothing leaves the machine until you approve and submit it
-yourself through an interactive terminal.
+`~/.timesheet`. Remote writes require your explicit approval, either through
+the terminal workflow or the separate chat-confirmed `/submit` skill.
 
 **What it does.** One binary owns accounting, validation and persistence. It
 collects sourced evidence, keeps a typed human-readable ledger under
 `<state dir>/entries/`, plans each day, and dispatches a remote submission only
-after an interactive human approval bound to that exact plan.
+after explicit approval bound to that exact plan.
 
 **What it does not do.** It never writes remotely without that gate, never
 retries or replays a dispatched write, never binds a remote identity without an
@@ -30,7 +30,7 @@ Contributions are welcome: see [Contributing](#contributing), and the
 and [`help wanted`](https://github.com/huyle-gradion/pilot-timesheet/labels/help%20wanted)
 queues for a starting point.
 
-Application version: **`0.2.0-dev.7`** (unreleased development stamp; the
+Application version: **`0.2.0-dev.8`** (unreleased development stamp; the
 published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
 This is a development build. No release tag is created for this changeset.
 
@@ -56,7 +56,7 @@ bin/timesheet setup --project 'acme=Acme Client' --tz 'America/New_York'
 ```
 
 Then run the day through the planner — read-only; it prints one typed JSON
-state that an agent follows, ending at human-only `approve`/`submit`:
+state that an agent follows, ending at a ready plan without submitting:
 
 ```bash
 bin/timesheet next
@@ -87,7 +87,8 @@ headless surface described below. `next` is the planner the skill uses; the
 other headless verbs (`run`, `record`, `stage`, `classifications`, `classify`,
 `save`, `plan`, `reconcile`, `resolve`, `submit-status`) are also directly
 invocable for recovery. `approve`, `submit` and `resolve-write` are TTY-gated
-and interactive-only. A normal `version` run, a normal `serve` close/EOF and
+and interactive-only. The separate `agent-submit` command supports the
+chat-confirmed workflow below. A normal `version` run, a normal `serve` close/EOF and
 `serve` help exit `0`. No top-level command, an unknown top-level command, or
 extra `version` arguments exit `2`. `serve` argument validation (an unknown
 flag, an extra positional, a missing required flag), startup failure and stream
@@ -166,7 +167,7 @@ from the current ledger, stage map, answers and durable store:
   reuses a stale plan. An explicitly user-authorized decision is performed
   once where safe.
 - `human_gates` — the terminal state. Run the read-only `submit-status`
-  command, print the exact `approve`/`submit` commands, and stop.
+  command, report the ready plan, capture metrics, and stop.
 
 A failed action is not retried as-is. The skill repairs only an answer-file
 validation error (unknown id, missing description, missing/stale digest) and
@@ -192,13 +193,33 @@ bin/timesheet submit-status   [--config <path>] [--env-file <path>] --date <date
 land in `<state dir>/entries/<date>.json`, merged idempotently per time block
 with full source references; `entries/` stays the human ledger and staging
 source. `save` is the existing confirm+save pair. `scripts/tokens.py`
-records model token usage into a local `benchmarks/tokens.csv`;
+records observed model token usage into a local `benchmarks/tokens.csv`;
 token data is personal and stays out of the repository. Metric
 collection never blocks the day. `approve`/`submit` require a terminal on
 stdin and stdout plus the exact typed `plan_id`/`approval_id` (not proof of
 human presence — a pty wrapper defeats it), so the agent never attempts them;
 a submit is never auto-retried, and unknown outcomes stay unresolved until a
 human resolves them.
+
+### Submit in chat
+
+After `/timesheet log my today work`, use `/submit` or ask the agent to submit.
+The [submit skill](.agents/skills/submit/SKILL.md) shows the exact day and every
+operation, then waits for your explicit confirmation in chat. Logging, status
+and loading the skill never authorize writes. No terminal command is required.
+
+The explicit CLI entry point is `agent-submit --date <day>`. Without submission
+inputs it returns `{plan, review_id}` and performs no approval or remote write.
+After confirmation, the skill invokes it once with `--plan-id <reviewed id>
+--review-id <reviewed binding> --confirm-chat`. The review binds day, plan,
+store and credential/endpoint context; a stale review requires fresh review
+and consent. It reuses existing approval, classification and durable-intent
+checks without changing the protocol or trusted Pi adapter capabilities.
+
+Consent is agent-enforced, not cryptographic human-presence proof. Flags alone
+do not establish consent. Receipts retain partial and uncertain outcomes,
+which are never retried automatically or silently resolved. Existing terminal
+gates are unchanged. See [the approval policy](docs/adr/0009-chat-confirmed-submission.md).
 
 ### Automatic local metrics
 

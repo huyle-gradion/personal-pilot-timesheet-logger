@@ -25,7 +25,7 @@ from typing import Final, TypeAlias, TypedDict
 
 SKILL_MARKER: Final = re.compile(
     r'(?:^|[;&|\n])\s*["\']?(?:[^\n"\']*/timesheet|timesheet|\$TS_BINARY)["\']?\s+'
-    r"(?:next|collect|draft|run|record|status)\b"
+    r"(?:next|collect|draft|run|record|status|agent-submit)\b"
 )
 FIELDS: Final = [
     "date",
