@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // The headless subcommands are the skill's [Script] layer. They construct the

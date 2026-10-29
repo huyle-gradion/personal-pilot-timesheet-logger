@@ -1,4 +1,4 @@
-# Timesheet implementation specification
+# Pilot Timesheet implementation specification
 
 Status: product design accepted by the owner on 2026-10-22. Implementation kickoff requested; execution remains owner-mediated under `docs/orchestration/README.md`. This document supersedes conflicting earlier product requirements for the application, not historical records or source ownership.
 

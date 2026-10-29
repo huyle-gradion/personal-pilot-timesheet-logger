@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/mcp"
+	"github.com/huyle-gradion/pilot-timesheet/internal/mcp"
 )
 
 // TestSanitizeProviderDetail: the write-receipt detail is bounded, control

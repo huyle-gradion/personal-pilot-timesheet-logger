@@ -1,4 +1,4 @@
-# Timesheet implementation execution plan
+# Pilot Timesheet implementation execution plan
 
 Governing specification: `docs/timesheet-spec.md`, product design accepted on 2026-10-22.
 
@@ -38,7 +38,7 @@ One source writer at a time. Independent work may be prepared concurrently only 
 
 Accepted records: `docs/orchestration/timesheet-r1-acceptance.md`, `docs/orchestration/timesheet-r2-acceptance.md`, `docs/orchestration/timesheet-r3-acceptance.md`, `docs/orchestration/timesheet-r4-acceptance.md`. R4 dev.12 passed independent second re-review: F1-F8 and evidence V1 closed, no further repair loop or adjudication needed. Preserve published baseline `496a6ab`, accepted uncommitted R4 source and frozen evidence. Next gates: separate R4 publication under publication authority, then a bounded R5 packet with pinned upstream API verification and owner release. No automatic R5 work, child dispatch, worker commits/publication, merge or live submission. Historical repair packets must not be rerun.
 
-GitHub tracking: [implementation epic #131](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/131); R1 #132, R2 #133 and R3 #134 source-accepted pending PR #138 merge; R4 #135 source-accepted dev.12 pending separate PR/merge; R5 #136 and R6 #137 dependent and not authorized. Close implementation issues through merged PRs, not worker completion reports. Do not fabricate historical per-slice commits or append R4 changes to PR #138.
+GitHub tracking: [implementation epic #131](https://github.com/huyle-gradion/pilot-timesheet/issues/131); R1 #132, R2 #133 and R3 #134 source-accepted pending PR #138 merge; R4 #135 source-accepted dev.12 pending separate PR/merge; R5 #136 and R6 #137 dependent and not authorized. Close implementation issues through merged PRs, not worker completion reports. Do not fabricate historical per-slice commits or append R4 changes to PR #138.
 
 ## Release milestones
 

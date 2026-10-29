@@ -165,7 +165,7 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
   are untouched.
 
 R6 improvements and upstream Pi dependency remediation remain tracked in
-[issue #137](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/137).
+[issue #137](https://github.com/huyle-gradion/pilot-timesheet/issues/137).
 
 ## 0.1.1
 

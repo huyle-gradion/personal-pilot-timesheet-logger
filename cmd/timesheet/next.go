@@ -39,7 +39,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // The exhaustive state set. The switch in deriveDayNext is total over it.

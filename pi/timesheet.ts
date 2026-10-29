@@ -612,7 +612,7 @@ export default function timesheetExtension(pi: ExtensionAPI): void {
         state.lastError = errText(e);
         notify(
           ctx,
-          "Timesheet child failed to start (" +
+          "Pilot Timesheet child failed to start (" +
             state.lastError +
             "); use Reopen child in /timesheet.",
           "error",
@@ -875,12 +875,12 @@ export default function timesheetExtension(pi: ExtensionAPI): void {
       return;
     }
     if (!day) {
-      const asked = await askInput(ctx, "Timesheet date", "YYYY-MM-DD (the day to review)");
+      const asked = await askInput(ctx, "Pilot Timesheet date", "YYYY-MM-DD (the day to review)");
       day = (asked ?? "").trim();
     }
     if (!day) return;
     if (validateCivilDate(day) !== null) {
-      notify(ctx, "Timesheet date must be a civil date in YYYY-MM-DD form.", "error");
+      notify(ctx, "Pilot Timesheet date must be a civil date in YYYY-MM-DD form.", "error");
       return;
     }
     const transport = ensureTransport();
@@ -912,7 +912,7 @@ export default function timesheetExtension(pi: ExtensionAPI): void {
     } catch (e: unknown) {
       if (disposed || e instanceof DisposedError) return false;
       state.lastError = errText(e);
-      notify(ctx, "Timesheet child failed: " + state.lastError, "error");
+      notify(ctx, "Pilot Timesheet child failed: " + state.lastError, "error");
       return offerChildReopen(ctx);
     }
   }
@@ -923,7 +923,7 @@ export default function timesheetExtension(pi: ExtensionAPI): void {
     if (disposed) return false;
     const failure = state.transport?.failure();
     const choice = await screen(ctx, {
-      title: "Timesheet child is not available",
+      title: "Pilot Timesheet child is not available",
       header: [
         "reason: " +
           (failure
@@ -973,7 +973,7 @@ export default function timesheetExtension(pi: ExtensionAPI): void {
       const transport = state.transport;
       const failure = transport?.failure();
       const choice = await screen(ctx, {
-        title: `Timesheet ${review.date} — ${review.timezone} · child pid ${transport?.pid() ?? "?"} · adapter v${APP_VERSION}`,
+        title: `Pilot Timesheet ${review.date} — ${review.timezone} · child pid ${transport?.pid() ?? "?"} · adapter v${APP_VERSION}`,
         header: [
           `revision ${review.revision} · saved ${review.saved_revision} · ` + reviewStateLabel(review),
           `confirmed total ${minutesLabel(review.confirmed.total_minutes)} · staged total ${minutesLabel(review.staged.total_minutes)}`,

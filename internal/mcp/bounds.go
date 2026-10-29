@@ -30,6 +30,6 @@ const ProtocolVersion = "2025-06-18"
 
 // DefaultClientName / DefaultClientVersion identify this client during initialize.
 const (
-	DefaultClientName    = "personal-pilot-timesheet-logger"
+	DefaultClientName    = "pilot-timesheet"
 	DefaultClientVersion = "1.0.0"
 )

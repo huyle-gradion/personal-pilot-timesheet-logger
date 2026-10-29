@@ -1,4 +1,4 @@
-# Timesheet daily workflow
+# Pilot Timesheet daily workflow
 
 Status: implemented architecture for the `next` planner and the regular Pi
 skill. This note records the chosen design and its accepted limits; the source

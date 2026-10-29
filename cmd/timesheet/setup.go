@@ -24,7 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // setupUsageError marks caller-input problems that main reports with exit 2.

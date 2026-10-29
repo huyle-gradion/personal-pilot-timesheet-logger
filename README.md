@@ -1,11 +1,11 @@
-# Timesheet
+# Pilot Timesheet
 
 Application version: **`0.2.0-dev.6`** (unreleased development stamp; the
 published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
 This is a development build: no version bump, release tag or adapter/package
 stamp change is part of the daily-workflow work.
 
-This repository is one timesheet product: a single compiled Go binary owns all
+This repository is one Pilot Timesheet product: a single compiled Go binary owns all
 accounting, validation and persistence. Two callers drive it: the **regular Pi
 skill** (`.pi/prompts/timesheet.md` → `.agents/skills/timesheet/SKILL.md`),
 which needs no launcher and runs the `next` loop directly, and the optional
@@ -236,7 +236,7 @@ Never write before the day is reconciled; never plan from an unsaved draft.
 - **Known dependency risk, owner-accepted for this release:** pinned Pi `1.4.0`
   embeds Undici `8.10.2`, affected by a high-severity fetch process-crash advisory
   and two moderate EventSource/integrity advisories. No patched Pi bundle has
-  been selected. [R6 / issue #137](https://github.com/huyle-gradion/personal-pilot-timesheet-logger/issues/137)
+  been selected. [R6 / issue #137](https://github.com/huyle-gradion/pilot-timesheet/issues/137)
   remains open for remediation and further improvements. This release is not
   claimed to be vulnerability-free.
 - **Not verified:** live accounts/credentials, authenticated model/subscription

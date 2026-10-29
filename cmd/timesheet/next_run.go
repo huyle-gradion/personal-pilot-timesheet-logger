@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // nextFlags is next's own surface. It is deliberately separate from
