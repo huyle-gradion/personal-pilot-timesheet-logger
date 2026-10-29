@@ -3,7 +3,7 @@ name: timesheet
 description: Log today's work into the personal timesheet from real git, pull-request and calendar evidence. Run when the user asks to "log today's work" or "log the timesheet", or a past working day.
 ---
 
-# Timesheet
+# Pilot Timesheet
 
 The binary owns the pipeline; the model owns only the judgment it asks for and the human-gate report. Drive the day with one loop over `next` — never hold the step order in prose.
 

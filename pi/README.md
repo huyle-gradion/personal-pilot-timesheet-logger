@@ -1,4 +1,4 @@
-# Timesheet Pi profile (`0.1.1`)
+# Pilot Timesheet Pi profile (`0.1.1`)
 
 This directory is the ONLY supported Pi integration for the timesheet:
 a restricted launcher plus one trusted adapter extension that renders the

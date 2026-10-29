@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // clusterByHead indexes one day's stage clusters by the head block id the

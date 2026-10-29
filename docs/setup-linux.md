@@ -15,7 +15,7 @@ host `go` may not be on `PATH`; the mise install is environment troubleshooting,
 not a project requirement:
 
 ```bash
-cd ~/Projects/personal-pilot-timesheet-logger
+cd ~/Projects/pilot-timesheet
 go build -trimpath -o bin/timesheet ./cmd/timesheet   # or: mise exec -- go build ...
 bin/timesheet version
 ```

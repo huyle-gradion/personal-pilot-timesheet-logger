@@ -1,4 +1,4 @@
-# Timesheet interface (`0.2.0-dev.6`)
+# Pilot Timesheet interface (`0.2.0-dev.6`)
 
 Application version: `0.2.0-dev.6` (unreleased development stamp; the
 public release line remains `0.1.1` until this ships).

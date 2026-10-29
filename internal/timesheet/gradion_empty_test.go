@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/mcp"
+	"github.com/huyle-gradion/pilot-timesheet/internal/mcp"
 )
 
 // TestParseCatalogZeroMatchPhrasings: the provider's zero-match renderings

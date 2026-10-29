@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // deriveDayNext is the pure switch. It must not read the filesystem, the store,

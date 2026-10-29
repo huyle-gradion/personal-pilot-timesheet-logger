@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // setupStateName is the state file a generated configuration points at.

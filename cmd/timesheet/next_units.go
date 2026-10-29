@@ -14,7 +14,7 @@ import (
 	"os"
 	"sort"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // ledgerUnit is one stage-time unit: a recorded block's effective content and

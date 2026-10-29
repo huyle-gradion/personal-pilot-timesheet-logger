@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Script to sync tracer-bullet tickets to GitHub Issues for huyle-gradion/personal-pilot-timesheet-logger
+# Script to sync tracer-bullet tickets to GitHub Issues for huyle-gradion/pilot-timesheet
 # Usage:
 #   GITHUB_TOKEN="ghp_xxx" ./scripts/sync-github-issues.sh
 
-REPO="huyle-gradion/personal-pilot-timesheet-logger"
+REPO="huyle-gradion/pilot-timesheet"
 API_URL="https://api.github.com/repos/${REPO}"
 
 # If GITHUB_TOKEN is unset, try loading from macOS Keychain (item: gh_auth_token)

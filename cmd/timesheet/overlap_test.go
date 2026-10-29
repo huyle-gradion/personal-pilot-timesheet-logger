@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // TestStageMergedClusterEndToEnd is issue #183 rule 1 at stage time: two

@@ -1,4 +1,4 @@
-module github.com/huyle-gradion/personal-pilot-timesheet-logger
+module github.com/huyle-gradion/pilot-timesheet
 
 go 1.27.1
 

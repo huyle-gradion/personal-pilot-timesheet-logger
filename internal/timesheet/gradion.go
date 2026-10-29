@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/mcp"
+	"github.com/huyle-gradion/pilot-timesheet/internal/mcp"
 )
 
 // The only two tools this boundary may call.

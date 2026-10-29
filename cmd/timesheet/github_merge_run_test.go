@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 func TestGithubMergeRunCLI(t *testing.T) {

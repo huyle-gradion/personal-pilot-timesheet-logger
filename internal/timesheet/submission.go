@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/mcp"
+	"github.com/huyle-gradion/pilot-timesheet/internal/mcp"
 )
 
 // Native submission receipt statuses.

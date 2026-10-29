@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 func writeTestConfig(t *testing.T) string {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huyle-gradion/personal-pilot-timesheet-logger/internal/timesheet"
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // --- N1 verb boundary: the loop progresses on real artifacts ------------------
