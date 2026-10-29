@@ -74,7 +74,7 @@ func TestUpdateEventsTable(t *testing.T) {
 	t.Run("tick failure keeps the last good snapshot", func(t *testing.T) {
 		m := dayModel()
 		before := m.snap
-		m, _ = update(m, tickFailedEvent{err: errors.New("boom")})
+		m, _ = update(m, actDoneEvent{err: errors.New("boom")})
 		if m.busy || m.err == nil || m.snap != before {
 			t.Fatalf("tick failure = %+v, want busy cleared, error set, snapshot kept", m)
 		}
@@ -83,12 +83,6 @@ func TestUpdateEventsTable(t *testing.T) {
 		m, _ := update(dayModel(), closeSentEvent{err: errors.New("close failed")})
 		if !m.stop || m.closeErr == nil {
 			t.Fatalf("close sent = %+v, want stop with the close error kept", m)
-		}
-	})
-	t.Run("window resize is recorded", func(t *testing.T) {
-		m, _ := update(dayModel(), windowEvent{width: 100, height: 30})
-		if m.width != 100 || m.height != 30 {
-			t.Fatalf("size = %dx%d, want 100x30", m.width, m.height)
 		}
 	})
 	t.Run("unknown events are ignored", func(t *testing.T) {
@@ -105,7 +99,7 @@ func TestUpdateEventsTable(t *testing.T) {
 // the busy lock, not an older failure.
 func TestReDeriveAfterErrorSupersedesReport(t *testing.T) {
 	m := dayModel()
-	m, _ = update(m, tickFailedEvent{err: errors.New("boom")})
+	m, _ = update(m, actDoneEvent{err: errors.New("boom")})
 	if m.err == nil {
 		t.Fatal("the failure was not reported")
 	}
@@ -117,6 +111,8 @@ func TestReDeriveAfterErrorSupersedesReport(t *testing.T) {
 
 type unknownTestEvent struct{}
 
+type teaWindowMsg struct{}
+
 func (unknownTestEvent) isTuiEvent() {}
 
 // TestPreflightBuildsFirstSnapshot drives the real preflight over a scratch
@@ -125,7 +121,7 @@ func TestPreflightBuildsFirstSnapshot(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	pretendTTY(t)
 	cfgPath := writeRunConfig(t)
-	m, err := preflightTui(&tuiFlags{configPath: cfgPath, date: "2026-10-20"})
+	m, err := preflightTui(&nextFlags{configPath: cfgPath, date: "2026-10-20"})
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
@@ -147,7 +143,7 @@ func TestEnvTickRebuildsLoopSnapshot(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	pretendTTY(t)
 	cfgPath := writeRunConfig(t)
-	m, err := preflightTui(&tuiFlags{configPath: cfgPath, date: "2026-10-20"})
+	m, err := preflightTui(&nextFlags{configPath: cfgPath, date: "2026-10-20"})
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
 	}

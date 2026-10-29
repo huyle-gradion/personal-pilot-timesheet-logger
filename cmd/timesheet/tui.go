@@ -2,74 +2,36 @@ package main
 
 // tui is the `tui` verb: the native terminal UI over the same store, config
 // and session surface every other command uses. It opens the store once and
-// holds the exclusive lock for the whole process, mirroring serve, and every
+// holds the exclusive lock for the whole process, mirroring serve; every
 // refusal (non-terminal stdio, store_locked) happens before the alt screen
 // starts. No AI harness and no model calls exist on this path: the loop's own
-// derivation (buildNextObservation + deriveDayNext) decides what may happen
-// now, and the screen renders it verbatim.
-//
-// This file owns the bubbletea driver and nothing else: the reducer lives in
-// tui_model.go, the views in tui_view.go, the step recipes in tui_steps.go.
+// derivation decides what may happen now, and the screen renders it verbatim.
+// Only this file touches the bubbletea driver; Update maps its messages onto
+// the reducer's events.
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
-// tuiFlags is tui's own surface: the store-path flags and the day, parsed like
-// next's (minus next's reserved --do).
-type tuiFlags struct {
-	configPath string
-	envFile    string
-	date       string
-	project    string
-}
-
-func parseTuiFlags(args []string) (*tuiFlags, error) {
-	flags := flag.NewFlagSet("tui", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	f := &tuiFlags{}
-	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
-	flags.StringVar(&f.envFile, "env-file", "", "environment-file path (optional; defaults to $HOME/.timesheet/.env.local when it exists)")
-	flags.StringVar(&f.date, "date", "", "day to operate on, YYYY-MM-DD (optional; omitted means today in the configured timezone)")
-	flags.StringVar(&f.project, "project", "", "project id for staged/classified intervals (required when the configuration defines multiple projects)")
-	if err := flags.Parse(args); err != nil {
-		return nil, err
-	}
-	if flags.NArg() != 0 {
-		return nil, fmt.Errorf("tui does not accept positional arguments")
-	}
-	configPath, envFile, err := resolveStoreFlags("tui", f.configPath, f.envFile)
-	if err != nil {
-		return nil, err
-	}
-	f.configPath, f.envFile = configPath, envFile
-	if dateSupplied(flags) {
-		if _, err := time.Parse("2006-01-02", f.date); err != nil {
-			return nil, fmt.Errorf("tui: --date must be YYYY-MM-DD")
-		}
-	}
-	return f, nil
-}
-
 // ttyGate is the interactive-only gate, overridable in tests the way
 // interactiveFactory is for the human-gate verbs.
 var ttyGate = func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) }
 
 func runTui(args []string) error {
-	f, err := parseTuiFlags(args)
+	f, err := parseNextFlags("tui", args)
 	if err != nil {
 		return err
 	}
-	// The gate fires before the store is opened and before the alt screen
-	// starts, so a non-terminal invocation opens no store and changes no state.
+	if f.do {
+		return fmt.Errorf("tui: --do is next's reserved flag; the tui verb takes no action flag")
+	}
+	// The gate fires before the store opens and before the alt screen starts.
 	if !ttyGate() {
 		return fmt.Errorf("tui is interactive-only: run it in a terminal (both stdin and stdout must be terminals)")
 	}
@@ -82,10 +44,10 @@ func runTui(args []string) error {
 }
 
 // preflightTui does everything that must succeed before the alt screen starts:
-// load the configuration, resolve the day, open the store once and hold the
-// lock, build the session over it, and derive the first snapshot. A
-// store_locked refusal returns here, before any screen exists.
-func preflightTui(f *tuiFlags) (tuiModel, error) {
+// load, resolve the day, open the store once and hold the lock, build the
+// session over it, derive the first snapshot. A store_locked refusal returns
+// here, before any screen exists.
+func preflightTui(f *nextFlags) (tuiModel, error) {
 	configPath, err := filepath.Abs(f.configPath)
 	if err != nil {
 		return tuiModel{}, fmt.Errorf("tui: the configuration path cannot be made absolute")
@@ -119,8 +81,7 @@ func preflightTui(f *tuiFlags) (tuiModel, error) {
 	}
 	env := tuiEnv{
 		cfg: cfg, configPath: configPath, envFile: envFile, day: day, project: f.project,
-		// One held session over the TUI's own store, built literally; never
-		// openHeadless, which would open a second store.
+		// One held session over the TUI's own store, built literally.
 		h: &headlessSession{
 			session: timesheet.NewSession(cfg, fileEnv, store),
 			store:   store, cfg: cfg,
@@ -135,16 +96,14 @@ func preflightTui(f *tuiFlags) (tuiModel, error) {
 	return tuiModel{env: env, snap: first.snap}, nil
 }
 
-// runTuiProgram runs the driver. This is the only TUI code that touches the
-// terminal.
+// runTuiProgram runs the driver: the only TUI code that touches the terminal.
 func runTuiProgram(m tuiModel) error {
 	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	if model, ok := final.(tuiModel); ok && model.closeErr != nil {
 		fmt.Fprintln(os.Stderr, "tui:", model.closeErr)
 	}
 	if err != nil {
-		// The program died rather than quit: release the session's protocol
-		// state best-effort before the deferred store close.
+		// The program died rather than quit: release the session best-effort.
 		_, _ = m.env.h.call("close", timesheet.Request{})
 		return err
 	}
@@ -155,7 +114,7 @@ func runTuiProgram(m tuiModel) error {
 func (m tuiModel) Init() tea.Cmd { return nil }
 
 // Update adapts the driver's messages onto the reducer's events and runs at
-// most one effect to completion.
+// most one effect.
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	ev := tuiEventFromMsg(msg)
 	if ev == nil {
@@ -168,24 +127,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if eff == nil {
 		return next, nil
 	}
-	run := eff
-	return next, func() tea.Msg { return run() }
+	return next, func() tea.Msg { return eff() }
 }
 
 // View renders the screen the model is on.
-func (m tuiModel) View() string { return renderDay(m) }
+func (m tuiModel) View() string {
+	switch m.bench.screen {
+	case screenBench:
+		return renderBench(m)
+	case screenGate:
+		return renderGate(m)
+	default:
+		return renderDay(m)
+	}
+}
 
-// tuiEventFromMsg maps the driver's messages onto the reducer's events. An
-// effect's own event is already a tuiEvent and passes through unchanged.
-func tuiEventFromMsg(msg tea.Msg) tuiEvent {
+// tuiEventFromMsg maps the driver's messages onto the reducer's events; an
+// effect's own event passes through unchanged, anything unknown does too and
+// the reducer's default ignores it.
+func tuiEventFromMsg(msg tea.Msg) any {
 	switch m := msg.(type) {
-	case tuiEvent:
-		return m
 	case tea.KeyMsg:
 		return keyEvent{key: m.String()}
-	case tea.WindowSizeMsg:
-		return windowEvent{width: m.Width, height: m.Height}
 	default:
-		return nil
+		return msg
 	}
 }

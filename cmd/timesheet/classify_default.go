@@ -14,47 +14,66 @@ func runClassifyDefault(f *finalizeFlags) error {
 		return err
 	}
 	defer h.done()
-	res, err := h.call("open_day", timesheet.Request{Day: f.date})
+	receipt, err := classifyDefaultDay(h, f.date, f.project)
 	if err != nil {
 		return err
+	}
+	return printJSON(receipt)
+}
+
+// classifyDefaultDay is classify --configured-default's whole flow over one
+// held session: open the day, refuse a finalized one, and fill unselected
+// unsaved intervals with the configured cached default. The tui verb's
+// classify act is the same flow over its own held session.
+func classifyDefaultDay(h *headlessSession, date, project string) (ClassifyReceipt, error) {
+	res, err := h.call("open_day", timesheet.Request{Day: date})
+	if err != nil {
+		return ClassifyReceipt{}, err
 	}
 	summary, ok := res.(timesheet.DaySummary)
 	if !ok {
-		return fmt.Errorf("classify: unexpected open_day payload")
+		return ClassifyReceipt{}, fmt.Errorf("classify: unexpected open_day payload")
 	}
 	if len(summary.Confirmed.Segments) > 0 {
-		return fmt.Errorf("classify --configured-default refuses finalized/saved days; use a reviewed classify --file decision to change saved classifications")
+		return ClassifyReceipt{}, fmt.Errorf("classify --configured-default refuses finalized/saved days; use a reviewed classify --file decision to change saved classifications")
 	}
-	cfg := h.cfg
-	project, err := resolveProject("classify", cfg, f.project)
+	project, err = resolveProject("classify", h.cfg, project)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
+	return classifyDefaultCore(h, h.cfg, date, project, summary)
+}
+
+// classifyDefaultCore is classify --configured-default's core, shared by the
+// verb and the tui verb's classify act: unselected intervals take the
+// configured cached default, existing explicit selections are preserved, and
+// the sidecar is rewritten with every selection content-bound.
+func classifyDefaultCore(h *headlessSession, cfg *timesheet.Config, date, project string, summary timesheet.DaySummary) (ClassifyReceipt, error) {
 	choice, err := h.session.ConfiguredDefault()
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
-	artifacts, err := timesheet.ReadDayArtifacts(cfg.StatePath, f.date)
+	artifacts, err := timesheet.ReadDayArtifacts(cfg.StatePath, date)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
 	if artifacts.Entries == nil {
-		return fmt.Errorf("classify: no recorded entries; run record first")
+		return ClassifyReceipt{}, fmt.Errorf("classify: no recorded entries; run record first")
 	}
-	units := ledgerUnits(artifacts.Entries.Entries, f.date)
-	if !sidecarBinds(f.date, artifacts.Choices, stagedBlocksFrom(units, artifacts.StageMap)) {
-		return fmt.Errorf("classify: stale classification sidecar; review the current staged content and repair with classify --file")
+	units := ledgerUnits(artifacts.Entries.Entries, date)
+	if !sidecarBinds(date, artifacts.Choices, stagedBlocksFrom(units, artifacts.StageMap)) {
+		return ClassifyReceipt{}, fmt.Errorf("classify: stale classification sidecar; review the current staged content and repair with classify --file")
 	}
-	staged, err := applyStage(h, cfg, "classify", f.date, project, summary)
+	staged, err := applyStage(h, cfg, "classify", date, project, summary)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
-	blocks, err := stagedBlocks(cfg, f.date)
+	blocks, err := stagedBlocks(cfg, date)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
-	if !sidecarBinds(f.date, artifacts.Choices, blocks) {
-		return fmt.Errorf("classify: stale classification sidecar after staging; review and repair with classify --file")
+	if !sidecarBinds(date, artifacts.Choices, blocks) {
+		return ClassifyReceipt{}, fmt.Errorf("classify: stale classification sidecar after staging; review and repair with classify --file")
 	}
 	selections := maps.Clone(artifacts.Choices)
 	if selections == nil {
@@ -65,18 +84,18 @@ func runClassifyDefault(f *finalizeFlags) error {
 			continue
 		}
 		bound := choice
-		bound.ContentDigest = timesheet.BlockContentDigest(f.date, block)
+		bound.ContentDigest = timesheet.BlockContentDigest(date, block)
 		selections[id] = bound
 	}
-	applied, err := applySelections(h, f.date, summary.Revision, selections)
+	applied, err := applySelections(h, date, summary.Revision, selections)
 	if err != nil {
-		return err
+		return ClassifyReceipt{}, err
 	}
-	if err := timesheet.WriteClassificationChoices(cfg.StatePath, timesheet.AppVersion, f.date, selections, time.Now()); err != nil {
-		return err
+	if err := timesheet.WriteClassificationChoices(cfg.StatePath, timesheet.AppVersion, date, selections, time.Now()); err != nil {
+		return ClassifyReceipt{}, err
 	}
-	return printJSON(ClassifyReceipt{
-		Date: f.date, SidecarFile: timesheet.ChoicesPath(cfg.StatePath, f.date), Applied: applied,
+	return ClassifyReceipt{
+		Date: date, SidecarFile: timesheet.ChoicesPath(cfg.StatePath, date), Applied: applied,
 		Selections: len(applied), Revision: summary.Revision, StagedIntervals: staged.StagedIntervals,
-	})
+	}, nil
 }

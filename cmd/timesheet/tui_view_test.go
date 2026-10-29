@@ -2,12 +2,14 @@ package main
 
 import (
 	"testing"
+
+	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
 // --- golden view tests: the day screen renders the loop verbatim --------------
 
 func dayScreen(snap loopSnapshot) string {
-	return renderDay(tuiModel{snap: snap, width: 80, height: 24})
+	return renderDay(tuiModel{snap: snap})
 }
 
 func TestRenderDayGolden(t *testing.T) {
@@ -23,7 +25,7 @@ func TestRenderDayGolden(t *testing.T) {
 				[]string{"/bin/timesheet", "run", "--config", "/cfg/config.json", "--date", "2026-10-20"},
 				"no draft artifact exists at /tmp/x/draft.json for this day",
 			)},
-			want: `pilot timesheet 0.2.0-dev.8   day 2026-10-20   project WORK
+			want: "pilot timesheet " + timesheet.AppVersion + `   day 2026-10-20   project WORK
 state action   step run
 
 argv
@@ -31,7 +33,7 @@ argv
 why
   no draft artifact exists at /tmp/x/draft.json for this day
 
-[r] re-derive   [q] quit, discarding unsaved session state
+[r] re-derive   [enter] run the derived step   [q] quit, discarding unsaved session state
 `,
 		},
 		{
@@ -46,7 +48,7 @@ why
 					Protocol:    "write {\"draft_digest\":\"abc123\"} to /tmp/x/descriptions.json",
 				},
 			)},
-			want: `pilot timesheet 0.2.0-dev.8   day 2026-10-20   project WORK
+			want: "pilot timesheet " + timesheet.AppVersion + `   day 2026-10-20   project WORK
 state judgment   step review
 
 kind         block_descriptions
@@ -55,7 +57,7 @@ draft digest abc123
 protocol
   write {"draft_digest":"abc123"} to /tmp/x/descriptions.json
 
-[r] re-derive   [q] quit, discarding unsaved session state
+[r] re-derive   [enter] run the derived step   [q] quit, discarding unsaved session state
 `,
 		},
 		{
@@ -73,7 +75,7 @@ protocol
 					},
 				},
 			)},
-			want: `pilot timesheet 0.2.0-dev.8   day 2026-10-20   project WORK
+			want: "pilot timesheet " + timesheet.AppVersion + `   day 2026-10-20   project WORK
 state judgment   step classify
 
 kind         classifications
@@ -84,7 +86,7 @@ protocol
 blocks
   iv-20261020-1  b-1  10:00-11:00  Standup
 
-[r] re-derive   [q] quit, discarding unsaved session state
+[r] re-derive   [enter] run the derived step   [q] quit, discarding unsaved session state
 `,
 		},
 		{
@@ -92,13 +94,13 @@ blocks
 			snap: loopSnapshot{day: "2026-10-20", project: "WORK", action: nextAction{Day: "2026-10-20"}.withStop(
 				"the source gate is closed by an unacknowledged attempt",
 			)},
-			want: `pilot timesheet 0.2.0-dev.8   day 2026-10-20   project WORK
+			want: "pilot timesheet " + timesheet.AppVersion + `   day 2026-10-20   project WORK
 state stopped
 
 reason
   the source gate is closed by an unacknowledged attempt
 
-[r] re-derive   [q] quit, discarding unsaved session state
+[r] re-derive   [enter] run the derived step   [q] quit, discarding unsaved session state
 `,
 		},
 		{
@@ -111,7 +113,7 @@ reason
 					Unresolved:     1, NativeUnresolved: 2,
 				},
 			)},
-			want: `pilot timesheet 0.2.0-dev.8   day 2026-10-20   project WORK
+			want: "pilot timesheet " + timesheet.AppVersion + `   day 2026-10-20   project WORK
 state human_gates   step approve
 
 approve
@@ -122,16 +124,16 @@ status
   /bin/timesheet submit-status --config /cfg/config.json --date 2026-10-20
 unresolved writes 1 legacy, 2 native
 
-[r] re-derive   [q] quit, discarding unsaved session state
+[enter] approve gate   [s] submit gate   [r] re-derive   [q] quit
 `,
 		},
 		{
 			name: "a missing optional payload renders the state without panic",
 			snap: loopSnapshot{day: "2026-10-20", action: nextAction{Day: "2026-10-20", State: stateAction}},
-			want: `pilot timesheet 0.2.0-dev.8   day 2026-10-20
+			want: "pilot timesheet " + timesheet.AppVersion + `   day 2026-10-20
 state action
 
-[r] re-derive   [q] quit, discarding unsaved session state
+[r] re-derive   [enter] run the derived step   [q] quit, discarding unsaved session state
 `,
 		},
 	}
@@ -155,7 +157,7 @@ func TestRenderFooterGolden(t *testing.T) {
 		{
 			name:  "idle shows the key legend",
 			model: tuiModel{},
-			want:  "\n[r] re-derive   [q] quit, discarding unsaved session state\n",
+			want:  "\n[r] re-derive   [enter] run the derived step   [q] quit, discarding unsaved session state\n",
 		},
 		{
 			name:  "busy locks the keys honestly",
@@ -182,3 +184,25 @@ func errForTest(msg string) error { return &appErrForTest{msg} }
 type appErrForTest struct{ msg string }
 
 func (e *appErrForTest) Error() string { return e.msg }
+
+// TestRenderBenchGolden pins the bench form: the pre-filled document, the
+// digest header, and the visible caret.
+func TestRenderBenchGolden(t *testing.T) {
+	m := tuiModel{bench: benchState{
+		screen: screenBench, kind: judgmentBlockDescriptions,
+		digest: "d1", answerFile: "/tmp/x/descriptions.json",
+		text:  "{\"draft_digest\": \"d1\",\"descriptions\": {\"b-1\": \"\"}}\n",
+		caret: 4,
+	}}
+	want := "author block_descriptions\n" +
+		"answer file  /tmp/x/descriptions.json\n" +
+		"digest       d1 (copied from the judgment; keep this field)\n" +
+		"\n" +
+		"{\"dr▌aft_digest\": \"d1\",\"descriptions\": {\"b-1\": \"\"}}\n" +
+		"\n" +
+		"\n" +
+		"[ctrl+s] write   [esc] abandon form, unsaved text dies\n"
+	if got := renderBench(m); got != want {
+		t.Fatalf("rendered bench differs:\n--- got ---\n%s--- want ---\n%s", got, want)
+	}
+}

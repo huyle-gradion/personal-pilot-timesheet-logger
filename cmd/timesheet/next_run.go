@@ -19,10 +19,10 @@ import (
 	"github.com/huyle-gradion/pilot-timesheet/internal/timesheet"
 )
 
-// nextFlags is next's own surface. It is deliberately separate from
-// parseHeadlessFlags: next also carries --project and --do, and it resolves an
-// omitted --date through the binary's existing helper without depending on the
-// shared dateOptionalCommands map being wired for "next" yet.
+// nextFlags is the surface shared by the next and tui verbs: both take the
+// store-path flags, --date and --project, and both resolve an omitted --date
+// through the binary's existing helper. --do is next's reserved flag; tui
+// refuses it in its own runner.
 type nextFlags struct {
 	configPath string
 	envFile    string
@@ -31,8 +31,8 @@ type nextFlags struct {
 	do         bool
 }
 
-func parseNextFlags(args []string) (*nextFlags, error) {
-	flags := flag.NewFlagSet("next", flag.ContinueOnError)
+func parseNextFlags(name string, args []string) (*nextFlags, error) {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	f := &nextFlags{}
 	flags.StringVar(&f.configPath, "config", "", "configuration path (optional; defaults to $HOME/.timesheet/config.json)")
@@ -44,16 +44,16 @@ func parseNextFlags(args []string) (*nextFlags, error) {
 		return nil, err
 	}
 	if flags.NArg() != 0 {
-		return nil, fmt.Errorf("next does not accept positional arguments")
+		return nil, fmt.Errorf("%s does not accept positional arguments", name)
 	}
-	configPath, envFile, err := resolveStoreFlags("next", f.configPath, f.envFile)
+	configPath, envFile, err := resolveStoreFlags(name, f.configPath, f.envFile)
 	if err != nil {
 		return nil, err
 	}
 	f.configPath, f.envFile = configPath, envFile
 	if dateSupplied(flags) {
 		if _, err := time.Parse("2006-01-02", f.date); err != nil {
-			return nil, fmt.Errorf("next: --date must be YYYY-MM-DD")
+			return nil, fmt.Errorf("%s: --date must be YYYY-MM-DD", name)
 		}
 	}
 	return f, nil
@@ -67,7 +67,7 @@ func parseNextFlags(args []string) (*nextFlags, error) {
 // errors, config load failures and the store's own lock refusal
 // (store_locked) remain nonzero process errors.
 func runNext(args []string) error {
-	f, err := parseNextFlags(args)
+	f, err := parseNextFlags("next", args)
 	if err != nil {
 		return err
 	}

@@ -42,7 +42,7 @@ func TestTuiPipelineMatchesNextDerivation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("next: %v", err)
 	}
-	m, err := preflightTui(&tuiFlags{configPath: cfg, envFile: envFile, date: day})
+	m, err := preflightTui(&nextFlags{configPath: cfg, envFile: envFile, date: day})
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
