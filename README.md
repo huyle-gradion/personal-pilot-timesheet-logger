@@ -2,109 +2,132 @@
 
 Application version: **`0.2.0-dev.5`** (unreleased development stamp; the
 published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
+This is a development build: no version bump, release tag or adapter/package
+stamp change is part of the daily-workflow work.
 
 This repository is one timesheet product: a single compiled Go binary owns all
-accounting, validation and persistence, and one pinned Pi consumer renders the
-local human workflow and exposes exactly one bounded model tool. The legacy
-CLI subcommands, the old product skill and the vault sync/generator source were
-retired in this cutover; they are not part of this product and must not be
-reintroduced.
+accounting, validation and persistence. Two callers drive it: the **regular Pi
+skill** (`.pi/prompts/timesheet.md` → `.agents/skills/timesheet/SKILL.md`),
+which needs no launcher and runs the `next` loop directly, and the optional
+**pinned Pi launcher/TUI** (`pi/launch.mjs`), which renders the local operator
+workflow and exposes one bounded model tool. Both call the same binary and the
+same planner; neither is required by the other. The legacy CLI subcommands, the
+old product skill and the vault sync/generator source remain retired and must
+not be reintroduced.
 
 ## Build
 
-One path, from the repository root, with the Go toolchain the module pins
-(`go 1.27.1`, tested with go1.27.3 on Linux):
+From the repository root, with any Go toolchain matching `go.mod`
+(`go 1.27.1`; tested here with go1.27.3 on Linux):
 
 ```bash
 go build -trimpath -o bin/timesheet ./cmd/timesheet
 bin/timesheet version   # prints the application version and protocol schema, exits 0
 ```
 
-`bin/timesheet` is the production-named executable. Its server commands are
-`version` and `serve --config <path> --env-file <path>`, plus the headless
-skill subcommands described below (`collect`, `draft`, `record`, `status` for
-local logging; `stage`, `classifications`, `classify`, `acknowledge`, `decide`,
-`confirm`, `save`, `plan`, `reconcile`, `resolve` and `submit-status` for the
-path from a recorded day to a printed plan; `approve`, `submit` and
-`resolve-write` are TTY-gated and interactive-only). A normal `version` run, a
-normal `serve` close/EOF and `serve` help exit `0`. No top-level command, an
-unknown top-level command, or extra `version` arguments exit `2`. `serve`
-argument validation (an unknown flag, an extra positional, a missing required
-flag), startup failure and stream failure exit `1`. Usage errors make no
-remote call.
+A mise-managed Go (`mise exec -- go build ...`) is environment troubleshooting
+on hosts where `go` is not on `PATH`; it is not a project dependency.
 
-## Daily log skill
+`bin/timesheet` is the production-named executable. Its server commands are
+`version` and `serve --config <path> --env-file <path>`, plus `setup` and the
+headless surface described below. `next` is the planner the skill uses; the
+other headless verbs (`run`, `record`, `stage`, `classifications`, `classify`,
+`save`, `plan`, `reconcile`, `resolve`, `submit-status`) are also directly
+invocable for recovery. `approve`, `submit` and `resolve-write` are TTY-gated
+and interactive-only. A normal `version` run, a normal `serve` close/EOF and
+`serve` help exit `0`. No top-level command, an unknown top-level command, or
+extra `version` arguments exit `2`. `serve` argument validation (an unknown
+flag, an extra positional, a missing required flag), startup failure and stream
+failure exit `1`. Usage errors make no remote call.
+
+## Daily log: regular Pi skill (no launcher)
 
 Daily driver, in a Pi session: type `/timesheet log today work`. Pi expands
 `.pi/prompts/timesheet.md` into the skill below, and the binary resolves
 "today" in the configured timezone, so no Node launcher is involved. The
-launcher and TUI remain available as an optional surface, not a requirement.
+launcher/TUI remains an optional target, not a requirement.
 
 The assignment deliverable is a runner-agnostic skill folder:
-`.agents/skills/timesheet/SKILL.md`, picked up by Claude Code
-through the `.claude/skills/timesheet` link and executable by any agent
-runtime with shell access — including the Pi agent. Every deterministic
-step is a fixed binary subcommand; the single judgment step reviews only the
-compact one-day draft JSON produced by:
+`.agents/skills/timesheet/SKILL.md`, picked up by Claude Code through the
+`.claude/skills/timesheet` link and executable by any agent runtime with shell
+access. The skill locates the binary through its own
+`.agents/skills/timesheet/scripts/ts-env` helper, checks `next --help`, and
+builds once before the loop if the found binary predates the planner.
+
+Start the day with:
 
 ```bash
-bin/timesheet collect --config <config> [--env-file <env>] [--date <date>]
-bin/timesheet draft   --config <config> [--env-file <env>] [--date <date>]
-bin/timesheet run     --config <config> [--env-file <env>] [--date <date>]
-bin/timesheet record  --config <config> [--date <date>] --file reviewed.json [--replace]
-bin/timesheet status  --config <config> [--date <date>]
+bin/timesheet next [--config <path>] [--env-file <path>] [--date <YYYY-MM-DD>] [--project <id>]
 ```
 
-For these five commands an omitted `--date` means today in the configured
-timezone, resolved by the binary; a supplied `--date` always wins and must be a
-real date.
+With no flags, config resolution is explicit `--config` → `./timesheet.json` in
+the current directory → `~/.timesheet/config.json`, and `--env-file` defaults
+to `~/.timesheet/.env.local` when it exists. Omitted `--date` means today in
+the configured timezone; a supplied date always wins. A setup-generated
+configuration stores an **absolute** `state_path`, so commands using that
+config do not resolve their store from cwd. A legacy configuration with a
+relative `state_path` keeps its existing cwd-relative meaning; do not claim
+cwd independence for it.
 
-`record --replace` (issue #162) treats the reviewed file as the day's complete
-content: all blocks for the day are replaced with the file's blocks (ids from
-the file; blocks absent from it are removed) instead of merged — use it after
-re-collecting a day, when the new generation supersedes the old. `collect` and
-`run` print the fresh collection_id as one stderr line, and `status` carries
-each enabled source's latest collection attempt (status and collection_id), so
-`acknowledge`/`decide` can copy the id verbatim without reading `state.json`.
+`next` is read-only and stateless: no progress journal, no `--answer` flag and
+no `--do` dispatcher. It prints one typed JSON state per invocation, derived
+from the current ledger, stage map, answers and durable store:
 
-The submission tail adds one headless step per line (campaign issue #160,
-slices SUBMIT-1..4; full flow: run → record → stage → classifications/classify
-→ confirm → save → plan → [reconcile/resolve if blockers] → plan with a new
-plan_id → approve → submit, with submit-status for recovery):
+- `action` — the exact `action.cmd` argv. Run it verbatim, never through a
+  shell. It carries an absolute executable, config and day, plus the env-file
+  when one was resolved.
+- `judgment` — a model-owned answer file at `judgment.answer_file`, bound to
+  the exact content it judged:
+  - descriptions: `{"draft_digest":"<from the report>","notes":"…","descriptions":{"<block_id>":"<prose>"}}`
+  - classifications: `{"ledger_digest":"<from the report>","selections":{"<interval_id>":{"catalog_id":"…","classification_id":"…"}}}`
+  The classification judgment is self-contained in `judgment.blocks[]`
+  (`interval_id`, `block_id`, `start`, `end`, `description`); it needs no
+  draft or TMP artifact. Copy digest fields verbatim; a stale binding is
+  re-judged, never handed to `record`/`classify`.
+- `stopped` — an explicit blocker with its remedy (source gate, multiple
+  projects, a stale plan, a changed finalized ledger, or a missing remote
+  boundary). The skill reports the reason and stops; it never silently
+  acknowledges a source, guesses an attendance verdict, binds an identity or
+  reuses a stale plan. An explicitly user-authorized decision is performed
+  once where safe.
+- `human_gates` — the terminal state. Run the read-only `submit-status`
+  command, print the exact `approve`/`submit` commands, and stop.
+
+A failed action is not retried as-is. The skill repairs only an answer-file
+validation error (unknown id, missing description, missing/stale digest) and
+runs once more; any other repeat stops with the binary error plus one line.
+
+Underlying verbs remain invocable for recovery and are what `next` derives:
 
 ```bash
-bin/timesheet stage          --config <config> [--env-file <env>] --date <date> [--project <id>]
-bin/timesheet classifications --config <config> [--env-file <env>] --query <text>
-bin/timesheet classify       --config <config> [--env-file <env>] --date <date> --file <choices.json> [--project <id>]
-bin/timesheet acknowledge    --config <config> [--env-file <env>] --date <date> --source <github|calendar> --collection-id <id>
-bin/timesheet decide         --config <config> [--env-file <env>] --date <date> --meeting-id <id> --decision <attended|skipped> --collection-id <id>
-bin/timesheet confirm        --config <config> [--env-file <env>] --date <date> [--project <id>]
-bin/timesheet save           --config <config> [--env-file <env>] --date <date> [--project <id>]
-bin/timesheet plan           --config <config> [--env-file <env>] --date <date>
-bin/timesheet reconcile      --config <config> [--env-file <env>] --date <date>
-bin/timesheet resolve        --config <config> [--env-file <env>] --date <date> --file <decision.json>
-bin/timesheet approve        --config <config> [--env-file <env>] --date <date>                     # interactive-only
-bin/timesheet submit         --config <config> [--env-file <env>] --date <date> --approval-id <id>  # interactive-only
-bin/timesheet submit-status  --config <config> [--env-file <env>] --date <date>
-bin/timesheet resolve-write  --config <config> [--env-file <env>] --file <decision.json>            # interactive-only
+bin/timesheet run             [--config <path>] [--env-file <path>] [--date <date>]
+bin/timesheet record          [--config <path>] [--env-file <path>] [--date <date>] (--draft <draft.json> --descriptions <desc.json> | --file <reviewed.json>)
+bin/timesheet stage           [--config <path>] [--env-file <path>] --date <date> [--project <id>]
+bin/timesheet classifications [--config <path>] [--env-file <path>] --query <text>
+bin/timesheet classify        [--config <path>] [--env-file <path>] --date <date> --file <choices.json> [--project <id>]
+bin/timesheet save            [--config <path>] [--env-file <path>] --date <date> [--project <id>]
+bin/timesheet plan            [--config <path>] [--env-file <path>] --date <date>
+bin/timesheet reconcile       [--config <path>] [--env-file <path>] --date <date>
+bin/timesheet resolve         [--config <path>] [--env-file <path>] --date <date> --file <decision.json>
+bin/timesheet submit-status   [--config <path>] [--env-file <path>] --date <date>
 ```
 
-Entries land in `<state dir>/entries/<date>.json`, merged idempotently per
-time block with full source references; `entries/` stays the human ledger and
-is the staging source, with post-save divergence caught by the plan content
-hash. `scripts/tokens.py` records the day's model token usage from Claude Code
-or Pi transcripts into `benchmarks/tokens.csv`. Gate discipline: the skill may
-run every step above except `approve`, `submit` and `resolve-write` — those
-are deliberate-act barriers (a terminal on both stdin and stdout plus the
-exact typed `plan_id`/`approval_id`/`write_ref`; not proof of human presence —
-a pty wrapper defeats it), so the agent stops after
-`plan`, hands the human the plan_id, and never attempts them; a submit is
-never auto-retried, and unknown outcomes stay unresolved until a human
-resolves them.
+`acknowledge`, `decide`, `confirm` and `stage --revise` remain available too;
+`approve`, `submit` and `resolve-write` are TTY-gated and human-only. Entries
+land in `<state dir>/entries/<date>.json`, merged idempotently per time block
+with full source references; `entries/` stays the human ledger and staging
+source. `save` is the existing confirm+save pair. `scripts/tokens.py`
+optionally records model token usage into `benchmarks/tokens.csv`; metric
+collection never blocks the day. `approve`/`submit` require a terminal on
+stdin and stdout plus the exact typed `plan_id`/`approval_id` (not proof of
+human presence — a pty wrapper defeats it), so the agent never attempts them;
+a submit is never auto-retried, and unknown outcomes stay unresolved until a
+human resolves them.
 
-## Launch
+## Optional launcher/TUI target
 
-One path, the trusted launcher:
+The regular Pi skill above is the no-launcher path. The pinned launcher is the
+optional TUI/operator target and calls the same binary and planner:
 
 ```bash
 node pi/launch.mjs \
@@ -114,9 +137,10 @@ node pi/launch.mjs \
   --profile-dir "$HOME/.timesheet/pi-profile"
 ```
 
-Keep existing configured state and credential paths when updating. These example
-paths are not a migration instruction; do not start with an empty replacement
-store just to change directory names.
+The launcher supplies fixed paths; the regular skill resolves them from flags
+or its home/cwd precedence. Keep existing configured state and credential paths
+when updating. These example paths are not a migration instruction; do not
+start with an empty replacement store just to change directory names.
 
 The launcher spawns the pinned Pi CLI (`@earendil-works/pi-coding-agent`
 `1.4.0`, `pi-tui` `1.4.0`, `typebox` `1.3.27`, Node `>=22.19.0`, installed with
@@ -130,7 +154,8 @@ handle paths only; the compiled child reads the files.
 
 ## Local `/timesheet` flow
 
-Inside the pinned Pi session:
+Inside the optional pinned launcher/TUI session (the regular skill path is
+above):
 
 ```text
 /timesheet 2026-10-23
@@ -189,6 +214,8 @@ Never write before the day is reconciled; never plan from an unsaved draft.
   local Pi logging, confirm/save/cancel, saved-versus-staged restart, edit/cancel,
   reload, normal shutdown and lock release. The Darwin runner result was supplied
   by the owner; its remote capsule was not independently downloaded here.
+- For the `next`/daily-workflow integration, the parent baseline passed all Go
+  tests on Linux; macOS was **not run** for this change.
 - **Known dependency risk, owner-accepted for this release:** pinned Pi `1.4.0`
   embeds Undici `8.10.2`, affected by a high-severity fetch process-crash advisory
   and two moderate EventSource/integrity advisories. No patched Pi bundle has
@@ -205,6 +232,9 @@ Never write before the day is reconciled; never plan from an unsaved draft.
 
 - `docs/agents/timesheet-interface.md` — authoritative `serve` protocol, config,
   environment precedence, error codes and the accepted stage history.
+- `docs/architecture/timesheet-daily-workflow.md` — the stateless `next`
+  planner, digest-bound judgments, responsibility map and accepted deviations.
+- `docs/setup-linux.md` — first-run setup and configuration discovery on Linux.
 - `pi/README.md` — launcher/adapter isolation, consumer contract and limits.
 - `cmd/timesheet/timesheet.example.json` — minimal valid configuration with
   synthetic placeholders.

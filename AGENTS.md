@@ -2,10 +2,11 @@
 
 ## Publication and versioning
 
-- Use GitHub account `huyle-gradion` and repository-local Git identity `Huy Le <huy.leminh@gradion.com>`. Verify author, committer and authenticated account before publication; keep global Git settings unchanged.
+- Use GitHub account `huyle-gradion` and repository-local Git identity `Huy Le <huy.leminh@gradion.com>`. Verify author, committer and authenticated account before publication; on this host use `GH_CONFIG_DIR=$HOME/.config/gh` because the agent runtime's XDG config selects a different account. Confirm `gh api user --jq .login` is `huyle-gradion`. Keep global Git settings unchanged.
 - Use **Timesheet** as the public product name and neutral product terminology in source, documentation and release metadata.
 - Every shipped application changeset updates SemVer consistently across Go, adapter negotiation, package/root-lock stamps, changelog and release tag.
 - Preserve published commits and tags unless the owner explicitly authorizes changing history.
+- Any Go toolchain matching `go.mod` builds the repository; a mise-managed Go path is local environment troubleshooting, not a project dependency.
 
 ## Agent skills
 
@@ -49,17 +50,23 @@ iCal URL) stored in the macOS Keychain, with code reading from there. See
 ## Timesheet daily log (skill)
 
 When asked to "log today's work" or "log the timesheet" for a day, follow
-`.agents/skills/timesheet/SKILL.md` exactly: run the binary's `run`,
-`record` and `status` subcommands as the [Script] steps, perform
-only the judgment step (per-block grouped-topic descriptions, ambiguous
-events, completeness) on the draft JSON, and record token usage with
-`scripts/tokens.py`. Every invocation then carries the day through the full
-headless tail - `stage`, `classifications`/`classify`, `confirm`, `save`,
-`plan` (plus `reconcile`/`resolve` for identity blockers) and read-only
-`submit-status` - and ends by printing the exact `approve`/`submit` commands
-for the human; it never stops after `record`/`status`.
-It is runner-agnostic (Pi or any agent with shell access); it never runs the
+`.agents/skills/timesheet/SKILL.md` exactly. The skill resolves `TS_BINARY`
+through its own `scripts/ts-env` helper, checks `next --help`, and builds once
+if the found binary predates the planner; it then drives the day with one `next`
+JSON loop: each invocation prints exactly one `action` (run its `action.cmd`
+argv verbatim, never through a shell), `judgment` (write the model answer file
+it names, copying the report's `draft_digest`/`ledger_digest` verbatim),
+`stopped` (report the precise blocker and stop) or `human_gates` (run
+read-only `submit-status`, print the exact `approve`/`submit` commands, stop).
+The descriptions judgment reads only the draft the protocol names; the
+classification judgment is self-contained in `judgment.blocks[]` and needs no
+draft or `$TMP` artifact. A repeated failed action is repaired only when the
+answer file has a validation error, otherwise it stops with one line. Stopped
+states are never silently acknowledged, guessed or resolved; an explicitly
+user-authorized decision is performed exactly once where safe. It is
+runner-agnostic (Pi or any agent with shell access). It never runs the
 TTY-gated `approve`, `submit` or `resolve-write` — those need an interactive
 terminal and the exact typed `plan_id`/`approval_id`/`write_ref`, and
-attempting them is a contract violation. Submission is never auto-retried;
-unknown outcomes stay unresolved until a human resolves them.
+attempting them is a contract violation. Submission is never auto-retried, and
+unknown outcomes stay unresolved until a human resolves them. Optional token
+metrics never block the day.
