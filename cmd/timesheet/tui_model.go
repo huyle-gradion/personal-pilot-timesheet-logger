@@ -160,6 +160,10 @@ func update(m tuiModel, ev any) (tuiModel, effect) {
 		m.bench = benchState{
 			screen: screenBench, kind: e.kind, digest: e.digest,
 			answerFile: e.answerFile, text: e.text, caret: utf8.RuneCountInString(e.text),
+			preview: e.preview, approvals: e.approvals,
+		}
+		if e.kind == gateApprove || e.kind == gateSubmit {
+			m.bench.screen = screenGate
 		}
 		return m, nil
 	default:
@@ -243,9 +247,7 @@ func updateKey(m tuiModel, key string) (tuiModel, effect) {
 		}
 		m.busy, m.err = true, nil
 		return m, func() any { return m.env.act(step, m.snap.project) }
-	case "s":
-		// The submit gate keeps its own key; the approve gate is enter, the
-		// day screen's do-the-licensed-thing key on the gates state.
+	case "s": // the submit gate; the approve gate is enter, the day screen's act key
 		if stepAct(m.snap.action) != stateHumanGates {
 			return m, nil
 		}

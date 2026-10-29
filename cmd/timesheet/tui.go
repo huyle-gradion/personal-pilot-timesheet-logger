@@ -31,7 +31,7 @@ func runTui(args []string) error {
 	if f.do {
 		return fmt.Errorf("tui: --do is next's reserved flag; the tui verb takes no action flag")
 	}
-	// The gate fires before the store opens and before the alt screen starts.
+	// The gate fires before the store opens and before any screen exists.
 	if !ttyGate() {
 		return fmt.Errorf("tui is interactive-only: run it in a terminal (both stdin and stdout must be terminals)")
 	}

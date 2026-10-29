@@ -122,8 +122,7 @@ func (e tuiEnv) actStage(project string) error {
 	return err
 }
 
-// actClassify, actClassifyDefault and actSave are the verbs' own entries over
-// the held session.
+// actClassify, actClassifyDefault and actSave are the verbs' own entries.
 func (e tuiEnv) actClassify(project string) error {
 	dir, err := dayArtifactsDir(e.cfg.StatePath, e.day)
 	if err != nil {
