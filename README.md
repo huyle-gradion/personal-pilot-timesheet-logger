@@ -1,5 +1,10 @@
 # Pilot Timesheet
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/go-1.27.1-00ADD8?logo=go)](go.mod)
+[![Protocol/state schema](https://img.shields.io/badge/schema-1%2F3-informational)](docs/agents/timesheet-interface.md)
+[![Submission: human-gated](https://img.shields.io/badge/submission-human--gated-brightgreen)](#recovery-and-no-replay)
+
 Pilot Timesheet is a single Go binary for logging your own working days with
 agent help: it collects evidence (Git/GitHub and calendar), records your day,
 stages and classifies each time block, plans the entry, and keeps an audit
@@ -8,22 +13,63 @@ developer logging their own days with agent help. All evidence stays in
 `~/.timesheet`; nothing leaves the machine until you approve and submit it
 yourself through an interactive terminal.
 
+**What it does.** One binary owns accounting, validation and persistence. It
+collects sourced evidence, keeps a typed human-readable ledger under
+`<state dir>/entries/`, plans each day, and dispatches a remote submission only
+after an interactive human approval bound to that exact plan.
+
+**What it does not do.** It never writes remotely without that gate, never
+retries or replays a dispatched write, never binds a remote identity without an
+explicit human decision, and never calls anything outside the configured
+plumbing. Release readiness and known gaps are tracked in
+[Readiness](#readiness) — this is a development build, not a
+production-ready release.
+
+Contributions are welcome: see [Contributing](#contributing), and the
+[`good first issue`](https://github.com/huyle-gradion/pilot-timesheet/labels/good%20first%20issue)
+and [`help wanted`](https://github.com/huyle-gradion/pilot-timesheet/labels/help%20wanted)
+queues for a starting point.
+
 Application version: **`0.2.0-dev.6`** (unreleased development stamp; the
 published release line is `0.1.1`). Protocol schema `1`, state schema `3`.
 This is a development build: no version bump, release tag or adapter/package
 stamp change is part of the daily-workflow work.
 
-This repository is one Pilot Timesheet product: a single compiled Go binary owns all
-accounting, validation and persistence. Two callers drive it: the **regular Pi
-skill** (`.pi/prompts/timesheet.md` → `.agents/skills/timesheet/SKILL.md`),
-which needs no launcher and runs the `next` loop directly, and the optional
-**pinned Pi launcher/TUI** (`pi/launch.mjs`), which renders the local operator
-workflow and exposes one bounded model tool. Both call the same binary and the
-same planner; neither is required by the other. The legacy CLI subcommands, the
-old product skill and the vault sync/generator source remain retired and must
-not be reintroduced.
+## Quickstart
 
-## Build
+You need a Go toolchain matching `go.mod` (`go 1.27.1`; tested here with
+go1.27.3 on Linux) and, for the optional TUI launcher, Node `>=22.19.0`:
+
+```bash
+git clone https://github.com/huyle-gradion/pilot-timesheet.git
+cd pilot-timesheet
+go build -trimpath -o bin/timesheet ./cmd/timesheet
+bin/timesheet version          # prints the version and protocol schema, exits 0
+```
+
+Create the `~/.timesheet` store once with `setup`. Projects are never invented:
+pass `--project '<id>=<name>[=<classification>]'` flags (repeatable; the
+classification is optional) or a `--seed-config` to load; the timezone is an
+explicit `--tz <IANA>` or the host zone:
+
+```bash
+bin/timesheet setup --project 'acme=Acme Client' --tz 'America/New_York'
+```
+
+Then run the day through the planner — read-only; it prints one typed JSON
+state that an agent follows, ending at human-only `approve`/`submit`:
+
+```bash
+bin/timesheet next
+```
+
+The intended daily driver is an agent session using the bundled
+[`.agents/skills/timesheet/SKILL.md`](.agents/skills/timesheet/SKILL.md) skill,
+which drives `next` for you; see [Daily log](#daily-log-regular-pi-skill-no-launcher)
+below. `docs/setup-linux.md` covers first-run setup and configuration
+discovery in full.
+
+## Build and command surface
 
 From the repository root, with any Go toolchain matching `go.mod`
 (`go 1.27.1`; tested here with go1.27.3 on Linux):
@@ -47,6 +93,28 @@ and interactive-only. A normal `version` run, a normal `serve` close/EOF and
 extra `version` arguments exit `2`. `serve` argument validation (an unknown
 flag, an extra positional, a missing required flag), startup failure and stream
 failure exit `1`. Usage errors make no remote call.
+
+## What lives where
+
+This repository is one Pilot Timesheet product: a single compiled Go binary
+owns all accounting, validation and persistence. Two callers drive it: the
+**regular Pi skill** (`.pi/prompts/timesheet.md` →
+`.agents/skills/timesheet/SKILL.md`), which needs no launcher and runs the
+`next` loop directly, and the optional **pinned Pi launcher/TUI**
+(`pi/launch.mjs`), which renders the local operator workflow and exposes one
+bounded model tool. Both call the same binary and the same planner; neither is
+required by the other. The legacy CLI subcommands, the old product skill and
+the vault sync/generator source remain retired and must not be reintroduced.
+
+| Path | What it is |
+| --- | --- |
+| `cmd/timesheet/` | The single-binary entrypoint: every command listed above, plus the minimal valid example configuration. |
+| `internal/` | The Go engine: accounting, validation, persistence, the `next` planner. |
+| `.agents/skills/timesheet/` | The runner-agnostic agent skill (`SKILL.md`, `scripts/ts-env`) that drives the binary; linked from `.claude/skills/timesheet` for Claude Code. |
+| `.pi/prompts/timesheet.md` | The Pi prompt that expands into the same skill. |
+| `pi/` | The optional pinned launcher/TUI and its adapter (`pi/README.md` has the isolation contract). |
+| `docs/` | The authoritative specs: protocol, architecture, setup, credentials. See [Documentation](#documentation). |
+| `scripts/` | Optional helper scripts, e.g. `tokens.py` benchmark collection (never blocks the day). |
 
 ## Daily log: regular Pi skill (no launcher)
 
@@ -253,6 +321,31 @@ Never write before the day is reconciled; never plan from an unsaved draft.
   request; remote submission still requires an exact human-approved plan.
 - `durability_uncertain` UI behavior remains source-reviewed plus accepted
   backend coverage, not a newly TUI-fault-proven case.
+
+## Contributing
+
+Contributions are welcome. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md): it covers the flow (issue first, one topic
+per pull request, the required PR body format) and the local checks every PR
+must report:
+
+```bash
+go build -trimpath -o ./bin-timesheet ./cmd/timesheet
+go test -race -shuffle=on ./...
+```
+
+The [architecture doc](docs/architecture/timesheet-daily-workflow.md) and the
+[serve protocol spec](docs/agents/timesheet-interface.md) are the reference for
+how the planner and the binary are expected to behave; a small surface with
+strong conventions — safety invariants like human-gated submission, no replay
+and no unverified writes are enforced by the binary and the tests, not just
+preferred, and a patch that weakens one is not mergeable regardless of how even
+it looks.
+
+Before changing safety-relevant behavior, read [Recovery and no
+replay](#recovery-and-no-replay) and [Migration and reconciliation before any
+write](#migration-and-reconciliation-before-any-write). Bug reports, without a
+patch, are contributions too: open an issue with reproduction steps.
 
 ## Documentation
 
