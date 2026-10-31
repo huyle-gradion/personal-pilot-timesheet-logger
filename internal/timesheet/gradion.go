@@ -6,7 +6,7 @@ package timesheet
 // capabilities only: it requires timesheet__get_my_week and
 // timesheet__get_classifications and has no method that can dispatch log_time,
 // edit_time, a delete tool, a REST call, or an arbitrary tool name. It exposes no
-// generic MCP call operation. The endpoint is launcher-provisioned and the token
+// generic MCP call operation. The endpoint is operator-configured and the token
 // is resolved by the compiled binary through the documented dotenv/inherited
 // precedence; neither value is ever echoed into a response, receipt, error or
 // state document.
@@ -51,7 +51,7 @@ func missingCredentialError(name string) error {
 }
 
 // NewGradionReader resolves the configured credential NAME and builds a session
-// over the launcher-provisioned endpoint. It performs no IO.
+// over the operator-configured endpoint. It performs no IO.
 func NewGradionReader(cfg *Config, env map[string]string) (*GradionReader, error) {
 	if cfg == nil || cfg.Gradion == nil || !cfg.Gradion.Enabled {
 		return nil, newError(CodeRemoteDisabled, "read-only remote access is not enabled in configuration")

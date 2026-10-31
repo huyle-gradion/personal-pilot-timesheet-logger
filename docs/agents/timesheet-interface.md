@@ -1,21 +1,24 @@
-# Pilot Timesheet interface (`0.2.0-dev.9`)
+# Pilot Timesheet interface (`0.2.0-dev.10`)
 
-Application version: `0.2.0-dev.9` (published as the pre-release
-`v0.2.0-dev.9`; the previous stable line is `0.1.1`).
+Application version: `0.2.0-dev.10` (the upcoming pre-release
+`v0.2.0-dev.10`; the previous stable line is `0.1.1`).
 Protocol schema: `1`. State schema: `3`.
 
 This document is the public interface for the current release. The
 implemented surface is the accepted R1-R5 slices: the local review-first
 workflow, R2 verification-only evidence collection, the R3 migration/read-only
 boundary, the R4 native approval ledger and ONE verified submission path, and
-the R5 pinned Pi consumer. R6 changes no protocol, schema or store behavior: it
+the R5 pinned Pi consumer (retired in `0.2.0-dev.10`: the native `tui` verb is
+the operator surface and `serve` remains the protocol server). R6 changes no
+protocol, schema or store behavior: it
 retires the legacy CLI, moves the one entry point to `cmd/timesheet` and makes
 `bin/timesheet` the production-named child. The stage descriptions below remain
 accurate as historical slices.
 
 Release `0.1.0` promotes the verified dev.17 behavior without changing protocol,
 schemas or dependency pins. The owner explicitly accepted the known upstream
-Pi/Undici risk for this release; R6 remains open for improvements. See the root
+Pi/Undici risk for that release; the exposure left the repository with the
+retired launcher in `0.2.0-dev.10`. See the root
 README for current verification and limitations. Historical stage notes below
 describe their original snapshots, not new runtime evidence.
 
@@ -51,10 +54,11 @@ loads no configuration, environment file, credentials, or evidence.
 stdin and writes one JSON response per line to stdout. Diagnostics go to stderr
 and are sanitized. The process never launches a shell.
 
-`--config` and `--env-file` are fixed launcher inputs. There are no request
-fields for paths, executable names, or arbitrary operations. Both flags are
-required for `serve`; the headless subcommands require `--config` and treat
-`--env-file` as optional (no file values when omitted).
+`--config` and `--env-file` are process inputs for `serve`, `tui` and the
+headless subcommands. There are no request fields for paths, executable names,
+or arbitrary operations. Both flags are required for `serve`; the headless
+subcommands require `--config` and treat `--env-file` as optional (no file
+values when omitted).
 
 Exit codes: `0` for a normal `version` run, a normal `serve` close/EOF and
 `serve` help; `2` for a missing or unknown top-level command and extra
@@ -128,6 +132,18 @@ same content-bound sidecar.
 `stale_revision` from any act re-runs `review`, re-derives, and reopens the
 authoring form fresh when the loop still asks for the same judgment; the loop
 moving past that judgment closes the form instead of showing a dead end.
+
+Presentation is one SGR-only style owner bound to one renderer; under the
+Ascii profile (`NO_COLOR`, `TERM=dumb`, a pipe) every style renders as identity
+and the frame is plain text. Recorded content is sanitized at render
+composition, once per field, so a control rune in evidence, a description, a
+protocol string, a plan body, an approval row or an error line never drives the
+terminal while the UI's own styling escapes survive. Windowing is height-only:
+the day screen pins the judgment's instruction surface and the gate commands,
+counts and next-line, clipping only the block and status row lists; a gate pins
+its head and typed echo; the bench fits the document around the caret. Clipping
+names its hidden count with an honest `+N lines` indicator inside the budget.
+Interactive scrolling is not part of this release.
 
 ## Headless skill surface
 
@@ -736,7 +752,7 @@ any staged/confirmed collision.
 }
 ```
 
-Disabled by default. `endpoint` is launcher-provisioned. `token_env` is a variable
+Disabled by default. `endpoint` is operator-configured. `token_env` is a variable
 **name** (default `GRADION_MCP_TOKEN`); only the compiled binary resolves its value
 through the documented dotenv/inherited precedence, including inherited-empty. A
 missing credential reports the name only. No Keychain dependency, real settings
@@ -1067,7 +1083,7 @@ echoing file contents.
 | `migration.legacy_timezone` | if enabled | IANA timezone that governed the legacy records. Recorded on migrated days; never replaced by the current `timezone`. |
 | `migration.project_map` / `migration.classification_map` | no | Explicit legacy-value translations. A value not directly representable and not mapped is a visible conflict, never an invented replacement. |
 | `gradion` | no | Disabled-by-default remote boundary. Reads verify capability-only; writes exist only behind the approval ledger. |
-| `gradion.endpoint` | if enabled | Launcher-provisioned MCP endpoint. Never echoed into a response, receipt, error or state document. |
+| `gradion.endpoint` | if enabled | Operator-configured MCP endpoint. Never echoed into a response, receipt, error or state document. |
 | `gradion.token_env` | no | Credential variable **name**, default `GRADION_MCP_TOKEN`. Only the binary resolves its value. |
 | `work_hours` | no | Optional, presentation-only main-work-time policy for the draft annotation. Omitted means no annotation and byte-identical output. |
 | `work_hours.days` | if present | Non-empty list of exactly `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` (lowercase, three letters; nothing is normalized). |
@@ -1119,7 +1135,7 @@ annotation changes no span, duration, or recorded entry.
 ## Environment file and precedence
 
 `--env-file` points at a local file (normally `.env.local`). It is read by the
-compiled binary as data. The model/Pi adapter must not read it.
+compiled binary as data. No model or agent harness may read it.
 
 Supported syntax:
 
@@ -1199,7 +1215,7 @@ dotenv lines, authenticated URLs, or a full config dump.
   dispatch.
 - No shell is launched. Network access is collection/submission-only and goes
   exclusively to the configured GitHub API base, the credential-held ICS feed
-  URL, and the launcher-provisioned MCP endpoint, over HTTPS unless an
+  URL, and the configured MCP endpoint, over HTTPS unless an
   explicitly configured local endpoint targets a local service. Credentials are
   read only
   through the documented dotenv/process precedence and are never logged, echoed,
@@ -1475,11 +1491,14 @@ integrity are unchanged.
   packages; no dependency version, module directive or toolchain changed.
   `cmd/timesheet/timesheet.example.json` is now a minimal update-schema
   example with synthetic placeholders.
-- The pinned Pi consumer sources are unchanged. The local `/timesheet` flow,
-  migration, reconciliation, approval, submission, recovery and the
-  `timesheet_prepare` model boundary above remain the current contract.
+- The optional pinned Pi launcher and its adapter (`pi/`) retired in
+  `0.2.0-dev.10`. The native `tui` verb is the operator surface, and `serve`
+  remains the documented protocol server. The local daily flow, migration,
+  reconciliation, approval, submission and recovery remain the current
+  contract.
 - Readiness is unchanged and honest: the dev.17 proof is Linux, hermetic and
-  synthetic. macOS pinned-Pi migration/local flow remains a mandatory separate
-  gate for full R6 acceptance, and live account/model readiness is a separate
+  synthetic. macOS verification of the migration/local flow remains a mandatory
+  separate gate for full R6 acceptance (the pinned-Pi leg retired with the
+  launcher in `0.2.0-dev.10`), and live account/model readiness is a separate
   named authorization gate. No RC/stable/production claim follows from source
   review.

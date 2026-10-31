@@ -2,6 +2,34 @@
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file starts the documented implementation release line; it does not retroactively assign versions to historical commits.
 
+## 0.2.0-dev.10
+
+- Retire the optional pinned Pi launcher/TUI (`pi/`): its launcher, adapter,
+  view and lockfile are removed, along with the adapter-pin pairing test (its
+  subject, the Go and TypeScript stamp pairing, no longer exists) and the macOS
+  launcher QA script. The bundled Pi/Undici advisory exposure leaves the
+  repository with the lockfile, so
+  [issue #137](https://github.com/huyle-gradion/pilot-timesheet/issues/137) is
+  resolved by removal rather than by a patched bundle. The native `tui` verb is
+  the operator surface; `serve` remains the documented protocol server and the
+  negotiation stamps stay meaningful. Interactive interval authoring/editing
+  forms, the classification picker, the migration forms and the in-session
+  usage counters retire with the launcher; their capabilities remain available
+  as headless verbs and serve ops (#225).
+- Add the `tui` verb's Charm presentation layer (#225): one lipgloss style owner
+  with SGR-only styles that degrade to identity under the Ascii profile
+  (`NO_COLOR`, `TERM=dumb`, a pipe), per-content sanitization at render
+  composition replacing the frame-wide strip (the UI's own escapes survive
+  while recorded content still cannot drive the terminal), and height-only
+  windowing that keeps the pinned chrome and the decision point visible with an
+  honest `+N lines` indicator. No bubbles components: help would add a second
+  hand-synced keymap, viewport needs the frozen scroll keys, textarea/textinput
+  would reformat the byte-exact bench document, and cursor/spinner/progress need
+  recurring timer effects that break the one-pending-effect rule.
+- Align the Go and protocol-doc stamps at `0.2.0-dev.10`. No release tag is
+  created by this changeset; tagging and publication are the release issue's
+  (#226) scope.
+
 ## 0.2.0-dev.9
 
 - Add the `tui` verb (#221): a native Go terminal UI over the same store,

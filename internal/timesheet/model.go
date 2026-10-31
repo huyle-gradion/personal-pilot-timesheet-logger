@@ -29,7 +29,7 @@ import (
 // is intentional: they have no semantics for native approvals, write intents or
 // execution history.
 const (
-	AppVersion        = "0.2.0-dev.9"
+	AppVersion        = "0.2.0-dev.10"
 	ProtocolSchema    = 1
 	stateSchema       = 3
 	legacyStateSchema = 1
@@ -123,7 +123,7 @@ func errorCode(err error) string {
 	return CodeInternal
 }
 
-// Config is the non-secret launcher-supplied configuration. RequiredEnv holds
+// Config is the non-secret operator-supplied configuration. RequiredEnv holds
 // variable NAMES for later slices; local operations never require them.
 // Sources describes the optional R2 evidence collectors; a nil Sources is the
 // R1 manual-only configuration and must keep working unchanged.
@@ -138,7 +138,7 @@ type Config struct {
 	// governed those records; old records do not carry their own timezone.
 	Migration *MigrationConfig `json:"migration,omitempty"`
 	// Gradion is the disabled-by-default read-only remote boundary. It carries
-	// a launcher-provisioned endpoint and a credential variable NAME only.
+	// an operator-configured endpoint and a credential variable NAME only.
 	Gradion *GradionConfig `json:"gradion,omitempty"`
 	// WorkHours is the optional main-work-time policy used only to annotate
 	// the one-day draft. It never rejects, warns, or changes a recorded block.
@@ -188,7 +188,7 @@ type MigrationConfig struct {
 const DefaultGradionTokenEnv = "GRADION_MCP_TOKEN"
 
 // GradionConfig is the non-secret read-only remote configuration. Endpoint is a
-// launcher-provisioned MCP endpoint; it is never echoed into a protocol
+// operator-configured MCP endpoint; it is never echoed into a protocol
 // response, error, receipt or state document.
 type GradionConfig struct {
 	DefaultClassification *ConfiguredDefaultClassification `json:"default_classification,omitempty"`
@@ -504,7 +504,7 @@ func (c *Config) project(id string) (Project, bool) {
 
 // dayLocation returns the recorded day's timezone. It never substitutes the
 // currently configured timezone, so saved work is not reinterpreted when the
-// launcher changes configuration.
+// operator changes configuration.
 func dayLocation(timezone string) (*time.Location, error) {
 	if strings.TrimSpace(timezone) == "" {
 		return nil, newError(CodeStateInvalid, "recorded day has no timezone")

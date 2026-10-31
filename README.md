@@ -30,15 +30,15 @@ Contributions are welcome: see [Contributing](#contributing), and the
 and [`help wanted`](https://github.com/huyle-gradion/pilot-timesheet/labels/help%20wanted)
 queues for a starting point.
 
-Application version: **`0.2.0-dev.9`** (published as the pre-release
-[`v0.2.0-dev.9`](https://github.com/huyle-gradion/pilot-timesheet/releases/tag/v0.2.0-dev.9);
+Application version: **`0.2.0-dev.10`** (the upcoming pre-release
+[`v0.2.0-dev.10`](https://github.com/huyle-gradion/pilot-timesheet/releases/tag/v0.2.0-dev.10);
 the previous stable line is `0.1.1`). Protocol schema `1`, state schema `3`.
 This is a SemVer pre-release of the upcoming `0.2.0`.
 
 ## Quickstart
 
 You need a Go toolchain matching `go.mod` (`go 1.27.1`; tested here with
-go1.27.3 on Linux) and, for the optional TUI launcher, Node `>=22.19.0`:
+go1.27.3 on Linux):
 
 ```bash
 git clone https://github.com/huyle-gradion/pilot-timesheet.git
@@ -65,7 +65,7 @@ bin/timesheet next
 
 The intended daily driver is an agent session using the bundled
 [`.agents/skills/timesheet/SKILL.md`](.agents/skills/timesheet/SKILL.md) skill,
-which drives `next` for you; see [Daily log](#daily-log-regular-pi-skill-no-launcher)
+which drives `next` for you; see [Daily log](#daily-log-agent-skill)
 below. `docs/setup-linux.md` covers first-run setup and configuration
 discovery in full.
 
@@ -98,12 +98,11 @@ failure exit `1`. Usage errors make no remote call.
 ## What lives where
 
 This repository is one Pilot Timesheet product: a single compiled Go binary
-owns all accounting, validation and persistence. Two callers drive it: the
-**regular Pi skill** (`.pi/prompts/timesheet.md` →
-`.agents/skills/timesheet/SKILL.md`), which needs no launcher and runs the
-`next` loop directly, and the optional **pinned Pi launcher/TUI**
-(`pi/launch.mjs`), which renders the local operator workflow and exposes one
-bounded model tool. Both call the same binary and the same planner; neither is
+owns all accounting, validation and persistence. Two operator surfaces drive
+it. The **agent skill** (`.pi/prompts/timesheet.md` →
+`.agents/skills/timesheet/SKILL.md`) runs the `next` loop directly, and the
+native **`tui` verb** (`bin/timesheet tui`) renders the local operator workflow
+in the terminal. Both call the same binary and the same planner; neither is
 required by the other. The legacy CLI subcommands, the old product skill and
 the vault sync/generator source remain retired and must not be reintroduced.
 
@@ -113,16 +112,15 @@ the vault sync/generator source remain retired and must not be reintroduced.
 | `internal/` | The Go engine: accounting, validation, persistence, the `next` planner. |
 | `.agents/skills/timesheet/` | The runner-agnostic agent skill (`SKILL.md`, `scripts/ts-env`) that drives the binary; linked from `.claude/skills/timesheet` for Claude Code. |
 | `.pi/prompts/timesheet.md` | The Pi prompt that expands into the same skill. |
-| `pi/` | The optional pinned launcher/TUI and its adapter (`pi/README.md` has the isolation contract). |
 | `docs/` | The authoritative specs: protocol, architecture, setup, credentials. See [Documentation](#documentation). |
 | `scripts/` | Optional helper scripts, e.g. `tokens.py` benchmark collection (never blocks the day). |
 
-## Daily log: regular Pi skill (no launcher)
+## Daily log: agent skill
 
 Daily driver, in a Pi session: type `/timesheet log today work`. Pi expands
 `.pi/prompts/timesheet.md` into the skill below, and the binary resolves
-"today" in the configured timezone, so no Node launcher is involved. The
-launcher/TUI remains an optional target, not a requirement.
+"today" in the configured timezone. The native TUI below is the keyboard-first
+alternative over the same loop.
 
 The daily log is delivered by a runner-agnostic skill folder:
 `.agents/skills/timesheet/SKILL.md`, picked up by Claude Code through the
@@ -215,7 +213,7 @@ After confirmation, the skill invokes it once with `--plan-id <reviewed id>
 --review-id <reviewed binding> --confirm-chat`. The review binds day, plan,
 store and credential/endpoint context; a stale review requires fresh review
 and consent. It reuses existing approval, classification and durable-intent
-checks without changing the protocol or trusted Pi adapter capabilities.
+checks without changing the protocol or the compiled binary's capability set.
 
 Consent is agent-enforced, not cryptographic human-presence proof. Flags alone
 do not establish consent. Receipts retain partial and uncertain outcomes,
@@ -259,51 +257,58 @@ and review the binding, or use `--file`. Stale sidecars require reviewed `--file
 repair. Changing the default never rewrites existing choices or saved days.
 Approval and submission retain their live semantic verification.
 
-## Optional launcher/TUI target
+## Native TUI operator flow
 
-The regular Pi skill above is the no-launcher path. The pinned launcher is the
-optional TUI/operator target and calls the same binary and planner:
+`bin/timesheet tui` is the keyboard-first operator surface: a native Go terminal
+UI over the same store, session and `next` planner as every other verb. It
+carries the Charm presentation layer (one SGR-only style owner that degrades to
+plain text under `NO_COLOR`, `TERM=dumb` or a pipe), needs no Node runtime and
+makes no model call:
 
 ```bash
-node pi/launch.mjs \
-  --binary "$PWD/bin/timesheet" \
+bin/timesheet tui \
   --config "$HOME/.timesheet/config.json" \
-  --env-file "$HOME/.timesheet/.env.local" \
-  --profile-dir "$HOME/.timesheet/pi-profile"
+  --env-file "$HOME/.timesheet/.env.local"
 ```
 
-The launcher supplies fixed paths; the regular skill resolves them from flags
-or its home/cwd precedence. Keep existing configured state and credential paths
-when updating. These example paths are not a migration instruction; do not
-start with an empty replacement store just to change directory names.
+It opens the store once and holds its exclusive lock for the whole process,
+refuses to start unless both stdin and stdout are terminals, and performs every
+refusal before the alternate screen starts. The day screen renders the loop's
+derived state verbatim: state, step, why, judgment protocol, human-gate
+commands and store-wide unresolved-write counts. `enter` runs the act the
+derived step licenses, `s` opens the submit gate, `r` re-derives, and `q` sends
+`close` and exits, discarding unsaved session state.
 
-The launcher spawns the pinned Pi CLI (`@earendil-works/pi-coding-agent`
-`1.4.0`, `pi-tui` `1.4.0`, `typebox` `1.3.27`, Node `>=22.19.0`, installed with
-`cd pi && npm ci`) with a fixed isolation set and loads only the adapter next to
-it. There is no second server, no wrapper CLI, no alias and no test
-provisioning flag.
+`--config` and `--env-file` are process inputs for `tui`, `serve` and the
+headless commands. They are never protocol request fields and never model
+arguments: the compiled binary reads the files, and a caller receives the path,
+not the contents. Keep existing configured state and credential paths when
+updating; these example paths are not a migration instruction.
 
-`--config` and `--env-file` are **fixed launcher inputs**. They are never
-protocol request fields and never model arguments. The launcher and adapter
-handle paths only; the compiled child reads the files.
-
-## Local `/timesheet` flow
-
-Inside the optional pinned launcher/TUI session (the regular skill path is
-above):
-
-```text
-/timesheet 2026-10-23
-```
-
-Every operator capability is a local form, never a model tool: collect
+Every capability the TUI offers is a local form, never a model tool: collect
 evidence (GitHub/calendar, optional synthetic or real sources), acknowledge an
 incomplete collection bound to the exact collection attempt, record attendance,
-author typed intervals (including the cross-midnight locked spill and
-origin-day navigation), confirm versus durable save, revise or cancel, search
-and select a remote classification, preview the exact plan, approve it, submit
-it once, and inspect status/recovery. A durable save is the only thing that
-makes work eligible for a plan; an unsaved draft is never planned.
+author the judgment's answer file with its digest copied verbatim, confirm
+versus durable save, classify from the derived choices, and preview the exact
+plan. Approve and submit keep the CLI's human-gated contract: display-before-
+ask, an exact typed `plan_id`/`approval_id` echo, a freshness re-check
+immediately before the op, one-shot emission and no retry. A durable save is the
+only thing that makes work eligible for a plan; an unsaved draft is never
+planned.
+
+Tall content keeps the pinned chrome and the decision point visible: the day
+screen tail-clips its state block with an honest `+N lines` indicator, a gate
+keeps its head and typed echo, and the bench fits the document around the caret.
+There is no interactive scrolling in this release; scroll keys are a documented
+future seam. Width is the terminal driver's per-line truncation, as before.
+
+The TUI never invokes the TTY-gated `approve`, `submit` or `resolve-write`
+verbs. Interactive interval authoring/editing forms, the classification
+search/select picker, the migration preview/apply forms and the in-session usage
+counters retired with the launcher; the underlying capabilities remain as
+headless verbs (`stage`, `classifications --query`, `classify`, `reconcile`,
+`resolve`) and as `serve` ops (`migration_preview`, `migration_apply`). There is
+no CLI verb for migration (serve ops only).
 
 ## Migration and reconciliation before any write
 
@@ -351,12 +356,10 @@ Never write before the day is reconciled; never plan from an unsaved draft.
   by the owner; its remote capsule was not independently downloaded here.
 - For the `next`/daily-workflow integration, the parent baseline passed all Go
   tests on Linux; macOS was **not run** for this change.
-- **Known dependency risk, owner-accepted for this release:** pinned Pi `1.4.0`
-  embeds Undici `8.10.2`, affected by a high-severity fetch process-crash advisory
-  and two moderate EventSource/integrity advisories. No patched Pi bundle has
-  been selected. [R6 / issue #137](https://github.com/huyle-gradion/pilot-timesheet/issues/137)
-  remains open for remediation and further improvements. This release is not
-  claimed to be vulnerability-free.
+- The former pinned Pi launcher's bundled Undici advisory exposure is no longer
+  shipped: `pi/` and its lockfile were removed in `0.2.0-dev.10`, so
+  [R6 / issue #137](https://github.com/huyle-gradion/pilot-timesheet/issues/137)
+  is resolved by removal rather than by a patched bundle.
 - **Not verified:** live accounts/credentials, authenticated model/subscription
   readiness or real Gradion submission. Local logging does not require a model
   request; remote submission still requires an exact human-approved plan.
@@ -395,7 +398,6 @@ patch, are contributions too: open an issue with reproduction steps.
 - `docs/architecture/timesheet-daily-workflow.md` — the stateless `next`
   planner, digest-bound judgments, responsibility map and accepted deviations.
 - `docs/setup-linux.md` — first-run setup and configuration discovery on Linux.
-- `pi/README.md` — launcher/adapter isolation, consumer contract and limits.
 - `cmd/timesheet/timesheet.example.json` — minimal valid configuration with
   synthetic placeholders.
 - `docs/agents/credentials.md` — the active `.env.local` credential policy.

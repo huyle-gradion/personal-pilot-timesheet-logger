@@ -83,7 +83,7 @@ type GradionWriter struct {
 }
 
 // newGradionWriter resolves the configured credential NAME and builds a session
-// over the launcher-provisioned endpoint. It performs no IO by itself.
+// over the operator-configured endpoint. It performs no IO by itself.
 func newGradionWriter(cfg *Config, env map[string]string) (*GradionWriter, error) {
 	if cfg == nil || cfg.Gradion == nil || !cfg.Gradion.Enabled {
 		return nil, newError(CodeRemoteDisabled, "verified write access is not enabled in configuration")

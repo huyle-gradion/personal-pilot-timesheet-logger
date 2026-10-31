@@ -2,8 +2,8 @@
 
 Owner policy (superseded the 2026-10-09 Keychain-only note): pipeline
 credentials live in a local `.env.local` file and are read **only** by the
-compiled `bin/timesheet` binary. The model, the Pi adapter and the launcher
-never read the file; they receive its path.
+compiled `bin/timesheet` binary. A model session never reads the file;
+callers pass its path.
 
 ## Active rules
 
@@ -11,7 +11,7 @@ never read the file; they receive its path.
   git-ignored and owner-authored. Nothing in this repository creates, implementations
   or logs it.
 - **Binary-owned.** `timesheet serve --env-file <path>` is the only reader.
-  The path is a fixed launcher input, never a protocol request field and never
+  The path is an operator input, never a protocol request field and never
   a model argument.
 - **Precedence.** An inherited process-environment value overrides the file
   value for the same name, including an explicitly empty value. A file-only
