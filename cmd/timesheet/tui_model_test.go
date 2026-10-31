@@ -86,6 +86,16 @@ func TestUpdateEventsTable(t *testing.T) {
 			t.Fatalf("close sent = %+v, want stop with the close error kept", m)
 		}
 	})
+	t.Run("a size event stores geometry even while busy", func(t *testing.T) {
+		m := busyModel()
+		got, eff := update(m, sizeEvent{height: 42})
+		if eff != nil || got.view.height != 42 || !got.busy {
+			t.Fatalf("size event = height %d busy %v effect %v, want the geometry stored under the busy lock", got.view.height, got.busy, eff)
+		}
+		if got.snap != m.snap || got.err != m.err {
+			t.Fatalf("size event mutated the loop state: %+v", got)
+		}
+	})
 	t.Run("unknown events are ignored", func(t *testing.T) {
 		m := dayModel()
 		got, _ := update(m, unknownTestEvent{})

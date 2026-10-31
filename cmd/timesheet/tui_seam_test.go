@@ -79,6 +79,7 @@ func TestTuiEventFromMsg(t *testing.T) {
 		{"a named key stays named", tea.KeyMsg{Type: tea.KeyDelete}, keyEvent{key: "delete"}},
 		{"enter stays named", tea.KeyMsg{Type: tea.KeyEnter}, keyEvent{key: "enter"}},
 		{"a modified rune stays named", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}, Alt: true}, keyEvent{key: "alt+r"}},
+		{"a resize carries the height", tea.WindowSizeMsg{Width: 80, Height: 30}, sizeEvent{height: 30}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

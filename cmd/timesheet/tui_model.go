@@ -39,6 +39,7 @@ type tuiEnv struct {
 type tuiModel struct {
 	env      tuiEnv
 	snap     loopSnapshot
+	view     viewState
 	busy     bool
 	err      error
 	closeErr error
@@ -46,6 +47,10 @@ type tuiModel struct {
 	notice   string
 	stop     bool
 }
+
+// viewState is the driver's geometry, written only by update's sizeEvent case;
+// height 0 (every test-constructed model, and the first frame) means unbounded.
+type viewState struct{ height int }
 
 // benchState is the TUI's only mutable domain state: operator text that has
 // not gone through a session op. On the bench screen it carries the authored
@@ -77,6 +82,12 @@ const (
 )
 
 type keyEvent struct{ key string }
+
+// sizeEvent carries the driver's terminal height, adapted from
+// tea.WindowSizeMsg. It is not a key: it lands while busy (a resize starts no
+// op) and produces no effect. Width is dropped until something lays out by it;
+// bubbletea already truncates over-wide lines.
+type sizeEvent struct{ height int }
 
 // textEvent carries the runes of one text input (typed or pasted). The driver
 // produces it from KeyRunes and KeySpace messages only, so a structural key's
@@ -127,6 +138,9 @@ type effect func() any
 // update is the pure reducer: (model, event) -> (model, effect).
 func update(m tuiModel, ev any) (tuiModel, effect) {
 	switch e := ev.(type) {
+	case sizeEvent:
+		m.view.height = e.height
+		return m, nil
 	case keyEvent:
 		return updateKey(m, e.key)
 	case textEvent:

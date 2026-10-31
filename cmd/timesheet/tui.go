@@ -143,6 +143,8 @@ func (m tuiModel) View() string {
 // delete can never reach an open document as text.
 func tuiEventFromMsg(msg tea.Msg) any {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		return sizeEvent{height: m.Height}
 	case tea.KeyMsg:
 		if !m.Alt {
 			switch m.Type {
