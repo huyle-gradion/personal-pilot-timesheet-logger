@@ -32,6 +32,26 @@ func styledStyles() uiStyles {
 
 func stripANSI(frame string) string { return ansi.Strip(frame) }
 
+// TestStylesEmitSGRPerRole pins that every role emits SGR under a color
+// profile, so a role left with no attribute fails here instead of silently
+// rendering plain.
+func TestStylesEmitSGRPerRole(t *testing.T) {
+	s := styledStyles()
+	roles := map[string]func() string{
+		"title":  func() string { return s.title.Render("x") },
+		"label":  func() string { return s.label.Render("x") },
+		"hint":   func() string { return s.hint.Render("x") },
+		"errSty": func() string { return s.errSty.Render("x") },
+		"gate":   func() string { return s.gate.Render("x") },
+		"caret":  func() string { return s.caret.Render("x") },
+	}
+	for name, render := range roles {
+		if !strings.Contains(render(), "\x1b[") {
+			t.Fatalf("style role %q emitted no SGR under the ANSI profile", name)
+		}
+	}
+}
+
 // TestStylesArePresentAndTextNeutral pins both halves of the style contract:
 // every role emits SGR under a color profile, and no role changes one byte of
 // text once the escapes are stripped.

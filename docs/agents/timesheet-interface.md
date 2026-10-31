@@ -8,14 +8,17 @@ This document is the public interface for the current release. The
 implemented surface is the accepted R1-R5 slices: the local review-first
 workflow, R2 verification-only evidence collection, the R3 migration/read-only
 boundary, the R4 native approval ledger and ONE verified submission path, and
-the R5 pinned Pi consumer. R6 changes no protocol, schema or store behavior: it
+the R5 pinned Pi consumer (retired in `0.2.0-dev.10`: the native `tui` verb is
+the operator surface and `serve` remains the protocol server). R6 changes no
+protocol, schema or store behavior: it
 retires the legacy CLI, moves the one entry point to `cmd/timesheet` and makes
 `bin/timesheet` the production-named child. The stage descriptions below remain
 accurate as historical slices.
 
 Release `0.1.0` promotes the verified dev.17 behavior without changing protocol,
 schemas or dependency pins. The owner explicitly accepted the known upstream
-Pi/Undici risk for this release; R6 remains open for improvements. See the root
+Pi/Undici risk for that release; the exposure left the repository with the
+retired launcher in `0.2.0-dev.10`. See the root
 README for current verification and limitations. Historical stage notes below
 describe their original snapshots, not new runtime evidence.
 
@@ -136,9 +139,11 @@ and the frame is plain text. Recorded content is sanitized at render
 composition, once per field, so a control rune in evidence, a description, a
 protocol string, a plan body, an approval row or an error line never drives the
 terminal while the UI's own styling escapes survive. Windowing is height-only:
-the day screen tail-clips its state block, a gate pins its head and typed echo,
-and the bench fits the document around the caret, each with an honest `+N lines`
-indicator. Interactive scrolling is not part of this release.
+the day screen pins the judgment's instruction surface and the gate commands,
+counts and next-line, clipping only the block and status row lists; a gate pins
+its head and typed echo; the bench fits the document around the caret. Clipping
+names its hidden count with an honest `+N lines` indicator inside the budget.
+Interactive scrolling is not part of this release.
 
 ## Headless skill surface
 
@@ -1078,7 +1083,7 @@ echoing file contents.
 | `migration.legacy_timezone` | if enabled | IANA timezone that governed the legacy records. Recorded on migrated days; never replaced by the current `timezone`. |
 | `migration.project_map` / `migration.classification_map` | no | Explicit legacy-value translations. A value not directly representable and not mapped is a visible conflict, never an invented replacement. |
 | `gradion` | no | Disabled-by-default remote boundary. Reads verify capability-only; writes exist only behind the approval ledger. |
-| `gradion.endpoint` | if enabled | Launcher-provisioned MCP endpoint. Never echoed into a response, receipt, error or state document. |
+| `gradion.endpoint` | if enabled | Operator-configured MCP endpoint. Never echoed into a response, receipt, error or state document. |
 | `gradion.token_env` | no | Credential variable **name**, default `GRADION_MCP_TOKEN`. Only the binary resolves its value. |
 | `work_hours` | no | Optional, presentation-only main-work-time policy for the draft annotation. Omitted means no annotation and byte-identical output. |
 | `work_hours.days` | if present | Non-empty list of exactly `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` (lowercase, three letters; nothing is normalized). |
@@ -1492,7 +1497,8 @@ integrity are unchanged.
   reconciliation, approval, submission and recovery remain the current
   contract.
 - Readiness is unchanged and honest: the dev.17 proof is Linux, hermetic and
-  synthetic. macOS pinned-Pi migration/local flow remains a mandatory separate
-  gate for full R6 acceptance, and live account/model readiness is a separate
+  synthetic. macOS verification of the migration/local flow remains a mandatory
+  separate gate for full R6 acceptance (the pinned-Pi leg retired with the
+  launcher in `0.2.0-dev.10`), and live account/model readiness is a separate
   named authorization gate. No RC/stable/production claim follows from source
   review.

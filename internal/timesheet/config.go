@@ -265,7 +265,7 @@ func normalizeGithubBase(base string) (*url.URL, error) {
 	return u, nil
 }
 
-// LoadEnvFile parses the launcher-supplied environment file as data. Supported
+// LoadEnvFile parses the operator-supplied environment file as data. Supported
 // syntax is documented in docs/agents/timesheet-interface.md:
 //
 //   - blank lines and lines whose first non-space character is '#' are ignored

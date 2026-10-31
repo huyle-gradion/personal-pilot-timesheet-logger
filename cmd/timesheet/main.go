@@ -40,7 +40,7 @@ Usage:
   timesheet agent-submit [--config <path>] [--env-file <path>] --date <YYYY-MM-DD> [--plan-id <id> --review-id <id> --confirm-chat]
   timesheet resolve-write [--config <path>] [--env-file <path>] --file <decision.json>
 
-Except serve (whose paths the launcher supplies), every command resolves its
+Except serve, which requires both paths explicitly, every command resolves its
 configuration in three tiers — an explicit --config, then ./timesheet.json in
 the current directory when it exists (project-local), then
 $HOME/.timesheet/config.json — and reports the chosen path once on stderr. A
@@ -276,7 +276,7 @@ silently. Migrated legacy approvals remain inert audit data. The R1-R3 local
 workflow, migration and read boundary are unchanged. The serve protocol in
 the protocol reference linked in README.md is the authoritative interface.
 
-Fixed configuration and environment-file paths are launcher inputs. They are
+Fixed configuration and environment-file paths are operator inputs. They are
 never accepted as protocol request fields.
 `)
 }
@@ -500,8 +500,8 @@ func main() {
 func runServe(args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	configPath := flags.String("config", "", "fixed configuration path supplied by the launcher")
-	envFile := flags.String("env-file", "", "fixed environment-file path supplied by the launcher")
+	configPath := flags.String("config", "", "fixed configuration path (required)")
+	envFile := flags.String("env-file", "", "fixed environment-file path (required)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

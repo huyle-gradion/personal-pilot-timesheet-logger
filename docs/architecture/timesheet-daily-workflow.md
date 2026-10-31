@@ -85,7 +85,8 @@ The separate `submit` skill adds an opt-in follow-up after logging. It reviews
 all operations, waits for explicit chat confirmation, then invokes
 `agent-submit` once with the exact reviewed plan and context binding. Consent
 is agent-enforced, not proof of presence. Legacy terminal commands retain
-their gates, and the restricted Pi adapter retains its existing capabilities.
+their gates, and the native `tui` verb carries the operator surface the retired
+Pi adapter once rendered.
 See [ADR 0009](../adr/0009-chat-confirmed-submission.md).
 
 ## 5. Explicit blockers

@@ -16,7 +16,7 @@ import (
 const maxRequestBytes = 1 << 20
 
 // Request is the strict line-delimited JSON request envelope. Unknown fields
-// are rejected. Paths are never request fields: the launcher supplies them.
+// are rejected. Paths are never request fields: the caller supplies them as flags.
 type Request struct {
 	ID           string   `json:"id"`
 	Op           string   `json:"op"`

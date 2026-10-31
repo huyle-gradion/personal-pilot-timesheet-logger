@@ -68,8 +68,8 @@ The concrete typed grammar and error codes are part of the public interface and 
 
 Credentials are stored in `.env.local`. This replaces the earlier Keychain-first proposal. No new Keychain dependency is required.
 
-- Only the compiled binary loads `.env.local` and non-secret configuration. Neither the model nor the Pi adapter reads either file.
-- A provisioned launcher supplies fixed configuration/environment-file paths. The model cannot supply arbitrary paths or executable names.
+- Only the compiled binary loads `.env.local` and non-secret configuration. A model session never reads either file.
+- The operator passes fixed configuration/environment-file paths as command-line flags. The model cannot supply arbitrary paths or executable names.
 - Inherited process environment values take precedence over matching `.env.local` assignments, including explicitly empty values; the binary validates the resulting required values.
 - Parse documented dotenv assignments as data. Support ordinary unquoted/single-quoted/double-quoted values; do not execute shell expressions, source the file, expand commands, or infer undocumented dotenv features.
 - Missing required values produce variable-name-only diagnostics. Do not echo values, authenticated URLs, source payloads, or raw parser lines.
@@ -116,7 +116,7 @@ Public compatibility includes CLI flags/exit behavior, typed review input, the P
 - Before 1.0, increment the minor version for incompatible public-interface changes and the patch version for compatible fixes; document changes and required migrations.
 - `1.0.0` declares the complete accepted public interface stable. After that, breaking public changes increment MAJOR, compatible additions MINOR, and compatible fixes PATCH.
 - Tags use `v` plus the version. Released artifacts/tags are immutable. Release creation/publication requires separate owner authority.
-- The binary and bundled Pi adapter identify their application version and negotiate a separate integer protocol schema. Schema mismatch fails closed with a compact error.
+- The binary identifies its application version and negotiates a separate integer protocol schema. Schema mismatch fails closed with a compact error. (The bundled Pi adapter that once paired its own stamp with these retired with the launcher in `0.2.0-dev.10`.)
 - Maintain `CHANGELOG.md`. An Unreleased entry is not proof of implementation or a published release.
 
 ## Completion evidence
