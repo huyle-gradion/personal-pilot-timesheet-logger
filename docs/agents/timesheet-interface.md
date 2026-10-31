@@ -1,6 +1,6 @@
 # Pilot Timesheet interface (`0.2.0-dev.10`)
 
-Application version: `0.2.0-dev.10` (the upcoming pre-release
+Application version: `0.2.0-dev.10` (published as the pre-release
 `v0.2.0-dev.10`; the previous stable line is `0.1.1`).
 Protocol schema: `1`. State schema: `3`.
 

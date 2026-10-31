@@ -26,9 +26,8 @@ Versioning follows [Semantic Versioning 2.0.0](https://semver.org/). This file s
   hand-synced keymap, viewport needs the frozen scroll keys, textarea/textinput
   would reformat the byte-exact bench document, and cursor/spinner/progress need
   recurring timer effects that break the one-pending-effect rule.
-- Align the Go and protocol-doc stamps at `0.2.0-dev.10`. No release tag is
-  created by this changeset; tagging and publication are the release issue's
-  (#226) scope.
+- Align the Go and protocol-doc stamps at `0.2.0-dev.10`, tag `v0.2.0-dev.10`
+  on `main`, and publish it as a GitHub pre-release (#226).
 
 ## 0.2.0-dev.9
 
