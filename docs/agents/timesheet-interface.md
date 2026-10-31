@@ -51,10 +51,11 @@ loads no configuration, environment file, credentials, or evidence.
 stdin and writes one JSON response per line to stdout. Diagnostics go to stderr
 and are sanitized. The process never launches a shell.
 
-`--config` and `--env-file` are fixed launcher inputs. There are no request
-fields for paths, executable names, or arbitrary operations. Both flags are
-required for `serve`; the headless subcommands require `--config` and treat
-`--env-file` as optional (no file values when omitted).
+`--config` and `--env-file` are process inputs for `serve`, `tui` and the
+headless subcommands. There are no request fields for paths, executable names,
+or arbitrary operations. Both flags are required for `serve`; the headless
+subcommands require `--config` and treat `--env-file` as optional (no file
+values when omitted).
 
 Exit codes: `0` for a normal `version` run, a normal `serve` close/EOF and
 `serve` help; `2` for a missing or unknown top-level command and extra
@@ -128,6 +129,16 @@ same content-bound sidecar.
 `stale_revision` from any act re-runs `review`, re-derives, and reopens the
 authoring form fresh when the loop still asks for the same judgment; the loop
 moving past that judgment closes the form instead of showing a dead end.
+
+Presentation is one SGR-only style owner bound to one renderer; under the
+Ascii profile (`NO_COLOR`, `TERM=dumb`, a pipe) every style renders as identity
+and the frame is plain text. Recorded content is sanitized at render
+composition, once per field, so a control rune in evidence, a description, a
+protocol string, a plan body, an approval row or an error line never drives the
+terminal while the UI's own styling escapes survive. Windowing is height-only:
+the day screen tail-clips its state block, a gate pins its head and typed echo,
+and the bench fits the document around the caret, each with an honest `+N lines`
+indicator. Interactive scrolling is not part of this release.
 
 ## Headless skill surface
 
@@ -736,7 +747,7 @@ any staged/confirmed collision.
 }
 ```
 
-Disabled by default. `endpoint` is launcher-provisioned. `token_env` is a variable
+Disabled by default. `endpoint` is operator-configured. `token_env` is a variable
 **name** (default `GRADION_MCP_TOKEN`); only the compiled binary resolves its value
 through the documented dotenv/inherited precedence, including inherited-empty. A
 missing credential reports the name only. No Keychain dependency, real settings
@@ -1119,7 +1130,7 @@ annotation changes no span, duration, or recorded entry.
 ## Environment file and precedence
 
 `--env-file` points at a local file (normally `.env.local`). It is read by the
-compiled binary as data. The model/Pi adapter must not read it.
+compiled binary as data. No model or agent harness may read it.
 
 Supported syntax:
 
@@ -1199,7 +1210,7 @@ dotenv lines, authenticated URLs, or a full config dump.
   dispatch.
 - No shell is launched. Network access is collection/submission-only and goes
   exclusively to the configured GitHub API base, the credential-held ICS feed
-  URL, and the launcher-provisioned MCP endpoint, over HTTPS unless an
+  URL, and the configured MCP endpoint, over HTTPS unless an
   explicitly configured local endpoint targets a local service. Credentials are
   read only
   through the documented dotenv/process precedence and are never logged, echoed,
@@ -1475,9 +1486,11 @@ integrity are unchanged.
   packages; no dependency version, module directive or toolchain changed.
   `cmd/timesheet/timesheet.example.json` is now a minimal update-schema
   example with synthetic placeholders.
-- The pinned Pi consumer sources are unchanged. The local `/timesheet` flow,
-  migration, reconciliation, approval, submission, recovery and the
-  `timesheet_prepare` model boundary above remain the current contract.
+- The optional pinned Pi launcher and its adapter (`pi/`) retired in
+  `0.2.0-dev.10`. The native `tui` verb is the operator surface, and `serve`
+  remains the documented protocol server. The local daily flow, migration,
+  reconciliation, approval, submission and recovery remain the current
+  contract.
 - Readiness is unchanged and honest: the dev.17 proof is Linux, hermetic and
   synthetic. macOS pinned-Pi migration/local flow remains a mandatory separate
   gate for full R6 acceptance, and live account/model readiness is a separate

@@ -40,8 +40,8 @@ predates it); fixes land on `main` first.
   `~/.timesheet/entries/<date>.json`; that directory is the human ledger and
   staging source.
 - The env file pointed at by `--env-file` (default `~/.timesheet/.env.local`)
-  holds tokens. Only the compiled binary reads it — never the model, the
-  adapter or the launcher, which receive the path, not the contents.
+  holds tokens. Only the compiled binary reads it — never a model or an agent
+  harness, which receive the path, not the contents.
 - Credentials are never echoed: no secret value appears in diagnostics,
   errors, receipts, state or reports; only variable names are reported.
 
@@ -59,8 +59,8 @@ The project is deliberately fail-closed:
   [submit skill](.agents/skills/submit/SKILL.md) enforces review and fresh human
   consent in chat. Flags do not prove consent or human presence. This path
   deliberately trusts the agent to honor that policy; it does not claim the
-  terminal barrier applies to all writes. The restricted Pi adapter gains no
-  model write capability. Stale plans/context, single-use approvals and durable
+  terminal barrier applies to all writes. No model gains write capability.
+  Stale plans/context, single-use approvals and durable
   uncertain-write barriers remain enforced by the binary.
 - Validation is lazy, but remote submission never proceeds without an exact
   human-approved plan.
