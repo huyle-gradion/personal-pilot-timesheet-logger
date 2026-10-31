@@ -27,6 +27,7 @@ type tuiEnv struct {
 	day        string
 	project    string
 	h          *headlessSession
+	styles     uiStyles
 }
 
 // tuiModel is the Elm-architecture state; update is the only writer. busy is

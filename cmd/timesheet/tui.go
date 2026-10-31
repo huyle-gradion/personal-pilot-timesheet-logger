@@ -77,6 +77,7 @@ func preflightTui(f *nextFlags) (tuiModel, error) {
 	}
 	env := tuiEnv{
 		cfg: cfg, configPath: configPath, envFile: envFile, day: day, project: f.project,
+		styles: stdoutStyles(),
 		// One held session over the TUI's own store, built literally.
 		h: &headlessSession{
 			session: timesheet.NewSession(cfg, fileEnv, store),
@@ -128,11 +129,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m tuiModel) View() string {
 	switch m.bench.screen {
 	case screenBench:
-		return sanitizeFrame(renderBench(m))
+		return renderBench(m)
 	case screenGate:
-		return sanitizeFrame(renderGate(m))
+		return renderGate(m)
 	default:
-		return sanitizeFrame(renderDay(m))
+		return renderDay(m)
 	}
 }
 

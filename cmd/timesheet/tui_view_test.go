@@ -11,7 +11,7 @@ import (
 // --- golden view tests: the day screen renders the loop verbatim --------------
 
 func dayScreen(snap loopSnapshot) string {
-	return renderDay(tuiModel{snap: snap})
+	return stripANSI(renderDay(tuiModel{env: tuiEnv{styles: testStyles()}, snap: snap}))
 }
 
 func TestRenderDayGolden(t *testing.T) {
@@ -174,7 +174,9 @@ func TestRenderFooterGolden(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := renderFooter(tc.model); got != tc.want {
+			m := tc.model
+			m.env.styles = testStyles()
+			if got := stripANSI(renderFooter(m)); got != tc.want {
 				t.Fatalf("footer = %q, want %q", got, tc.want)
 			}
 		})
@@ -193,7 +195,7 @@ func (e *appErrForTest) Error() string { return e.msg }
 func TestViewStripsControlRunes(t *testing.T) {
 	snap := loopSnapshot{day: "2026-10-20", project: "WORK", action: nextAction{Day: "2026-10-20"}.withStop(
 		"needful \x1b[31mred\x07 reason with\na newline")}
-	frame := tuiModel{snap: snap}.View()
+	frame := stripANSI(tuiModel{env: tuiEnv{styles: testStyles()}, snap: snap}.View())
 	for _, r := range frame {
 		if unicode.IsControl(r) && r != '\n' {
 			t.Fatalf("the frame carried control rune %q:\n%q", r, frame)
@@ -207,7 +209,7 @@ func TestViewStripsControlRunes(t *testing.T) {
 // TestRenderBenchGolden pins the bench form: the pre-filled document, the
 // digest header, and the visible caret.
 func TestRenderBenchGolden(t *testing.T) {
-	m := tuiModel{bench: benchState{
+	m := tuiModel{env: tuiEnv{styles: testStyles()}, bench: benchState{
 		screen: screenBench, kind: judgmentBlockDescriptions,
 		digest: "d1", answerFile: "/tmp/x/descriptions.json",
 		text:  "{\"draft_digest\": \"d1\",\"descriptions\": {\"b-1\": \"\"}}\n",
@@ -221,7 +223,7 @@ func TestRenderBenchGolden(t *testing.T) {
 		"\n" +
 		"\n" +
 		"[ctrl+s] write   [esc] abandon form, unsaved text dies\n"
-	if got := renderBench(m); got != want {
+	if got := stripANSI(renderBench(m)); got != want {
 		t.Fatalf("rendered bench differs:\n--- got ---\n%s--- want ---\n%s", got, want)
 	}
 }
